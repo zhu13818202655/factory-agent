@@ -1,0 +1,28 @@
+services:
+  mock-mes:
+    build:
+      context: ../..
+      dockerfile: mock-mes/Dockerfile
+    image: mock-mes:dev
+    environment:
+      MOCK_MES_HOST: 0.0.0.0
+      MOCK_MES_PORT: 8010
+    ports:
+      - "${MOCK_MES_PORT:-8010}:8010"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/live', timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

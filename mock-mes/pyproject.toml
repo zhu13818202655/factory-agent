@@ -1,0 +1,22 @@
+[project]
+name = "mock-mes"
+version = "0.1.0"
+description = "Deterministic MES simulator for factory-agent development and testing"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.116.0,<1.0.0",
+    "pydantic>=2.11.0,<3.0.0",
+    "pydantic-settings>=2.10.0,<3.0.0",
+    "uvicorn[standard]>=0.35.0,<1.0.0",
+]
+
+[project.scripts]
+mock-mes = "mock_mes.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mock_mes"]

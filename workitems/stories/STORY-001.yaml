@@ -1,0 +1,27 @@
+id: STORY-001
+title: 仓库地基与双应用健康骨架
+epic: EPIC-000
+status: review
+risk: medium
+goal: 建立可复现、可验证的根应用与 Mock MES 工程地基，供后续 Story 统一执行。
+depends_on: []
+contracts:
+  reads: []
+  changes:
+    - workitems/schema/story.schema.json
+acceptance:
+  invariants:
+    - factory_agent 与 mock_mes 互不导入，只通过未来的 Canonical HTTP 契约交互
+    - 根应用和 Mock MES 均提供独立的 GET /health/live
+    - uv.lock 同时锁定根应用和 mock-mes workspace 成员
+    - make check 是 Phase 0 的统一阻塞门禁
+  commands:
+    - make bootstrap
+    - make check
+  fixtures: []
+  performance: {}
+non_goals:
+  - 业务 MES 资源接口
+  - PostgreSQL 模型和迁移
+  - LiteLLM 或 vLLM 运行时
+human_decisions_required: []
