@@ -11,7 +11,10 @@
 
 ## Mandatory Controls
 
-- Authentication and `DataScope` resolution precede all business-data calls.
+- One deployment serves many company/factory tenants. Authentication resolves authorized tenant
+  memberships before an active `TenantContext` and `DataScope` are created for an MES interaction.
+- Platform operations use a separately authenticated `PlatformScope` and never reuse factory roles
+  or the MES business execution path for cross-tenant aggregation.
 - User and model IDs can narrow but never broaden an effective scope.
 - MES clients are read-only, use explicit outbound allowlists, bounded timeouts, and typed errors.
 - External responses are schema-validated before local processing.
@@ -27,7 +30,8 @@ written to Git must be revoked; deleting the line is not sufficient remediation.
 
 ## Threats Covered by Tests
 
-- Cross-tenant and out-of-scope identifiers.
+- Unauthorized tenant selection, cross-tenant identifiers in an active MES interaction, and attempts
+  to use factory roles for platform aggregation.
 - Prompt injection attempting to alter API hosts, scope, or SQL policy.
 - Sensitive canaries leaking into prompts, logs, traces, exports, or errors.
 - Pagination truncation and malformed external payloads producing plausible wrong totals.

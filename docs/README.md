@@ -6,7 +6,7 @@
 |---|---|---|
 | `product/` | 做什么、谁能看什么、哪些口径待确认 | [`requirements.md`](product/requirements.md)、[`permission-matrix.md`](product/permission-matrix.md)、[`traceability.md`](product/traceability.md) |
 | `api/` | 客户 MES 必须提供什么、已经向客户确认什么 | [`customer-api-requirements.md`](api/customer-api-requirements.md)、[`customer-confirmation-questionnaire.md`](api/customer-confirmation-questionnaire.md) |
-| `adr/` | 为什么采用某项难以逆转的技术或边界决策 | [`0001-repository-and-service-boundaries.md`](adr/0001-repository-and-service-boundaries.md) |
+| `adr/` | 为什么采用某项难以逆转的技术或边界决策 | [`0001-repository-and-service-boundaries.md`](adr/0001-repository-and-service-boundaries.md)、[`0002-runtime-storage-and-migration-baseline.md`](adr/0002-runtime-storage-and-migration-baseline.md)、[`0003-usage-metering-and-admin-service.md`](adr/0003-usage-metering-and-admin-service.md) |
 | `reference/` | 客户原始材料和历史整合文档，仅用于追溯来源 | [`工厂智能体需求与接口整合文档.md`](reference/工厂智能体需求与接口整合文档.md) |
 
 实现按 [`.github/story/`](../.github/story/) 中 `#1` 到 `#9` 的顺序执行，日常状态见

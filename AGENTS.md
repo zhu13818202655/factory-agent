@@ -25,8 +25,10 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 ## Architecture Invariants
 
 1. Authorization completes before any business-data API call.
-2. `tenant_id`, `employee_ids`, and `dept_ids` come from `DataScope`. User or LLM output
-   may narrow an authorized scope but can never broaden or replace it.
+2. One deployment serves many company/factory tenants. `Identity` provides authorized tenant
+   memberships; each MES business interaction resolves one trusted active `TenantContext`, and its
+   `tenant_id`, `employee_ids`, and `dept_ids` come from `DataScope`. Platform operations use a
+   separate `PlatformScope`. User or LLM output can never broaden or replace either scope.
 3. Only `src/factory_agent/data_api/` may call MES HTTP endpoints.
 4. Application and domain code depend on `MesDataSource`, never customer URLs or payloads.
 5. Validate every external response before registering it in the local sandbox.
@@ -40,13 +42,17 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 
 - `src/factory_agent/`: production application built by the root project.
 - `mock-mes/`: self-contained simulator; never a production dependency.
+- `usage-admin/`: independently built production service for authorized multi-tenant usage
+   aggregation, operational APIs, and reports; it never calls MES endpoints.
 - `contracts/`: versioned OpenAPI and JSON Schema compatibility boundary.
 - `configs/knowledge/`: reviewed API catalog, metrics, and L1 DAGs.
 - `tests/support/`: in-process fakes and pytest-managed test processes, not services.
 - `data/`: ignored runtime output only.
 
-`factory_agent` and `mock_mes` must never import each other. They communicate only through
-HTTP contracts. Read the nearest scoped `AGENTS.md` before modifying a governed directory.
+`factory_agent`, `mock_mes`, and `usage_admin` must never import each other. They communicate only
+through versioned HTTP and event contracts. Production Compose excludes Mock MES but includes
+`usage-admin` when usage metering is enabled. Read the nearest scoped `AGENTS.md` before modifying a
+governed directory.
 
 ## Story Workflow
 
@@ -103,7 +109,8 @@ Every data capability must prove:
 1. Allowed roles receive only their effective scope.
 2. Denied roles perform zero business-data API calls.
 3. User-provided IDs cannot override `DataScope`.
-4. Cross-tenant IDs never enter calls, sandbox tables, caches, artifacts, or audits.
+4. IDs outside the active `DataScope` never enter MES calls, sandbox tables, caches, artifacts, or
+   business audit details; authorized platform aggregation never enters the MES execution path.
 5. Sensitive canary values never appear in captured LLM requests or logs.
 
 ## LLM Rules
