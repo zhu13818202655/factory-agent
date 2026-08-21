@@ -26,7 +26,7 @@ there is a second consumer or a stable contract.
 
 ## Consequences
 
-- A Story can atomically update contract, simulator, adapter, and E2E evidence.
+- The contract, simulator, adapter, and cross-service tests can evolve together in one repository.
 - Mock MES remains independently runnable and can be moved to a repository later without changing
   product imports.
 - Workspace CI sees both projects, so package-boundary and contract tests are mandatory.

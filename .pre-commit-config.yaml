@@ -1,3 +1,4 @@
+exclude: ^docs/(reference/source-plans|requirements/source)/
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.3

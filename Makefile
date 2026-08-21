@@ -7,13 +7,13 @@ GIT_SAFE_ENV := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VA
 
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap policy lint typecheck test-unit test-contract test-integration
+.PHONY: help bootstrap lint typecheck test-unit test-contract test-integration
 .PHONY: test-e2e security check dev dev-mock pre-commit compose-config build-images test-images
 
 help:
 	@printf '%s\n' \
 		'make bootstrap         Install the complete uv workspace' \
-		'make check             Run all Phase 0 blocking gates' \
+		'make check             Run all repository code checks' \
 		'make compose-config    Validate development Compose files' \
 		'make build-images      Build both application images' \
 		'make test-images       Run image health and non-root checks' \
@@ -22,11 +22,6 @@ help:
 
 bootstrap:
 	$(UV) sync --all-packages --group dev
-
-policy:
-	$(RUN) check-jsonschema \
-		--schemafile workitems/schema/story.schema.json \
-		workitems/stories/*.yaml
 
 lint:
 	$(RUN) ruff check .
@@ -53,10 +48,12 @@ security:
 	$(RUN) pip-audit --skip-editable
 	$(PYTEST) tests/security
 
-check: policy lint typecheck test-unit test-contract test-integration test-e2e security
+check: lint typecheck test-unit test-contract test-integration test-e2e security
 
 pre-commit:
 	$(GIT_SAFE_ENV) $(RUN) pre-commit run --all-files
+	$(GIT_SAFE_ENV) git ls-files --others --exclude-standard -z | \
+		xargs -0 -r env $(GIT_SAFE_ENV) $(RUN) pre-commit run --files
 
 compose-config:
 	docker compose \

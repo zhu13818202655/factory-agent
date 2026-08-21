@@ -9,5 +9,4 @@ data
 docs
 tests
 mock-mes/tests
-workitems
 .env

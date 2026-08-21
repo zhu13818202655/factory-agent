@@ -1,25 +1,33 @@
 ## Story
+- Story: `#N`
+- Summary: _One-sentence description of what this PR delivers._
 
-- Story: `STORY-xxx`
-- Goal:
+## What Changed
+- 
 
-## Changes
+## Type of Change
+- [ ] Feature
+- [ ] Bug fix
+- [ ] Refactor
+- [ ] Docs / tooling
+- [ ] Other: 
 
--
+## How It Was Verified
+- [ ] Tests pass locally (`command`)
+- [ ] Manually verified against the story acceptance criteria
+- [ ] No regressions in related flows
 
-## Validation
+_Evidence: test output, screenshots (for UI), or repro steps._
 
-- [ ] Story acceptance commands passed
-- [ ] `make check` passed
-- [ ] Contract/migration/config changes are documented
+## Mock Assumptions
+- _List any mocked data/behavior and how to replace it with the real implementation._
 
-## Security And Data Scope
+## Notes For Manual Review
+- _Where to start, edge cases, and anything reviewers should specifically check._
 
-- Permission or scope impact:
-- Sensitive data impact:
-- New outbound hosts or credentials: none
+## Risk / Rollback
+- _Breaking changes, data migrations, feature flags, and how to revert if needed._
 
-## Risk And Rollback
+---
+- [ ] Code reviewed by myself
 
-- Risk:
-- Rollback:

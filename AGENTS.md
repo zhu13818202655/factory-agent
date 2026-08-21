@@ -9,12 +9,16 @@ reproducible answers grounded in validated API data.
 
 Use these sources in order when requirements conflict:
 
-1. A ready Story under `workitems/stories/`, especially `acceptance` and `non_goals`.
+1. The current numbered Story under `.github/story/`, including its scope, assumptions, and tasks.
 2. `SECURITY.md` and accepted permission/data-classification ADRs.
 3. OpenAPI and JSON Schema under `contracts/`.
-4. `ARCHITECTURE.md` and accepted ADRs under `docs/adr/`.
-5. This file and the nearest scoped `AGENTS.md`.
-6. Existing implementation patterns.
+4. Accepted requirements under `docs/product/`.
+5. `ARCHITECTURE.md` and accepted ADRs under `docs/adr/`.
+6. This file and the nearest scoped `AGENTS.md`.
+7. Existing implementation patterns.
+
+Files under `docs/requirements/source/` and `docs/reference/source-plans/` preserve provenance.
+They are not implementation authority and may contain stale assumptions.
 
 Do not silently resolve a conflict in a lower-priority source. Record the conflict and stop.
 
@@ -46,21 +50,19 @@ HTTP contracts. Read the nearest scoped `AGENTS.md` before modifying a governed 
 
 ## Story Workflow
 
-Before editing:
+1. Work through `.github/story/#1.md`, `#2.md`, and so on in numeric order.
+2. Read the whole current Story, then implement its checklist directly. Do not split it into child
+   work items or add dependency graphs, readiness states, risk scores, or acceptance sections.
+3. Mark a task `[x]` only after its implementation is complete. Leave unfinished tasks unchecked.
+4. When a customer API or business rule is unavailable, continue against the Canonical contract and
+   Mock MES, and keep the temporary assumption visible in the Story or relevant product document.
+5. After the Story checklist is complete, summarize the result for the user. The user reviews the
+   implementation manually and decides whether follow-up changes are needed.
 
-1. Read the ready Story and its dependencies.
-2. Verify required contracts and business definitions exist.
-3. Name one falsifiable hypothesis and the cheapest check that could disprove it.
-4. Make the smallest grounded edit and immediately run the closest focused validation.
-
-Do not modify a ready Story's `goal`, `acceptance`, `non_goals`, or risk level. When blocked,
-record the exact missing decision; never invent customer fields, formulas, or permissions.
-
-## Required Commands
+## Development Commands
 
 ```bash
 make bootstrap
-make policy
 make lint
 make typecheck
 make test-unit
@@ -71,8 +73,18 @@ make security
 make check
 ```
 
-Use these repository commands instead of private command sequences. Fix a broken command as
-part of the infrastructure Story.
+Run the repository commands relevant to the code changed. `make check` remains the convenient full
+code-quality check; it does not evaluate Story status or decide whether a Story is complete.
+
+## Git Commit Workflow
+
+Since code modifications are typically performed under the `root` user, but the Git repository for this project is owned by the `admin2` user, you must strictly follow this permission-switching process before every Git commit:
+
+1. Transfer ownership of all files in the current directory to the `admin2` user (e.g., by running `chown -R admin2:admin2 .`).
+2. Switch to the `admin2` user (e.g., by running `su admin2`).
+3. Execute `git add`, `git commit`, and `git push` within the `admin2` user context.
+
+**Note:** Never execute Git commit operations directly under the `root` user to avoid permission conflicts or abnormal repository states.
 
 ## Coding Standards
 
@@ -109,8 +121,8 @@ Stop for human approval before changing role/scope semantics, sensitive-field cl
 retention, outbound hosts, credentials, DuckDB filesystem access, destructive migrations,
 major dependencies, model providers, customer environments, or deployment state.
 
-## Definition of Done
+## Story Review
 
-A Story is complete only when its immutable acceptance commands pass, positive and negative
-security paths are tested, relevant contracts and ADRs are current, model changes include eval
-deltas, an independent reviewer has no unresolved high/medium findings, and `make check` passes.
+Stories have no machine status, score, risk assessment, or automated completion gate. Keep the
+checklist honest, record any remaining assumptions, run relevant engineering checks, and hand the
+result to the user for manual review.
