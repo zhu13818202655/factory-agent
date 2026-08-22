@@ -23,3 +23,7 @@ make dev
 
 Run the simulator separately with `make dev-mock`. Both APIs expose `GET /health/live` and
 `GET /health/ready`.
+
+For container-based local debugging, start PostgreSQL and Redis with `make middleware-up`, then
+start the complete application stack with `make compose-up`. See
+[deploy/compose/README.md](deploy/compose/README.md) for ports, databases, and cleanup commands.

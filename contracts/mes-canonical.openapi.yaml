@@ -1,0 +1,746 @@
+openapi: 3.1.0
+info:
+  title: Canonical MES API
+  version: 1.0.0
+  description: >-
+    Development contract for factory-agent and Mock MES. Customer endpoint shapes, field names,
+    enums, relationships, and business formulas are unconfirmed and must be mapped by an adapter.
+    All timestamps are UTC. Time filters use the temporary half-open interval [from, to).
+servers:
+  - url: http://mock-mes:8010
+    description: Deterministic development simulator
+security:
+  - bearerAuth: []
+paths:
+  /v1/identity/memberships:
+    get:
+      operationId: A1_listTenantMemberships
+      summary: List the authenticated user's authorized tenant memberships
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Authorized memberships only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantMembershipList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/organization-assignments:
+    get:
+      operationId: A2_listOrganizationAssignments
+      summary: List authorized employee-to-organization assignments
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/EmployeeIds'
+        - $ref: '#/components/parameters/DeptIds'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/OrganizationAssignmentListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/effective-scopes:
+    get:
+      operationId: A3_listEffectiveScopes
+      summary: Resolve scopes for the authenticated identity in the active tenant
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AsOf'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/EffectiveScopeListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/piecework-records:
+    get:
+      operationId: C1_listPieceworkRecords
+      summary: List authorized piece-rate production records
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/EmployeeIds'
+        - $ref: '#/components/parameters/DeptIds'
+        - $ref: '#/components/parameters/OrderIds'
+        - $ref: '#/components/parameters/StyleIds'
+        - $ref: '#/components/parameters/OperationIds'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/PieceworkRecordListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamInvalid'
+  /v1/employees:
+    get:
+      operationId: C2_listEmployees
+      summary: List authorized employee profiles
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/EmployeeIds'
+        - $ref: '#/components/parameters/DeptIds'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/EmployeeListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/departments:
+    get:
+      operationId: C3_listDepartments
+      summary: List authorized organization nodes
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/DeptIds'
+        - name: parent_ids
+          in: query
+          schema:
+            $ref: '#/components/schemas/IdBatch'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/DepartmentListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/orders:
+    get:
+      operationId: C4_listOrders
+      summary: List authorized production orders
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/OrderIds'
+        - $ref: '#/components/parameters/StyleIds'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/OrderListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/styles:
+    get:
+      operationId: C5_listStyles
+      summary: List authorized style records
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/StyleIds'
+        - name: keyword
+          in: query
+          schema:
+            type: string
+            maxLength: 100
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/StyleListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/operations:
+    get:
+      operationId: C6_listOperations
+      summary: List authorized operation and effective piece-rate definitions
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/OperationIds'
+        - $ref: '#/components/parameters/OrderIds'
+        - $ref: '#/components/parameters/StyleIds'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/OperationListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/production-plans:
+    get:
+      operationId: C7_listProductionPlans
+      summary: List authorized production plans
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/PlanIds'
+        - $ref: '#/components/parameters/DeptIds'
+        - $ref: '#/components/parameters/OrderIds'
+        - $ref: '#/components/parameters/StyleIds'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProductionPlanListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/payroll-settlements:
+    get:
+      operationId: C8_listPayrollSettlements
+      summary: List authorized payroll settlement records
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/AuthorizedEmployeeIds'
+        - $ref: '#/components/parameters/AuthorizedDeptIds'
+        - $ref: '#/components/parameters/SettlementIds'
+        - $ref: '#/components/parameters/EmployeeIds'
+        - $ref: '#/components/parameters/DeptIds'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          $ref: '#/components/responses/PayrollSettlementListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    TenantId:
+      name: X-Tenant-Id
+      in: header
+      required: true
+      description: Trusted active tenant selected from A1 memberships; never accepted from user text.
+      schema:
+        $ref: '#/components/schemas/StableId'
+    AuthorizedEmployeeIds:
+      name: authorized_employee_ids
+      in: query
+      required: true
+      description: Complete employee ID intersection derived from DataScope.
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    AuthorizedDeptIds:
+      name: authorized_dept_ids
+      in: query
+      required: true
+      description: Complete department ID intersection derived from DataScope.
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    EmployeeIds:
+      name: employee_ids
+      in: query
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    DeptIds:
+      name: dept_ids
+      in: query
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    OrderIds:
+      name: order_ids
+      in: query
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    StyleIds:
+      name: style_ids
+      in: query
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    OperationIds:
+      name: operation_ids
+      in: query
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    PlanIds:
+      name: plan_ids
+      in: query
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    SettlementIds:
+      name: settlement_ids
+      in: query
+      style: form
+      explode: false
+      schema:
+        $ref: '#/components/schemas/IdBatch'
+    From:
+      name: from
+      in: query
+      required: true
+      description: Inclusive UTC start of the temporary half-open interval.
+      schema:
+        type: string
+        format: date-time
+    AsOf:
+      name: as_of
+      in: query
+      required: true
+      description: UTC instant used to evaluate current membership or scope validity.
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      required: true
+      description: Exclusive UTC end of the temporary half-open interval.
+      schema:
+        type: string
+        format: date-time
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+  schemas:
+    StableId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+    IdBatch:
+      type: array
+      minItems: 1
+      maxItems: 200
+      uniqueItems: true
+      items:
+        $ref: '#/components/schemas/StableId'
+    Money:
+      type: string
+      pattern: '^-?[0-9]+(\.[0-9]{1,4})?$'
+    Quantity:
+      type: string
+      pattern: '^-?[0-9]+(\.[0-9]{1,4})?$'
+    PageEnvelope:
+      type: object
+      required: [items, total, page, size]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        size:
+          type: integer
+          minimum: 1
+          maximum: 200
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, trace_id]
+      properties:
+        code:
+          enum:
+            - invalid_request
+            - unauthenticated
+            - forbidden
+            - not_found
+            - rate_limited
+            - timeout
+            - upstream_unavailable
+            - upstream_invalid
+            - unsupported_operation
+            - internal_error
+        message:
+          type: string
+          maxLength: 300
+        trace_id:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+    TenantMembership:
+      type: object
+      additionalProperties: false
+      required: [membership_id, user_id, tenant_id, employee_id, roles, dept_ids, valid_from, valid_to]
+      properties:
+        membership_id: { $ref: '#/components/schemas/StableId' }
+        user_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        employee_id: { $ref: '#/components/schemas/StableId' }
+        roles:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            enum: [employee, manager, owner]
+        dept_ids:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/StableId' }
+        valid_from: { type: string, format: date-time }
+        valid_to: { type: [string, 'null'], format: date-time }
+    OrganizationAssignment:
+      type: object
+      additionalProperties: false
+      required: [assignment_id, tenant_id, employee_id, dept_id, valid_from, valid_to]
+      properties:
+        assignment_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        employee_id: { $ref: '#/components/schemas/StableId' }
+        dept_id: { $ref: '#/components/schemas/StableId' }
+        valid_from: { type: string, format: date-time }
+        valid_to: { type: [string, 'null'], format: date-time }
+    EffectiveScope:
+      type: object
+      additionalProperties: false
+      required: [scope_id, membership_id, tenant_id, employee_ids, dept_ids, evaluated_at]
+      properties:
+        scope_id: { $ref: '#/components/schemas/StableId' }
+        membership_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        employee_ids:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/StableId' }
+        dept_ids:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/StableId' }
+        evaluated_at: { type: string, format: date-time }
+    PieceworkRecord:
+      type: object
+      additionalProperties: false
+      required: [record_id, tenant_id, employee_id, dept_id, order_id, style_id, operation_id, work_at, completed_quantity, qualified_quantity, defective_quantity, unit_rate, amount, status]
+      properties:
+        record_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        employee_id: { $ref: '#/components/schemas/StableId' }
+        dept_id: { $ref: '#/components/schemas/StableId' }
+        order_id: { $ref: '#/components/schemas/StableId' }
+        style_id: { $ref: '#/components/schemas/StableId' }
+        operation_id: { $ref: '#/components/schemas/StableId' }
+        plan_id: { oneOf: [{ $ref: '#/components/schemas/StableId' }, { type: 'null' }] }
+        work_at: { type: string, format: date-time }
+        completed_quantity: { $ref: '#/components/schemas/Quantity' }
+        qualified_quantity: { $ref: '#/components/schemas/Quantity' }
+        defective_quantity: { $ref: '#/components/schemas/Quantity' }
+        unit_rate: { $ref: '#/components/schemas/Money' }
+        amount: { $ref: '#/components/schemas/Money' }
+        status: { enum: [reported, rework, unsettled, settled] }
+    Employee:
+      type: object
+      additionalProperties: false
+      required: [employee_id, tenant_id, employee_number, display_name, dept_ids, status, effective_from, effective_to]
+      properties:
+        employee_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        employee_number: { type: string, maxLength: 64 }
+        display_name: { type: string, maxLength: 100 }
+        dept_ids:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/StableId' }
+        status: { enum: [active, inactive] }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: [string, 'null'], format: date-time }
+    Department:
+      type: object
+      additionalProperties: false
+      required: [dept_id, tenant_id, parent_id, name, organization_type, effective_from, effective_to]
+      properties:
+        dept_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        parent_id: { oneOf: [{ $ref: '#/components/schemas/StableId' }, { type: 'null' }] }
+        name: { type: string, maxLength: 100 }
+        organization_type: { enum: [factory, workshop, group] }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: [string, 'null'], format: date-time }
+    Order:
+      type: object
+      additionalProperties: false
+      required: [order_id, tenant_id, order_number, style_id, responsible_dept_ids, ordered_at, due_at, ordered_quantity, completed_quantity, status]
+      properties:
+        order_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        order_number: { type: string, maxLength: 64 }
+        style_id: { $ref: '#/components/schemas/StableId' }
+        responsible_dept_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/StableId' }
+        ordered_at: { type: string, format: date-time }
+        due_at: { type: string, format: date-time }
+        ordered_quantity: { $ref: '#/components/schemas/Quantity' }
+        completed_quantity: { $ref: '#/components/schemas/Quantity' }
+        status: { enum: [planned, in_progress, completed, delayed, cancelled] }
+    Style:
+      type: object
+      additionalProperties: false
+      required: [style_id, tenant_id, style_number, name, effective_from, effective_to, status]
+      properties:
+        style_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        style_number: { type: string, maxLength: 64 }
+        name: { type: string, maxLength: 100 }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: [string, 'null'], format: date-time }
+        status: { enum: [active, archived] }
+    Operation:
+      type: object
+      additionalProperties: false
+      required: [operation_id, tenant_id, style_id, order_id, name, sequence, unit, unit_rate, effective_from, effective_to]
+      properties:
+        operation_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        style_id: { $ref: '#/components/schemas/StableId' }
+        order_id: { oneOf: [{ $ref: '#/components/schemas/StableId' }, { type: 'null' }] }
+        name: { type: string, maxLength: 100 }
+        sequence: { type: integer, minimum: 1 }
+        unit: { type: string, maxLength: 32 }
+        unit_rate: { $ref: '#/components/schemas/Money' }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: [string, 'null'], format: date-time }
+    ProductionPlan:
+      type: object
+      additionalProperties: false
+      required: [plan_id, tenant_id, dept_id, order_id, style_id, starts_at, ends_at, planned_quantity, completed_quantity, status]
+      properties:
+        plan_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        dept_id: { $ref: '#/components/schemas/StableId' }
+        order_id: { $ref: '#/components/schemas/StableId' }
+        style_id: { $ref: '#/components/schemas/StableId' }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        planned_quantity: { $ref: '#/components/schemas/Quantity' }
+        completed_quantity: { $ref: '#/components/schemas/Quantity' }
+        status: { enum: [planned, active, completed, delayed, cancelled] }
+    PayrollSettlement:
+      type: object
+      additionalProperties: false
+      required: [settlement_id, tenant_id, employee_id, dept_id, period_start, period_end, piece_count, gross_amount, status, published_at]
+      properties:
+        settlement_id: { $ref: '#/components/schemas/StableId' }
+        tenant_id: { $ref: '#/components/schemas/StableId' }
+        employee_id: { $ref: '#/components/schemas/StableId' }
+        dept_id: { $ref: '#/components/schemas/StableId' }
+        period_start: { type: string, format: date }
+        period_end: { type: string, format: date }
+        piece_count: { $ref: '#/components/schemas/Quantity' }
+        gross_amount: { $ref: '#/components/schemas/Money' }
+        status: { enum: [draft, published, paid] }
+        published_at: { type: [string, 'null'], format: date-time }
+    TenantMembershipList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/TenantMembership' } }
+    OrganizationAssignmentList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/OrganizationAssignment' } }
+    EffectiveScopeList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/EffectiveScope' } }
+    PieceworkRecordList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/PieceworkRecord' } }
+    EmployeeList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Employee' } }
+    DepartmentList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Department' } }
+    OrderList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Order' } }
+    StyleList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Style' } }
+    OperationList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Operation' } }
+    ProductionPlanList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/ProductionPlan' } }
+    PayrollSettlementList:
+      allOf:
+        - $ref: '#/components/schemas/PageEnvelope'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/PayrollSettlement' } }
+  responses:
+    OrganizationAssignmentListResponse:
+      description: Filtered authorized assignments sorted by assignment_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/OrganizationAssignmentList' }
+    EffectiveScopeListResponse:
+      description: Current scopes; recomputed after each active-tenant selection
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/EffectiveScopeList' }
+    PieceworkRecordListResponse:
+      description: Filtered authorized records sorted by work_at then record_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PieceworkRecordList' }
+    EmployeeListResponse:
+      description: Filtered authorized employees sorted by employee_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/EmployeeList' }
+    DepartmentListResponse:
+      description: Filtered authorized departments sorted by dept_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/DepartmentList' }
+    OrderListResponse:
+      description: Filtered authorized orders sorted by ordered_at then order_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/OrderList' }
+    StyleListResponse:
+      description: Filtered authorized styles sorted by style_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StyleList' }
+    OperationListResponse:
+      description: Filtered authorized operations sorted by style_id, sequence, operation_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/OperationList' }
+    ProductionPlanListResponse:
+      description: Filtered authorized plans sorted by starts_at then plan_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ProductionPlanList' }
+    PayrollSettlementListResponse:
+      description: Filtered authorized settlements sorted by period_start then settlement_id
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PayrollSettlementList' }
+    InvalidRequest:
+      description: Invalid filter, ID, time range, or pagination
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthenticated:
+      description: Missing or invalid service credential
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Tenant or effective scope denied; no business data was read
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Bounded rate limit response
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 0 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UpstreamInvalid:
+      description: Upstream payload failed Canonical validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-import os
-
 import uvicorn
+
+from mock_mes.config import get_settings
 
 
 def main() -> None:
+    settings = get_settings()
     uvicorn.run(
         "mock_mes.api.server:create_app",
         factory=True,
-        host=os.getenv("MOCK_MES_HOST", "127.0.0.1"),
-        port=int(os.getenv("MOCK_MES_PORT", "8010")),
+        host=settings.host,
+        port=settings.port,
     )
 
 

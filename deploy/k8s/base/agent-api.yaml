@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-api
+  template:
+    metadata:
+      labels:
+        app: agent-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: agent-api
+          image: factory-agent:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: factory-agent-config
+          env:
+            - name: FACTORY_AGENT_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: factory-agent-secrets
+                  key: FACTORY_AGENT_POSTGRES_URL
+            - name: FACTORY_AGENT_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: factory-agent-secrets
+                  key: FACTORY_AGENT_REDIS_URL
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-api
+spec:
+  selector:
+    app: agent-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

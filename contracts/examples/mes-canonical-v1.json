@@ -1,0 +1,262 @@
+{
+  "A1_listTenantMemberships": {
+    "request": {"headers": {}, "query": {"as_of": "2026-08-21T08:00:00Z", "page": 1, "size": 50}},
+    "response": {
+      "items": [
+        {
+          "membership_id": "membership-a",
+          "user_id": "user-a",
+          "tenant_id": "tenant-a",
+          "employee_id": "employee-a1",
+          "roles": ["employee"],
+          "dept_ids": ["group-a1"],
+          "valid_from": "2026-01-01T00:00:00Z",
+          "valid_to": null
+        },
+        {
+          "membership_id": "membership-b",
+          "user_id": "user-a",
+          "tenant_id": "tenant-b",
+          "employee_id": "employee-b7",
+          "roles": ["manager"],
+          "dept_ids": ["workshop-b1"],
+          "valid_from": "2026-02-01T00:00:00Z",
+          "valid_to": null
+        }
+      ],
+      "total": 2,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "A2_listOrganizationAssignments": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {
+        "authorized_employee_ids": ["employee-a1"],
+        "authorized_dept_ids": ["group-a1"],
+        "from": "2026-08-01T00:00:00Z",
+        "to": "2026-09-01T00:00:00Z",
+        "page": 1,
+        "size": 50
+      }
+    },
+    "response": {
+      "items": [{
+        "assignment_id": "assignment-a1",
+        "tenant_id": "tenant-a",
+        "employee_id": "employee-a1",
+        "dept_id": "group-a1",
+        "valid_from": "2026-08-01T00:00:00Z",
+        "valid_to": null
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "A3_listEffectiveScopes": {
+    "request": {"headers": {"X-Tenant-Id": "tenant-a"}, "query": {"as_of": "2026-08-21T08:00:00Z", "page": 1, "size": 50}},
+    "response": {
+      "items": [{
+        "scope_id": "scope-a1",
+        "membership_id": "membership-a",
+        "tenant_id": "tenant-a",
+        "employee_ids": ["employee-a1"],
+        "dept_ids": ["group-a1"],
+        "evaluated_at": "2026-08-21T08:00:00Z"
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "C1_listPieceworkRecords": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {
+        "authorized_employee_ids": ["employee-a1"],
+        "authorized_dept_ids": ["group-a1"],
+        "from": "2026-08-01T00:00:00Z",
+        "to": "2026-09-01T00:00:00Z",
+        "page": 1,
+        "size": 50
+      }
+    },
+    "response": {
+      "items": [{
+        "record_id": "piecework-a1",
+        "tenant_id": "tenant-a",
+        "employee_id": "employee-a1",
+        "dept_id": "group-a1",
+        "order_id": "order-a1",
+        "style_id": "style-a1",
+        "operation_id": "operation-a1",
+        "plan_id": "plan-a1",
+        "work_at": "2026-08-20T10:00:00Z",
+        "completed_quantity": "12",
+        "qualified_quantity": "11",
+        "defective_quantity": "1",
+        "unit_rate": "1.2500",
+        "amount": "15.0000",
+        "status": "reported"
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "C2_listEmployees": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {"authorized_employee_ids": ["employee-a1"], "authorized_dept_ids": ["group-a1"], "from": "2026-08-01T00:00:00Z", "to": "2026-09-01T00:00:00Z", "page": 1, "size": 50}
+    },
+    "response": {
+      "items": [{
+        "employee_id": "employee-a1",
+        "tenant_id": "tenant-a",
+        "employee_number": "SYN-001",
+        "display_name": "Synthetic Worker A",
+        "dept_ids": ["group-a1"],
+        "status": "active",
+        "effective_from": "2026-01-01T00:00:00Z",
+        "effective_to": null
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "C3_listDepartments": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {"authorized_employee_ids": ["employee-a1"], "authorized_dept_ids": ["group-a1"], "from": "2026-08-01T00:00:00Z", "to": "2026-09-01T00:00:00Z", "page": 1, "size": 50}
+    },
+    "response": {
+      "items": [{
+        "dept_id": "group-a1",
+        "tenant_id": "tenant-a",
+        "parent_id": "workshop-a1",
+        "name": "Synthetic Group A",
+        "organization_type": "group",
+        "effective_from": "2026-01-01T00:00:00Z",
+        "effective_to": null
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "C4_listOrders": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {"authorized_employee_ids": ["employee-a1"], "authorized_dept_ids": ["group-a1"], "from": "2026-08-01T00:00:00Z", "to": "2026-09-01T00:00:00Z", "page": 1, "size": 50}
+    },
+    "response": {
+      "items": [{
+        "order_id": "order-a1",
+        "tenant_id": "tenant-a",
+        "order_number": "SYN-ORDER-001",
+        "style_id": "style-a1",
+        "responsible_dept_ids": ["group-a1"],
+        "ordered_at": "2026-08-01T00:00:00Z",
+        "due_at": "2026-08-31T00:00:00Z",
+        "ordered_quantity": "100",
+        "completed_quantity": "12",
+        "status": "in_progress"
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "C5_listStyles": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {"authorized_employee_ids": ["employee-a1"], "authorized_dept_ids": ["group-a1"], "from": "2026-08-01T00:00:00Z", "to": "2026-09-01T00:00:00Z", "page": 1, "size": 50}
+    },
+    "response": {
+      "items": [{
+        "style_id": "style-a1",
+        "tenant_id": "tenant-a",
+        "style_number": "SYN-STYLE-001",
+        "name": "Synthetic Style A",
+        "effective_from": "2026-01-01T00:00:00Z",
+        "effective_to": null,
+        "status": "active"
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "C6_listOperations": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {"authorized_employee_ids": ["employee-a1"], "authorized_dept_ids": ["group-a1"], "from": "2026-08-01T00:00:00Z", "to": "2026-09-01T00:00:00Z", "page": 1, "size": 50}
+    },
+    "response": {
+      "items": [{
+        "operation_id": "operation-a1",
+        "tenant_id": "tenant-a",
+        "style_id": "style-a1",
+        "order_id": "order-a1",
+        "name": "Synthetic Operation A",
+        "sequence": 1,
+        "unit": "piece",
+        "unit_rate": "1.2500",
+        "effective_from": "2026-01-01T00:00:00Z",
+        "effective_to": null
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "C7_listProductionPlans": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {"authorized_employee_ids": ["employee-a1"], "authorized_dept_ids": ["group-a1"], "from": "2026-08-01T00:00:00Z", "to": "2026-09-01T00:00:00Z", "page": 1, "size": 50}
+    },
+    "response": {
+      "items": [{
+        "plan_id": "plan-a1",
+        "tenant_id": "tenant-a",
+        "dept_id": "group-a1",
+        "order_id": "order-a1",
+        "style_id": "style-a1",
+        "starts_at": "2026-08-01T00:00:00Z",
+        "ends_at": "2026-08-31T00:00:00Z",
+        "planned_quantity": "100",
+        "completed_quantity": "12",
+        "status": "active"
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  },
+  "C8_listPayrollSettlements": {
+    "request": {
+      "headers": {"X-Tenant-Id": "tenant-a"},
+      "query": {"authorized_employee_ids": ["employee-a1"], "authorized_dept_ids": ["group-a1"], "from": "2026-08-01T00:00:00Z", "to": "2026-09-01T00:00:00Z", "page": 1, "size": 50}
+    },
+    "response": {
+      "items": [{
+        "settlement_id": "settlement-a1",
+        "tenant_id": "tenant-a",
+        "employee_id": "employee-a1",
+        "dept_id": "group-a1",
+        "period_start": "2026-08-01",
+        "period_end": "2026-08-31",
+        "piece_count": "12",
+        "gross_amount": "15.0000",
+        "status": "published",
+        "published_at": "2026-09-02T00:00:00Z"
+      }],
+      "total": 1,
+      "page": 1,
+      "size": 50
+    }
+  }
+}

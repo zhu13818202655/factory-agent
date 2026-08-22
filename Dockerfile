@@ -9,7 +9,9 @@ WORKDIR /app
 RUN pip install --no-cache-dir uv==0.9.15
 
 COPY pyproject.toml uv.lock README.md ./
+# uv resolves the whole workspace lock; copy member metadata only, not their source.
 COPY mock-mes/pyproject.toml mock-mes/README.md ./mock-mes/
+COPY usage-admin/pyproject.toml usage-admin/README.md ./usage-admin/
 COPY src ./src
 
 RUN uv sync --frozen --no-dev --package factory-agent --no-editable
@@ -25,6 +27,8 @@ WORKDIR /app
 RUN useradd --create-home --uid 10001 app
 
 COPY --from=builder /app/.venv /app/.venv
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 
 USER app
 

@@ -28,3 +28,5 @@ async def test_readiness_reports_service_version() -> None:
 
     assert response.status_code == 200
     assert response.json()["service"] == "factory-agent"
+    assert response.json()["status"] == "degraded"
+    assert response.json()["dependencies"]["mes"] == "not_configured"

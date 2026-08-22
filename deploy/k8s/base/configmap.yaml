@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: factory-agent-config
+data:
+  FACTORY_AGENT_ENV: production
+  FACTORY_AGENT_HOST: 0.0.0.0
+  FACTORY_AGENT_PORT: "8000"
+  FACTORY_AGENT_CANONICAL_MES_BASE_URL: https://mes.example.invalid
+  USAGE_ADMIN_ENVIRONMENT: production
+  USAGE_ADMIN_HOST: 0.0.0.0
+  USAGE_ADMIN_PORT: "8020"
