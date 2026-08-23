@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import NoReturn, override
 
-from factory_agent.domain import InteractionId
+from factory_agent.domain import InteractionId, TenantMembership
 from factory_agent.ports.cache import CacheStore
 from factory_agent.ports.contracts import (
     ArtifactStore,
@@ -16,11 +16,20 @@ from factory_agent.ports.contracts import (
     ModelResponse,
     SessionRecord,
     SessionRepository,
+    TrustedCredential,
 )
 
 
 class DependencyNotConfiguredError(RuntimeError):
     pass
+
+
+class MembershipNotFoundError(LookupError):
+    """No active membership exists for the trusted credential pair."""
+
+
+class AmbiguousMembershipError(RuntimeError):
+    """The credential pair matched multiple memberships; a data error."""
 
 
 def _raise(dependency: str) -> NoReturn:
@@ -31,6 +40,11 @@ class NotConfiguredIdentityProvider(IdentityProvider):
     @override
     async def authenticate(self, credential: str) -> AuthenticatedIdentity:
         _raise("identity provider")
+
+
+class NotConfiguredMembershipResolver:
+    async def resolve(self, credential: TrustedCredential, as_of: datetime) -> TenantMembership:
+        _raise("membership resolver")
 
 
 class NotConfiguredMesDataSource(MesDataSource[object, object]):

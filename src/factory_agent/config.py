@@ -19,6 +19,9 @@ class FactoryAgentSettings(BaseSettings):
     redis_url: RedisDsn | None = None
     artifact_endpoint: AnyHttpUrl | None = None
     artifact_bucket: str | None = None
+    log_level: str = "INFO"
+    log_format: Literal["json", "console"] = "json"
+    request_id_header: str = "X-Request-ID"
 
 
 @lru_cache

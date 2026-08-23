@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, TypeVar
 
-from factory_agent.domain import InteractionId, TenantId
+from factory_agent.domain import InteractionId, TenantId, TenantMembership, UserId
 
 MesRequestT = TypeVar("MesRequestT", contravariant=True)
 MesResponseT = TypeVar("MesResponseT", covariant=True)
@@ -13,6 +13,14 @@ MesResponseT = TypeVar("MesResponseT", covariant=True)
 @dataclass(frozen=True, slots=True)
 class AuthenticatedIdentity:
     subject_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedCredential:
+    """Trusted credential pair that uniquely locates one tenant membership."""
+
+    tenant_id: TenantId
+    user_id: UserId
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +44,21 @@ class SessionRecord:
 
 class IdentityProvider(Protocol):
     async def authenticate(self, credential: str) -> AuthenticatedIdentity: ...
+
+
+class MembershipResolver(Protocol):
+    """Resolve the unique authorized membership for a trusted credential pair.
+
+    Implementations must raise ``MembershipNotFoundError`` when no active
+    membership exists and ``AmbiguousMembershipError`` when the credential pair
+    matches more than one membership (a data error, never silently narrowed).
+    """
+
+    async def resolve(
+        self,
+        credential: TrustedCredential,
+        as_of: datetime,
+    ) -> TenantMembership: ...
 
 
 class MesDataSource(Protocol[MesRequestT, MesResponseT]):

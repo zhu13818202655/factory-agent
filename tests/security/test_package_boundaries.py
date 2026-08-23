@@ -6,7 +6,7 @@ PRODUCT_ROOT = REPOSITORY_ROOT / "src" / "factory_agent"
 USAGE_ADMIN_ROOT = REPOSITORY_ROOT / "usage-admin" / "src" / "usage_admin"
 
 ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
-    "api": {"application", "bootstrap", "config", "domain"},
+    "api": {"application", "bootstrap", "config", "domain", "observability"},
     "application": {"domain", "ports"},
     "domain": set(),
     "ports": {"domain"},
@@ -15,7 +15,7 @@ ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     "persistence": {"config", "domain", "ports"},
     "llm": {"domain", "ports"},
     "export": {"domain", "ports"},
-    "observability": {"domain", "ports"},
+    "observability": {"config", "domain", "ports"},
 }
 
 

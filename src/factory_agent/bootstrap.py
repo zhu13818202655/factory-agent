@@ -6,9 +6,15 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from factory_agent.application.authorization import (
+    AuthorizationService,
+    FixedScopeVersionAssigner,
+)
 from factory_agent.application.capabilities import CapabilityRegistry
 from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.canonical import CanonicalMesAdapter
+from factory_agent.domain import DeptId, EmployeeId, TenantId, TenantMembership
+from factory_agent.observability.audit import AuditSink, InMemoryAuditSink
 from factory_agent.ports import (
     ArtifactStore,
     Clock,
@@ -16,8 +22,10 @@ from factory_agent.ports import (
     MesDataSource,
     ModelGateway,
     SessionRepository,
+    TrustedCredential,
 )
 from factory_agent.ports.not_configured import (
+    DependencyNotConfiguredError,
     NotConfiguredArtifactStore,
     NotConfiguredIdentityProvider,
     NotConfiguredMesDataSource,
@@ -39,6 +47,8 @@ class DependencyOverrides:
     sessions: SessionRepository | None = None
     artifacts: ArtifactStore | None = None
     clock: Clock | None = None
+    authorization: AuthorizationService | None = None
+    audit: AuditSink | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +61,8 @@ class ApplicationContainer:
     sessions: SessionRepository
     artifacts: ArtifactStore
     clock: Clock
+    authorization: AuthorizationService
+    audit: AuditSink
     readiness: dict[str, str] = field(default_factory=lambda: {})
 
 
@@ -87,5 +99,38 @@ def build_container(
         sessions=supplied.sessions or NotConfiguredSessionRepository(),
         artifacts=supplied.artifacts or NotConfiguredArtifactStore(),
         clock=supplied.clock or SystemClock(),
+        authorization=supplied.authorization
+        or AuthorizationService(
+            memberships=_UnresolvedMemberships(),
+            assignments=_UnresolvedAssignments(),
+            scopes=_UnresolvedScopes(),
+            versions=FixedScopeVersionAssigner(),
+        ),
+        audit=supplied.audit or InMemoryAuditSink(),
         readiness=readiness,
     )
+
+
+class _UnresolvedMemberships:
+    """Placeholder until the Canonical A1 adapter is wired in Story 3."""
+
+    async def resolve(self, credential: TrustedCredential, as_of: datetime) -> TenantMembership:
+        raise DependencyNotConfiguredError("membership resolver is not configured")
+
+
+class _UnresolvedAssignments:
+    async def list_assignments(
+        self,
+        tenant_id: TenantId,
+        employee_id: EmployeeId,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[tuple[DeptId, ...], ...]:
+        raise DependencyNotConfiguredError("organization source is not configured")
+
+
+class _UnresolvedScopes:
+    async def list_scopes(
+        self, tenant_id: TenantId, membership_id: str, as_of: datetime
+    ) -> tuple[tuple[frozenset[EmployeeId], frozenset[DeptId]], ...]:
+        raise DependencyNotConfiguredError("scope source is not configured")

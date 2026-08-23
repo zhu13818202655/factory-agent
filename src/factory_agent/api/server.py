@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Literal, cast
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request, Response
 from pydantic import BaseModel
 
 from factory_agent import __version__
 from factory_agent.bootstrap import ApplicationContainer, DependencyOverrides, build_container
 from factory_agent.config import FactoryAgentSettings, get_settings
+from factory_agent.observability.context import (
+    accept_request_id,
+    bind_request_id,
+)
 
 
 class HealthResponse(BaseModel):
@@ -41,7 +46,24 @@ def create_app(
     settings: FactoryAgentSettings | None = None,
     overrides: DependencyOverrides | None = None,
 ) -> FastAPI:
+    resolved_settings = settings or get_settings()
     app = FastAPI(title="factory-agent", version=__version__)
-    app.state.container = build_container(settings or get_settings(), overrides)
+    app.state.container = build_container(resolved_settings, overrides)
+    app.state.settings = resolved_settings
+
+    header_name = resolved_settings.request_id_header
+
+    async def request_id_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        inbound = request.headers.get(header_name)
+        request_id = accept_request_id(inbound)
+        bind_request_id(request_id)
+        response = await call_next(request)
+        response.headers[header_name] = request_id
+        return response
+
+    app.middleware("http")(request_id_middleware)
+
     app.include_router(health_router)
     return app

@@ -12,12 +12,13 @@ from factory_agent.ports.contracts import (
     ModelResponse,
     SessionRecord,
     SessionRepository,
+    TrustedCredential,
 )
 
 __all__ = [
     "ArtifactStore",
-    "CacheStore",
     "AuthenticatedIdentity",
+    "CacheStore",
     "Clock",
     "IdentityProvider",
     "MesDataSource",
@@ -26,4 +27,5 @@ __all__ = [
     "ModelResponse",
     "SessionRecord",
     "SessionRepository",
+    "TrustedCredential",
 ]
