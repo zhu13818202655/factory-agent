@@ -25,15 +25,17 @@ piecework totals. With a development/test PostgreSQL URL it resets tables create
 uv run --package mock-mes mock-mes-migrate upgrade head
 ```
 
-The default `small` dataset includes synthetic multi-tenant and single-tenant identities, same-name
-employees, one employee in multiple groups, a mid-month transfer, cross-month work, unsettled and
-rework records, defects, parallel operations, a zero plan, and a delayed order.
+The default `small` dataset includes synthetic single-tenant identities (one user per tenant),
+same-name employees, one employee in multiple groups, a mid-month transfer, cross-month work,
+unsettled and rework records, defects, parallel operations, a zero plan, and a delayed order.
 
 ## Synthetic identity and faults
 
-Canonical endpoints use synthetic bearer subjects `multi-tenant`, `single-tenant`, and `manager-a`.
-The active `X-Tenant-Id` and supplied authorized ID batches are checked against the deterministic
-server-side scope. These tokens and role mappings are Mock-only behavior, not customer auth rules.
+Canonical endpoints use synthetic bearer subjects `tenant-a-user`, `tenant-b-user`,
+`single-tenant`, and `manager-a`. Each subject resolves to exactly one tenant membership; the
+credential pair `(tenant_id, user_id)` is unique. The active `X-Tenant-Id` and supplied authorized
+ID batches are checked against the deterministic server-side scope. These tokens and role mappings
+are Mock-only behavior, not customer auth rules.
 
 For one request, set `X-Mock-Fault` to `latency`, `429`, `5xx`, `duplicate_page`, `missing_page`,
 `wrong_total`, `null`, or `field_drift`. `X-Mock-Latency-Ms` is bounded to 2000 ms. Faults affect

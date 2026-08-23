@@ -10,7 +10,9 @@ When customer APIs or business rules are unavailable, continue with the Canonica
 Mock MES. Record temporary assumptions clearly and do not present them as confirmed customer
 behavior. Never invent permission, tenant-isolation, or sensitive-data rules.
 
-Stories are simple human-reviewed checklists, not machine-evaluated work items. Do not add status
-fields, dependency graphs, risk scores, acceptance sections, or completion ratings. Run the
-engineering checks relevant to the code changed, then summarize the completed work and remaining
-assumptions for the user's review.
+Stories use human-reviewed checklists and may include nested implementation items, ADO-style state,
+dependencies, acceptance criteria, risks/open decisions, Technology Notes, and Release Notes. These
+sections support implementation and review; they are not machine-evaluated gates and never override
+checklist evidence. Mark a child item complete only after its implementation is finished and a parent
+item complete only after all of its children are finished. Run the engineering checks relevant to the
+code changed, then summarize the completed work and remaining assumptions for the user's review.

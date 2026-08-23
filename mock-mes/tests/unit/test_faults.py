@@ -8,7 +8,7 @@ from mock_mes.api.server import create_app
 
 PATH = "/v1/piecework-records"
 HEADERS = {
-    "Authorization": "Bearer multi-tenant",
+    "Authorization": "Bearer tenant-a-user",
     "X-Tenant-Id": "tenant-a",
 }
 QUERY = {

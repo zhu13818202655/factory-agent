@@ -10,7 +10,7 @@ def test_small_dataset_hash_and_aggregates_are_stable() -> None:
     second = build_dataset("small", 20260821)
 
     assert first.digest() == second.digest()
-    assert first.digest() == "1c9c30427aeee08e0e6c6f1091aaa24b0735bba7a8054ce465e7644fb520d164"
+    assert first.digest() == "60b69b5c9b9d4c688d66623b44161849b07a6f9abb9c022819542b626445a5f1"
     assert first.piecework_totals("tenant-a") == (Decimal("16"), Decimal("18.5000"))
 
 
@@ -27,12 +27,17 @@ def test_standard_dataset_is_seeded_and_extends_small() -> None:
 
 def test_identity_and_organization_edge_cases_are_present() -> None:
     dataset = build_dataset()
-    memberships = dataset.memberships_by_subject["multi-tenant"]
+    memberships = dataset.memberships_by_subject
     employees = dataset.resources["employees"]
     assignments = dataset.resources["organization_assignments"]
 
-    assert {item["tenant_id"] for item in memberships} == {"tenant-a", "tenant-b"}
-    assert len({item["employee_id"] for item in memberships}) == 2
+    # One user belongs to exactly one tenant; each subject resolves to a single membership.
+    assert all(len(items) == 1 for items in memberships.values())
+    assert {items[0]["tenant_id"] for items in memberships.values()} >= {"tenant-a", "tenant-b"}
+    assert len({items[0]["employee_id"] for items in memberships.values()}) == len(memberships)
+    assert all(
+        items[0]["role"] in {"employee", "manager", "owner"} for items in memberships.values()
+    )
     same_name = [item for item in employees if item["display_name"] == "Same Synthetic Name"]
     assert len(same_name) == 2
     assert next(item for item in employees if item["employee_id"] == "employee-a2")["dept_ids"] == [

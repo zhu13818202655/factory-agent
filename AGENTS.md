@@ -57,12 +57,19 @@ governed directory.
 ## Story Workflow
 
 1. Work through `.github/story/#1.md`, `#2.md`, and so on in numeric order.
-2. Read the whole current Story, then implement its checklist directly. Do not split it into child
-   work items or add dependency graphs, readiness states, risk scores, or acceptance sections.
-3. Mark a task `[x]` only after its implementation is complete. Leave unfinished tasks unchecked.
-4. When a customer API or business rule is unavailable, continue against the Canonical contract and
+2. Read the whole current Story, then implement its checklist directly. A Story may group work in
+   parent and child checklist items and may include ADO-style state, dependencies, acceptance
+   criteria, risks/open decisions, Technology Notes, and Release Notes when they improve execution
+   or review.
+3. Checklist evidence remains the completion source of truth. Mark a child item `[x]` only after its
+   implementation is complete, and mark a parent item `[x]` only after all of its child items are
+   complete. Leave unfinished items unchecked.
+4. When a Story uses ADO-style state, use `New -> Active -> Resolved -> Closed`: implementation starts
+   at `Active`, reaches `Resolved` only after its checklist and relevant engineering checks are
+   complete, and reaches `Closed` only after human review. State never overrides checklist evidence.
+5. When a customer API or business rule is unavailable, continue against the Canonical contract and
    Mock MES, and keep the temporary assumption visible in the Story or relevant product document.
-5. After the Story checklist is complete, summarize the result for the user. The user reviews the
+6. After the Story checklist is complete, summarize the result for the user. The user reviews the
    implementation manually and decides whether follow-up changes are needed.
 
 ## Development Commands

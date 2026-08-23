@@ -189,16 +189,19 @@ def page(
 
 
 @router.get("/identity/memberships")
-async def list_memberships(
+async def get_membership(
     request: Request,
     authorization: BearerHeader,
     as_of: datetime,
-    page_number: Page = 1,
-    size: Size = 50,
 ) -> dict[str, object]:
     dataset = dataset_from(request)
     subject = subject_from(authorization, dataset)
-    return page(active_memberships(dataset, subject, as_of), page_number, size, request)
+    active = active_memberships(dataset, subject, as_of)
+    if not active:
+        raise CanonicalError(404, "not_found", "no active membership for the credential pair")
+    if len(active) > 1:
+        raise CanonicalError(409, "invalid_request", "credential must resolve to one membership")
+    return deepcopy(active[0])
 
 
 @router.get("/effective-scopes")

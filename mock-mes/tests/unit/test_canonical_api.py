@@ -11,7 +11,7 @@ COMMON_QUERY = {
     "to": "2026-09-01T00:00:00Z",
 }
 COMMON_HEADERS = {
-    "Authorization": "Bearer multi-tenant",
+    "Authorization": "Bearer tenant-a-user",
     "X-Tenant-Id": "tenant-a",
 }
 
@@ -32,7 +32,7 @@ async def test_scope_ids_cannot_exceed_server_effective_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_active_tenant_switch_returns_fresh_tenant_local_scope() -> None:
+async def test_each_credential_resolves_unique_tenant_local_scope() -> None:
     transport = ASGITransport(app=create_app())
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         tenant_a = await client.get(
@@ -42,7 +42,7 @@ async def test_active_tenant_switch_returns_fresh_tenant_local_scope() -> None:
         )
         tenant_b = await client.get(
             "/v1/effective-scopes",
-            headers={"Authorization": "Bearer multi-tenant", "X-Tenant-Id": "tenant-b"},
+            headers={"Authorization": "Bearer tenant-b-user", "X-Tenant-Id": "tenant-b"},
             params={"as_of": "2026-08-21T08:00:00Z"},
         )
 
@@ -51,6 +51,38 @@ async def test_active_tenant_switch_returns_fresh_tenant_local_scope() -> None:
     assert (
         tenant_a.json()["items"][0]["employee_ids"] != tenant_b.json()["items"][0]["employee_ids"]
     )
+
+
+@pytest.mark.asyncio
+async def test_membership_returns_single_object_per_credential() -> None:
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/v1/identity/memberships",
+            headers=COMMON_HEADERS,
+            params={"as_of": "2026-08-21T08:00:00Z"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["user_id"] == "user-a"
+    assert payload["tenant_id"] == "tenant-a"
+    assert payload["role"] in {"employee", "manager", "owner"}
+    assert "items" not in payload
+
+
+@pytest.mark.asyncio
+async def test_credential_cannot_access_other_tenant_membership_scope() -> None:
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        cross_tenant = await client.get(
+            "/v1/effective-scopes",
+            headers={"Authorization": "Bearer tenant-a-user", "X-Tenant-Id": "tenant-b"},
+            params={"as_of": "2026-08-21T08:00:00Z"},
+        )
+
+    assert cross_tenant.status_code == 403
+    assert cross_tenant.json()["code"] == "forbidden"
 
 
 @pytest.mark.asyncio

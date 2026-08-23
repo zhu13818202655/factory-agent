@@ -1,32 +1,15 @@
 {
-  "A1_listTenantMemberships": {
-    "request": {"headers": {}, "query": {"as_of": "2026-08-21T08:00:00Z", "page": 1, "size": 50}},
+  "A1_getTenantMembership": {
+    "request": {"headers": {}, "query": {"as_of": "2026-08-21T08:00:00Z"}},
     "response": {
-      "items": [
-        {
-          "membership_id": "membership-a",
-          "user_id": "user-a",
-          "tenant_id": "tenant-a",
-          "employee_id": "employee-a1",
-          "roles": ["employee"],
-          "dept_ids": ["group-a1"],
-          "valid_from": "2026-01-01T00:00:00Z",
-          "valid_to": null
-        },
-        {
-          "membership_id": "membership-b",
-          "user_id": "user-a",
-          "tenant_id": "tenant-b",
-          "employee_id": "employee-b7",
-          "roles": ["manager"],
-          "dept_ids": ["workshop-b1"],
-          "valid_from": "2026-02-01T00:00:00Z",
-          "valid_to": null
-        }
-      ],
-      "total": 2,
-      "page": 1,
-      "size": 50
+      "membership_id": "membership-a",
+      "user_id": "user-a",
+      "tenant_id": "tenant-a",
+      "employee_id": "employee-a1",
+      "role": "employee",
+      "dept_ids": ["group-a1"],
+      "valid_from": "2026-01-01T00:00:00Z",
+      "valid_to": null
     }
   },
   "A2_listOrganizationAssignments": {

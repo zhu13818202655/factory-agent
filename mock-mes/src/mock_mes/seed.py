@@ -68,7 +68,7 @@ def membership(
     user_id: str,
     tenant_id: str,
     employee_id: str,
-    roles: list[str],
+    role: str,
     dept_ids: list[str],
 ) -> Record:
     return {
@@ -76,7 +76,7 @@ def membership(
         "user_id": user_id,
         "tenant_id": tenant_id,
         "employee_id": employee_id,
-        "roles": roles,
+        "role": role,
         "dept_ids": dept_ids,
         "valid_from": "2026-01-01T00:00:00Z",
         "valid_to": None,
@@ -89,18 +89,20 @@ def build_dataset(
     virtual_now: datetime = datetime(2026, 8, 21, 8, tzinfo=timezone.utc),
 ) -> Dataset:
     memberships = {
-        "multi-tenant": [
+        "tenant-a-user": [
             membership(
-                "membership-a", "user-multi", "tenant-a", "employee-a1", ["employee"], ["group-a1"]
-            ),
+                "membership-a", "user-a", "tenant-a", "employee-a1", "employee", ["group-a1"]
+            )
+        ],
+        "tenant-b-user": [
             membership(
                 "membership-b",
-                "user-multi",
+                "user-b",
                 "tenant-b",
                 "employee-b1",
-                ["manager"],
+                "manager",
                 ["workshop-b1"],
-            ),
+            )
         ],
         "single-tenant": [
             membership(
@@ -108,7 +110,7 @@ def build_dataset(
                 "user-single",
                 "tenant-a",
                 "employee-a2",
-                ["employee"],
+                "employee",
                 ["group-a1", "group-a2"],
             )
         ],
@@ -118,13 +120,13 @@ def build_dataset(
                 "user-manager",
                 "tenant-a",
                 "employee-a9",
-                ["manager"],
+                "manager",
                 ["workshop-a1"],
             )
         ],
     }
     scopes: dict[str, dict[str, list[Record]]] = {
-        "multi-tenant": {
+        "tenant-a-user": {
             "tenant-a": [
                 {
                     "scope_id": "scope-a1",
@@ -134,7 +136,9 @@ def build_dataset(
                     "dept_ids": ["group-a1"],
                     "evaluated_at": virtual_now.isoformat().replace("+00:00", "Z"),
                 }
-            ],
+            ]
+        },
+        "tenant-b-user": {
             "tenant-b": [
                 {
                     "scope_id": "scope-b1",
@@ -144,7 +148,7 @@ def build_dataset(
                     "dept_ids": ["workshop-b1", "group-b1"],
                     "evaluated_at": virtual_now.isoformat().replace("+00:00", "Z"),
                 }
-            ],
+            ]
         },
         "single-tenant": {
             "tenant-a": [

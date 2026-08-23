@@ -14,21 +14,25 @@ security:
 paths:
   /v1/identity/memberships:
     get:
-      operationId: A1_listTenantMemberships
-      summary: List the authenticated user's authorized tenant memberships
+      operationId: A1_getTenantMembership
+      summary: Resolve the unique tenant membership for the trusted (tenant_id, user_id) credential pair
+      description: >-
+        One user belongs to exactly one tenant. The credential must carry both the active
+        tenant_id and user_id; the endpoint returns that single membership or 404. Multiple
+        matching memberships are a data error and are rejected, never silently narrowed.
       parameters:
         - $ref: '#/components/parameters/AsOf'
-        - $ref: '#/components/parameters/Page'
-        - $ref: '#/components/parameters/Size'
       responses:
         '200':
-          description: Authorized memberships only
+          description: The unique authorized membership for the credential pair
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TenantMembershipList'
+                $ref: '#/components/schemas/TenantMembership'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
   /v1/organization-assignments:
@@ -418,18 +422,14 @@ components:
     TenantMembership:
       type: object
       additionalProperties: false
-      required: [membership_id, user_id, tenant_id, employee_id, roles, dept_ids, valid_from, valid_to]
+      required: [membership_id, user_id, tenant_id, employee_id, role, dept_ids, valid_from, valid_to]
       properties:
         membership_id: { $ref: '#/components/schemas/StableId' }
         user_id: { $ref: '#/components/schemas/StableId' }
         tenant_id: { $ref: '#/components/schemas/StableId' }
         employee_id: { $ref: '#/components/schemas/StableId' }
-        roles:
-          type: array
-          minItems: 1
-          uniqueItems: true
-          items:
-            enum: [employee, manager, owner]
+        role:
+          enum: [employee, manager, owner]
         dept_ids:
           type: array
           uniqueItems: true
@@ -588,13 +588,7 @@ components:
         gross_amount: { $ref: '#/components/schemas/Money' }
         status: { enum: [draft, published, paid] }
         published_at: { type: [string, 'null'], format: date-time }
-    TenantMembershipList:
-      allOf:
-        - $ref: '#/components/schemas/PageEnvelope'
-        - type: object
-          required: [items]
-          properties:
-            items: { type: array, items: { $ref: '#/components/schemas/TenantMembership' } }
+
     OrganizationAssignmentList:
       allOf:
         - $ref: '#/components/schemas/PageEnvelope'
@@ -723,6 +717,11 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     Unauthenticated:
       description: Missing or invalid service credential
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No active membership exists for the credential pair; no business data was read
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

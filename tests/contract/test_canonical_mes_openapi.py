@@ -11,7 +11,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 OPENAPI_PATH = REPOSITORY_ROOT / "contracts" / "mes-canonical.openapi.yaml"
 EXAMPLES_PATH = REPOSITORY_ROOT / "contracts" / "examples" / "mes-canonical-v1.json"
 EXPECTED_OPERATIONS = {
-    "A1_listTenantMemberships",
+    "A1_getTenantMembership",
     "A2_listOrganizationAssignments",
     "A3_listEffectiveScopes",
     "C1_listPieceworkRecords",
@@ -104,6 +104,10 @@ def test_every_operation_has_bounded_pagination_and_explicit_time_semantics() ->
     for operation_id, operation in operations(document).items():
         parameters = [resolve(parameter, document) for parameter in operation["parameters"]]
         names = {parameter["name"] for parameter in parameters}
+        if operation_id == "A1_getTenantMembership":
+            # Single-object identity resolution; no pagination by design.
+            assert names == {"as_of"}
+            continue
         assert {"page", "size"} <= names
         assert (
             {"as_of"} <= names
@@ -125,13 +129,22 @@ def test_business_lists_require_trusted_tenant_and_complete_scope_filters() -> N
         assert {"X-Tenant-Id", "authorized_employee_ids", "authorized_dept_ids"} <= required_names
 
 
-def test_a1_memberships_keep_tenant_local_employee_identity_separate() -> None:
-    memberships = load_examples()["A1_listTenantMemberships"]["response"]["items"]
+def test_a1_membership_is_unique_per_credential_pair_with_single_role() -> None:
+    membership = load_examples()["A1_getTenantMembership"]["response"]
 
-    assert len({membership["user_id"] for membership in memberships}) == 1
-    assert len({membership["tenant_id"] for membership in memberships}) == 2
-    assert len({membership["employee_id"] for membership in memberships}) == 2
-    assert len({membership["membership_id"] for membership in memberships}) == 2
+    assert membership["user_id"] == "user-a"
+    assert membership["tenant_id"] == "tenant-a"
+    assert membership["role"] in {"employee", "manager", "owner"}
+    assert set(membership) == {
+        "membership_id",
+        "user_id",
+        "tenant_id",
+        "employee_id",
+        "role",
+        "dept_ids",
+        "valid_from",
+        "valid_to",
+    }
 
 
 def test_resource_schemas_expose_stable_relationship_keys() -> None:

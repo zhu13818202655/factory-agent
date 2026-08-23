@@ -39,7 +39,7 @@ async def test_every_mock_operation_returns_canonical_schema() -> None:
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         for operation_id, example in load_examples().items():
-            headers = {"Authorization": "Bearer multi-tenant", **example["request"]["headers"]}
+            headers = {"Authorization": "Bearer tenant-a-user", **example["request"]["headers"]}
             response = await client.get(
                 path_by_operation[operation_id],
                 headers=headers,
