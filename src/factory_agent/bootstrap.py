@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel
-
 from factory_agent.application.authorization import (
     AuthorizationService,
     FixedScopeVersionAssigner,
@@ -74,7 +72,7 @@ def build_container(
         mes = supplied.mes
         mes_status = "fake"
     elif settings.canonical_mes_base_url is not None:
-        mes = CanonicalMesAdapter[BaseModel](str(settings.canonical_mes_base_url), {})
+        mes = CanonicalMesAdapter(str(settings.canonical_mes_base_url), "unconfigured")
         mes_status = "configured"
     else:
         mes = NotConfiguredMesDataSource()

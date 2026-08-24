@@ -50,12 +50,14 @@ class EmptyResponse(BaseModel):
 
 @pytest.mark.asyncio
 async def test_canonical_adapter_rejects_unreviewed_operations_before_http() -> None:
-    adapter = CanonicalMesAdapter[EmptyResponse]("http://mock-mes:8010", {})
+    from factory_agent.domain.errors import UnsupportedOperationError
+
+    adapter = CanonicalMesAdapter("http://mock-mes:8010", "unconfigured")
     request = CanonicalRequest(
         operation_id="unreviewed",
         query=(),
         response_model=EmptyResponse,
     )
 
-    with pytest.raises(ValueError, match="unknown Canonical operation"):
+    with pytest.raises(UnsupportedOperationError):
         await adapter.execute(request)
