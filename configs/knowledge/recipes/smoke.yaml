@@ -1,0 +1,27 @@
+# Reviewed L1 capability recipes. File changes are semantics changes and
+# require human review. Real business capability recipes register in Story 5~7;
+# this file ships the minimal smoke recipe used by the kernel integration test.
+version: 1
+capabilities:
+  - capability_id: smoke_piecework_summary
+    title: Minimal single-API piecework summary (kernel smoke baseline)
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_piecework
+        kind: api
+        operation_id: C1_listPieceworkRecords
+      - step_id: aggregate_totals
+        kind: local
+        depends_on: [fetch_piecework]
+        compute: sum_qualified_quantity_and_amount
+    result_columns:
+      - name: qualified_quantity_total
+        source_step: aggregate_totals
+        metric: output_quantity
+      - name: amount_total
+        source_step: aggregate_totals
+        metric: piecework_wage
+    metric_versions:
+      output_quantity: mock-quantity-v1
+      piecework_wage: mock-wage-v1
+    degradation: incomplete_marker
