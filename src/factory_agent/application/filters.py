@@ -5,9 +5,13 @@ Every rejection path here must happen before any MES business call.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from factory_agent.domain import DataScope, DeptId, EmployeeId, NarrowedFilters
 
-from factory_agent.domain import DataScope, DeptId, EmployeeId, TenantId
+__all__ = [
+    "FilterNarrower",
+    "FilterRejectionError",
+    "NarrowedFilters",
+]
 
 
 class FilterRejectionError(Exception):
@@ -17,15 +21,6 @@ class FilterRejectionError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
-
-
-@dataclass(frozen=True, slots=True)
-class NarrowedFilters:
-    """The single downstream exit for scope parameters (consumed by Story 3)."""
-
-    tenant_id: TenantId
-    employee_ids: frozenset[EmployeeId] | None
-    dept_ids: frozenset[DeptId] | None
 
 
 class FilterNarrower:
