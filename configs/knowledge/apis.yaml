@@ -1,0 +1,211 @@
+# API Catalog: reviewed registry of approved MES operations.
+# File changes are permission/semantics changes and require human review.
+version: 1
+operations:
+  - operation_id: A1_getTenantMembership
+    path: /v1/identity/memberships
+    kind: identity
+    parameter_sources:
+      as_of: clock
+    pagination: none
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: []
+    related_keys: []
+
+  - operation_id: A2_listOrganizationAssignments
+    path: /v1/organization-assignments
+    kind: resource
+    resource: organization_assignments
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: []
+    related_keys: [employee_id, dept_id]
+
+  - operation_id: A3_listEffectiveScopes
+    path: /v1/effective-scopes
+    kind: identity
+    parameter_sources:
+      tenant_id: scope
+      as_of: clock
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: []
+    related_keys: [membership_id]
+
+  - operation_id: C1_listPieceworkRecords
+    path: /v1/piecework-records
+    kind: resource
+    resource: piecework_records
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      employee_ids: scope
+      dept_ids: scope
+      order_ids: filter
+      style_ids: filter
+      operation_ids: filter
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: [unit_rate, amount, completed_quantity, qualified_quantity, defective_quantity]
+    related_keys: [employee_id, dept_id, order_id, style_id, operation_id, plan_id]
+
+  - operation_id: C2_listEmployees
+    path: /v1/employees
+    kind: resource
+    resource: employees
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      employee_ids: scope
+      dept_ids: scope
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: [display_name, employee_number]
+    related_keys: [employee_id, dept_id]
+
+  - operation_id: C3_listDepartments
+    path: /v1/departments
+    kind: resource
+    resource: departments
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      dept_ids: scope
+      parent_ids: filter
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: [name]
+    related_keys: [dept_id, parent_id]
+
+  - operation_id: C4_listOrders
+    path: /v1/orders
+    kind: resource
+    resource: orders
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      order_ids: filter
+      style_ids: filter
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: [ordered_quantity, completed_quantity]
+    related_keys: [order_id, style_id, dept_id]
+
+  - operation_id: C5_listStyles
+    path: /v1/styles
+    kind: resource
+    resource: styles
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      style_ids: filter
+      keyword: filter
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: [name]
+    related_keys: [style_id]
+
+  - operation_id: C6_listOperations
+    path: /v1/operations
+    kind: resource
+    resource: operations
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      operation_ids: filter
+      order_ids: filter
+      style_ids: filter
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: [unit_rate]
+    related_keys: [operation_id, style_id, order_id]
+
+  - operation_id: C7_listProductionPlans
+    path: /v1/production-plans
+    kind: resource
+    resource: production_plans
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      plan_ids: filter
+      dept_ids: scope
+      order_ids: filter
+      style_ids: filter
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: [planned_quantity, completed_quantity]
+    related_keys: [plan_id, dept_id, order_id, style_id]
+
+  - operation_id: C8_listPayrollSettlements
+    path: /v1/payroll-settlements
+    kind: resource
+    resource: payroll_settlements
+    parameter_sources:
+      tenant_id: scope
+      authorized_employee_ids: scope
+      authorized_dept_ids: scope
+      settlement_ids: filter
+      employee_ids: scope
+      dept_ids: scope
+      from: filter
+      to: filter
+      page: filter
+      size: filter
+    pagination: items_total_page_size
+    timeout_seconds: 10.0
+    min_role: employee
+    sensitive_fields: [gross_amount, piece_count]
+    related_keys: [settlement_id, employee_id, dept_id]
