@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
-from pydantic import AnyHttpUrl, PostgresDsn, RedisDsn
+from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,13 +16,43 @@ class FactoryAgentSettings(BaseSettings):
     port: int = 8000
     canonical_mes_base_url: AnyHttpUrl | None = None
     postgres_url: PostgresDsn | None = None
-    litellm_base_url: AnyHttpUrl | None = None
     redis_url: RedisDsn | None = None
     artifact_endpoint: AnyHttpUrl | None = None
     artifact_bucket: str | None = None
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     request_id_header: str = "X-Request-ID"
+
+    # LLM boundary (ADR-0006). Deployments and fallback order come from the
+    # reviewed registry; provider keys come from the environment variables that
+    # registry names. No provider key or URL is ever declared here.
+    model_registry_path: Path = Path("configs/knowledge/models.yaml")
+    llm_fast_alias: str = "factory-fast"
+    llm_reasoning_alias: str = "factory-reasoning"
+    llm_summary_alias: str = "factory-summary"
+    llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    llm_top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    llm_timeout_seconds: float = Field(default=30.0, gt=0.0)
+    llm_max_output_tokens: int = Field(default=2048, gt=0)
+    llm_max_repair_attempts: int = Field(default=1, ge=0, le=1)
+    llm_num_retries: int = Field(default=2, ge=0, le=5)
+    llm_allowed_fails: int = Field(default=2, ge=1)
+    llm_cooldown_seconds: int = Field(default=30, ge=1)
+
+    # Session orchestration bounds.
+    factory_timezone: str = "Asia/Shanghai"
+    session_max_input_chars: int = Field(default=2000, gt=0)
+    session_max_clarification_rounds: int = Field(default=3, ge=1)
+    session_history_max_turns: int = Field(default=8, ge=1)
+    session_history_max_chars: int = Field(default=8192, gt=0)
+    session_heartbeat_seconds: float = Field(default=15.0, gt=0.0)
+
+    # Usage outbox publisher placeholders; Story 8 fixes them after load testing.
+    usage_admin_base_url: AnyHttpUrl | None = None
+    usage_admin_api_key: SecretStr | None = None
+    usage_outbox_batch_size: int = Field(default=100, gt=0)
+    usage_outbox_poll_seconds: float = Field(default=5.0, gt=0.0)
+    usage_outbox_max_attempts: int = Field(default=8, ge=1)
 
 
 @lru_cache
