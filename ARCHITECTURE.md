@@ -69,7 +69,7 @@ src/factory_agent/
     application/      # use cases, conversation and capability orchestration
     domain/           # immutable identity, scope, result and metric values
     ports/            # identity, MES, model, repository and artifact protocols
-    data_api/         # Canonical and future customer MES HTTP adapters
+    data_api/         # customer MES HTTP adapter, credentials and envelope handling
     execution/        # reviewed DAG, pagination and interaction DuckDB
     persistence/      # PostgreSQL repositories and Alembic integration
     llm/              # LiteLLM adapter and structured output validation
@@ -88,7 +88,7 @@ The root builds `src/factory_agent`. `mock-mes/` is a separately runnable uv wor
 used only for development and tests. `usage-admin/` is a separately built production uv workspace
 member for authorized multi-tenant usage aggregation, operational APIs, and reports. Each service
 owns its package, tests, Dockerfile, migrations, configuration, and database. No service imports
-another; they communicate through versioned Canonical HTTP and usage-event contracts and can be
+another; they communicate through versioned HTTP and usage-event contracts and can be
 split into separate repositories later.
 
 ## Request Invariants

@@ -6,9 +6,9 @@
 |---|---|---|
 | `product/` | 做什么、谁能看什么、哪些口径待确认 | [`requirements.md`](product/requirements.md)、[`permission-matrix.md`](product/permission-matrix.md)、[`traceability.md`](product/traceability.md) |
 | `adr/` | 架构与运行时决策 | [`0004-logging-configuration-and-tracing.md`](adr/0004-logging-configuration-and-tracing.md) |
-| `api/` | 客户 MES 必须提供什么、已经向客户确认什么 | [`customer-api-requirements.md`](api/customer-api-requirements.md)、[`customer-confirmation-questionnaire.md`](api/customer-confirmation-questionnaire.md) |
+| `api/` | 客户 MES 已提供什么、已确认与仍未确认什么 | [`customer-api-requirements.md`](api/customer-api-requirements.md)、[`customer-confirmation-questionnaire.md`](api/customer-confirmation-questionnaire.md) |
 | `adr/` | 为什么采用某项难以逆转的技术或边界决策 | [`0001-repository-and-service-boundaries.md`](adr/0001-repository-and-service-boundaries.md)、[`0002-runtime-storage-and-migration-baseline.md`](adr/0002-runtime-storage-and-migration-baseline.md)、[`0003-usage-metering-and-admin-service.md`](adr/0003-usage-metering-and-admin-service.md) |
-| `reference/` | 客户原始材料和历史整合文档，仅用于追溯来源 | [`工厂智能体需求与接口整合文档.md`](reference/工厂智能体需求与接口整合文档.md) |
+| `reference/` | 客户原始材料和整合文档 | [`弘兆MES接口整体说明-V2.md`](reference/弘兆MES接口整体说明-V2.md)（**已确认事实的来源，M/K 编号**）、[`AI问答对外接口.md`](reference/AI问答对外接口.md)（客户原始接口文档）、[`工厂智能体需求与接口整合文档.md`](reference/工厂智能体需求与接口整合文档.md)（历史功能点，仅供追溯） |
 
 实现按 [`.github/story/`](../.github/story/) 中 `#1` 到 `#9` 的顺序执行，日常状态见
 [`kanban-board.md`](kanban-board.md)。Story 是实施清单，产品与 API 文档是需求和契约依据；
@@ -17,8 +17,11 @@
 ## 权威顺序
 
 发生冲突时依次采用：当前 Story、`SECURITY.md` 与已接受 ADR、`contracts/`、
-`product/`、`ARCHITECTURE.md`、现有实现。`reference/` 不直接作为实现依据；其中未确认的客户
-描述必须先进入产品规则、API 要求或 ADR，才能成为实施约束。
+`product/`、`ARCHITECTURE.md`、现有实现。
+
+`reference/弘兆MES接口整体说明-V2.md` 是例外：其第一~四章（M1~M20）与第六章（K1~K7）为客户
+已确认事实与已拍板范围决策，可直接作为实施依据；第五章为仍未确认项，必须以显式 `unavailable`
+状态实现，不得自行补齐。其余 `reference/` 材料不直接作为实现依据。
 
 ## 新增文档原则
 

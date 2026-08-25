@@ -25,11 +25,16 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 ## Architecture Invariants
 
 1. Authorization completes before any business-data API call.
-2. One deployment serves many company/factory tenants. `Identity` provides authorized tenant
-   memberships; each MES business interaction resolves one trusted active `TenantContext`, and its
-   `tenant_id`, `employee_ids`, and `dept_ids` come from `DataScope`. Platform operations use a
-   separate `PlatformScope`. User or LLM output can never broaden or replace either scope.
-3. Only `src/factory_agent/data_api/` may call MES HTTP endpoints.
+2. One deployment serves many factory tenants. **AppKey is the tenant ID (one factory, one
+   AppKey)**. Each MES business interaction binds a trusted `TenantContext` derived from the
+   customer credential bundle (`accessToken`, plaintext `app_key`, `sign`, `timestamp`, `user`,
+   `uname`), and its `tenant_id`, `employee_ids`, and `dept_ids` come from `DataScope`.
+   Row-level filtering beyond the caller's own record is performed by the customer MES; our
+   `DataScope` records this as `mes_filtered` and never claims that wider range itself.
+   Platform operations use a separate `PlatformScope`. User or LLM output can never broaden or
+   replace either scope.
+3. Only `src/factory_agent/data_api/` may call MES HTTP endpoints. Customer field names, endpoint
+   paths, credential values, and `code`/`message` semantics must not leave that package.
 4. Application and domain code depend on `MesDataSource`, never customer URLs or payloads.
 5. Validate every external response before registering it in the local sandbox.
 6. Use one isolated DuckDB connection per interaction and destroy it afterward.
@@ -67,8 +72,11 @@ governed directory.
 4. When a Story uses ADO-style state, use `New -> Active -> Resolved -> Closed`: implementation starts
    at `Active`, reaches `Resolved` only after its checklist and relevant engineering checks are
    complete, and reaches `Closed` only after human review. State never overrides checklist evidence.
-5. When a customer API or business rule is unavailable, continue against the Canonical contract and
-   Mock MES, and keep the temporary assumption visible in the Story or relevant product document.
+5. When a customer API or business rule is unavailable, continue against the contract in
+   `contracts/` and Mock MES, and keep the temporary assumption visible in the Story or relevant
+   product document. Confirmed customer facts live in
+   `docs/reference/弘兆MES接口整体说明-V2.md` (M/K identifiers); unconfirmed calculations must
+   surface as an explicit `unavailable` state rather than a fabricated number.
 6. After the Story checklist is complete, summarize the result for the user. The user reviews the
    implementation manually and decides whether follow-up changes are needed.
 
@@ -113,12 +121,15 @@ Since code modifications are typically performed under the `root` user, but the 
 
 Every data capability must prove:
 
-1. Allowed roles receive only their effective scope.
-2. Denied roles perform zero business-data API calls.
+1. Callers receive only their effective scope.
+2. Denied requests perform zero business-data API calls.
 3. User-provided IDs cannot override `DataScope`.
 4. IDs outside the active `DataScope` never enter MES calls, sandbox tables, caches, artifacts, or
    business audit details; authorized platform aggregation never enters the MES execution path.
-5. Sensitive canary values never appear in captured LLM requests or logs.
+5. Credential values (`app_key`, `accessToken`, `sign`, `movepassword`) and sensitive canary values
+   never appear in captured LLM requests, logs, traces, errors, events, or test snapshots.
+6. A range narrowed by MES-side filtering is reported as a structured state, never presented as a
+   complete result.
 
 ## LLM Rules
 

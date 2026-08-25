@@ -6,9 +6,11 @@ Implement the numbered Stories under `.github/story/` in order. The current Stor
 lowest-numbered Story with unfinished checklist items. Work only on that Story unless the user
 explicitly changes the scope, and mark an item complete only after its implementation is finished.
 
-When customer APIs or business rules are unavailable, continue with the Canonical contract and
-Mock MES. Record temporary assumptions clearly and do not present them as confirmed customer
-behavior. Never invent permission, tenant-isolation, or sensitive-data rules.
+When customer APIs or business rules are unavailable, continue with the contract in `contracts/`
+and Mock MES. Confirmed customer facts live in `docs/reference/弘兆MES接口整体说明-V2.md`
+(M/K identifiers). Record temporary assumptions clearly and do not present them as confirmed
+customer behavior. Unconfirmed calculations must surface as an explicit `unavailable` state rather
+than a fabricated number. Never invent permission, tenant-isolation, or sensitive-data rules.
 
 Stories use human-reviewed checklists and may include nested implementation items, ADO-style state,
 dependencies, acceptance criteria, risks/open decisions, Technology Notes, and Release Notes. These

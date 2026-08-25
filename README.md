@@ -1,7 +1,8 @@
 # factory-agent
 
 `factory-agent` is a read-only factory MES assistant. Development follows nine numbered Markdown
-Stories in `.github/story/`, using the Canonical contract and Mock MES until customer APIs arrive.
+Stories in `.github/story/`. The MES contract and Mock MES mirror the customer's real endpoints as
+documented in [docs/reference/弘兆MES接口整体说明-V2.md](docs/reference/弘兆MES接口整体说明-V2.md).
 
 ## Start here
 
