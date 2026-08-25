@@ -1,0 +1,123 @@
+{
+  "source": "/home/admin2/proj/report-agent",
+  "frozen_at": "2026-08-24",
+  "note": "Read-only snapshot of report-agent behaviour. factory-agent never imports report_agent or vanna; this file is the characterization baseline referenced by docs/migration/report-agent-inventory.md.",
+  "state_machine": {
+    "module": "src/report_agent/state_machine.py",
+    "states": [
+      "parsing",
+      "clarifying",
+      "authorizing",
+      "fetching",
+      "analyzing",
+      "previewing",
+      "rendering",
+      "archived",
+      "cancelled",
+      "failed"
+    ],
+    "allowed_transitions": {
+      "parsing": ["clarifying", "authorizing", "cancelled", "failed"],
+      "clarifying": ["parsing", "authorizing", "cancelled", "failed"],
+      "authorizing": ["fetching", "cancelled", "failed"],
+      "fetching": ["analyzing", "cancelled", "failed"],
+      "analyzing": ["previewing", "cancelled", "failed"],
+      "previewing": ["parsing", "rendering", "cancelled", "failed"],
+      "rendering": ["archived", "cancelled", "failed"],
+      "archived": [],
+      "cancelled": [],
+      "failed": []
+    },
+    "terminal_states": ["archived", "cancelled", "failed"],
+    "failed_reachable_from_any_non_terminal": true,
+    "transition_history_fields": ["from", "to", "reason"]
+  },
+  "factory_state_renames": {
+    "fetching": "executing",
+    "analyzing": "composing",
+    "previewing": "answered",
+    "rendering": null
+  },
+  "context": {
+    "module": "src/report_agent/context.py",
+    "default_max_turns": 8,
+    "default_max_chars": 8192,
+    "drops_oldest_turn_pairs_first": true,
+    "artifact_reply_is_summarized": true,
+    "failed_or_cancelled_reply_text": "请求未完成",
+    "compresses_on_message_content_not_intent_field": true
+  },
+  "follow_up_patch": {
+    "module": "src/report_agent/conflict_checker.py",
+    "null_field_does_not_clear": true,
+    "empty_list_does_not_clear": true,
+    "explicit_period_replaces_previous": true,
+    "merge_resets_missing_and_conflicts": true,
+    "conflict_report_fields": ["missing", "conflicts", "suggestions"]
+  },
+  "json_extraction": {
+    "module": "src/report_agent/llm/output.py",
+    "accepts_raw_object": true,
+    "accepts_fenced_json": true,
+    "accepts_embedded_object": true,
+    "returns_none_on_empty_text": true
+  },
+  "llm_failures": {
+    "module": "src/report_agent/llm/client.py",
+    "timeout": "LMTimeoutError",
+    "transport": "LMRequestError",
+    "http_error_status": "LMProviderError",
+    "non_json_body": "LMProviderError",
+    "missing_choices": "LMProviderError",
+    "missing_message": "LMProviderError",
+    "non_text_content": "LMProviderError"
+  },
+  "sse": {
+    "module": "src/report_agent/api/router.py",
+    "frame_format": "event: {name}\\ndata: {json}\\n\\n",
+    "first_event": "interaction.started",
+    "terminal_statuses": ["completed", "failed", "cancelled"],
+    "exactly_one_terminal_event": true,
+    "non_finite_floats_become_null": true,
+    "media_type": "text/event-stream"
+  },
+  "persistence": {
+    "module": "alembic/versions/20260427_0002_fly_report_streaming_messages.py",
+    "interaction_table": "fly_report_interaction",
+    "message_table": "fly_report_message",
+    "message_sequence_unique_per_interaction": true,
+    "message_cascades_on_interaction_delete": true
+  },
+  "replacements_not_inherited": [
+    {
+      "source": "src/report_agent/api/router.py",
+      "defect": "tenant_id and user_id arrive in the request body or query string",
+      "factory_agent": "trusted headers resolved through AuthorizationService before any data call"
+    },
+    {
+      "source": "src/report_agent/permissions.py",
+      "defect": "AllowAllPermissionGate accepts every request by default",
+      "factory_agent": "role-capability matrix plus DataScope; denial performs zero business-data calls"
+    },
+    {
+      "source": "src/report_agent/service.py",
+      "defect": "in-process asyncio.Queue subscribers lose events on reconnect",
+      "factory_agent": "durable event sequence with Last-Event-ID resume and idempotent execution"
+    },
+    {
+      "source": "src/report_agent/repository.py",
+      "defect": "interaction lookup by id only, ownership checked after loading",
+      "factory_agent": "every statement carries the trusted (tenant_id, user_id) predicate"
+    },
+    {
+      "source": "src/report_agent/intent/classifier.py",
+      "defect": "classification failure silently falls back to the report pipeline",
+      "factory_agent": "low confidence produces a clarification, never an automatic heavy query"
+    },
+    {
+      "source": "src/report_agent/llm/client.py",
+      "defect": "client owns provider base_url, api_key, and model selection",
+      "factory_agent": "single LiteLLM Proxy address with logical aliases only"
+    }
+  ]
+}

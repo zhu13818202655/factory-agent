@@ -6,7 +6,7 @@ PRODUCT_ROOT = REPOSITORY_ROOT / "src" / "factory_agent"
 USAGE_ADMIN_ROOT = REPOSITORY_ROOT / "usage-admin" / "src" / "usage_admin"
 
 ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
-    "api": {"application", "bootstrap", "config", "domain", "observability"},
+    "api": {"application", "bootstrap", "config", "domain", "observability", "ports"},
     "application": {"domain", "ports"},
     "domain": set(),
     "ports": {"domain"},
@@ -16,7 +16,17 @@ ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     "llm": {"domain", "ports"},
     "export": {"domain", "ports"},
     "observability": {"config", "domain", "ports"},
+    "usage": {"config", "domain", "observability", "persistence", "ports"},
 }
+
+#: Packages allowed to own an outbound HTTP client. ``data_api`` is the only one
+#: permitted to reach MES endpoints; ``usage`` reaches usage-admin, which is not
+#: a MES endpoint. ``llm`` is deliberately absent: outbound model traffic goes
+#: through the litellm SDK, not a hand-rolled HTTP client.
+HTTP_BOUNDARY_PACKAGES: set[str] = {"data_api", "usage"}
+
+#: Only the model gateway adapter may import the litellm SDK (ADR-0006).
+LLM_SDK_PACKAGES: set[str] = {"llm"}
 
 
 def imported_roots(path: Path) -> set[str]:
@@ -95,11 +105,31 @@ def test_product_and_mock_mes_do_not_import_usage_admin() -> None:
     assert offenders == []
 
 
-def test_only_data_api_may_import_httpx_in_product_code() -> None:
+def test_only_http_boundary_packages_may_import_httpx() -> None:
     offenders = [
         str(path.relative_to(REPOSITORY_ROOT))
         for path in python_files(REPOSITORY_ROOT / "src" / "factory_agent")
-        if "httpx" in imported_roots(path) and "data_api" not in path.parts
+        if "httpx" in imported_roots(path) and not HTTP_BOUNDARY_PACKAGES & set(path.parts)
+    ]
+
+    assert offenders == []
+
+
+def test_only_data_api_may_reach_mes_endpoints() -> None:
+    offenders = [
+        str(path.relative_to(REPOSITORY_ROOT))
+        for path in python_files(REPOSITORY_ROOT / "src" / "factory_agent")
+        if "data_api" not in path.parts and "canonical_mes" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == ["src/factory_agent/bootstrap.py", "src/factory_agent/config.py"]
+
+
+def test_only_the_model_gateway_may_import_the_litellm_sdk() -> None:
+    offenders = [
+        str(path.relative_to(REPOSITORY_ROOT))
+        for path in python_files(PRODUCT_ROOT)
+        if "litellm" in imported_roots(path) and not LLM_SDK_PACKAGES & set(path.parts)
     ]
 
     assert offenders == []
