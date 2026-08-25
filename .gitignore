@@ -9,5 +9,6 @@ __pycache__/
 htmlcov/
 build/
 dist/
-data/
-deploy/litellm/config.generated.yaml
+# Anchored: only the repository-root runtime output directory, never fixtures
+# such as tests/data/.
+/data/
