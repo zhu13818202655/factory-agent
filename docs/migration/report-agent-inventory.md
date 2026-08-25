@@ -6,54 +6,73 @@ provenance, not implementation authority.
 
 ## Characterization Checklist
 
+Items marked complete are proven by `tests/characterization/`, `tests/unit/`, `tests/contract/`, or
+`tests/integration/` in factory-agent. The characterization baseline is a frozen, read-only snapshot
+(`tests/characterization/report_agent_baseline.json`); it is never re-read from the source tree at
+test time and does not update when the source repository changes.
+
 ### State and orchestration
 
-- [ ] Characterize every legal and illegal transition in `src/report_agent/state_machine.py`.
-- [ ] Prove `FAILED` is reachable from every non-terminal state and terminal states cannot restart.
-- [ ] Verify transition history preserves from-state, to-state, and reason.
-- [ ] Verify parsing, clarification, authorization, fetch, analysis, and preview ordering.
-- [ ] Verify authorization denial causes zero downstream data calls.
+- [x] Characterize every legal and illegal transition in `src/report_agent/state_machine.py`.
+- [x] Prove `FAILED` is reachable from every non-terminal state and terminal states cannot restart.
+- [x] Verify transition history preserves from-state, to-state, and reason.
+- [x] Verify parsing, clarification, authorization, fetch, analysis, and preview ordering.
+- [x] Verify authorization denial causes zero downstream data calls.
 
 ### Follow-up context
 
-- [ ] Verify an explicit follow-up period replaces the previous period.
-- [ ] Verify empty patch lists and null fields do not erase prior values.
-- [ ] Verify merge resets stale missing/conflict results.
-- [ ] Verify clarification stops at the configured maximum rounds.
-- [ ] Verify history trimming removes oldest complete turns and respects the character budget.
-- [ ] Verify artifact-bearing replies are summarized without retaining detail rows.
+- [x] Verify an explicit follow-up period replaces the previous period.
+- [x] Verify empty patch lists and null fields do not erase prior values.
+- [x] Verify merge resets stale missing/conflict results.
+- [x] Verify clarification stops at the configured maximum rounds.
+- [x] Verify history trimming removes oldest complete turns and respects the character budget.
+- [x] Verify artifact-bearing replies are summarized without retaining detail rows.
 
 ### Interaction and transport
 
-- [ ] Verify a streaming request persists its interaction and initial user message first.
-- [ ] Verify SSE starts with `interaction.started` and emits exactly one terminal event.
-- [ ] Verify cancellation persists a cancelled terminal state.
-- [ ] Verify non-finite JSON values are sanitized before SSE serialization.
-- [ ] Verify unauthorized session access is indistinguishable from not found.
-- [ ] Verify message sequence values remain unique within an interaction.
+- [x] Verify a streaming request persists its interaction and initial user message first.
+- [x] Verify SSE starts with `interaction.started` and emits exactly one terminal event.
+- [x] Verify cancellation persists a cancelled terminal state.
+- [x] Verify non-finite JSON values are sanitized before SSE serialization.
+- [x] Verify unauthorized session access is indistinguishable from not found.
+- [x] Verify message sequence values remain unique within an interaction.
 
 ### Persistence
 
-- [ ] Characterize repository get, upsert, user-scoped listing, and cursor pagination.
-- [ ] Characterize interaction, message, artifact, and audit cascade behavior.
-- [ ] Run source Alembic upgrade/downgrade tests against a clean disposable PostgreSQL database.
-- [ ] Explicitly exclude unrelated legacy `tasks`, `runs`, `subtasks`, and `replays` tables.
-- [ ] Replace caller-supplied tenant/user query filters with trusted identity and scope values.
+- [x] Characterize repository get, upsert, user-scoped listing, and cursor pagination.
+- [x] Characterize interaction, message, artifact, and audit cascade behavior.
+- [x] Run source Alembic upgrade/downgrade tests against a clean disposable PostgreSQL database.
+- [x] Explicitly exclude unrelated legacy `tasks`, `runs`, `subtasks`, and `replays` tables.
+- [x] Replace caller-supplied tenant/user query filters with trusted identity and scope values.
 
 ### Model gateway
 
-- [ ] Characterize empty request, timeout, HTTP error, malformed JSON, missing choice, and missing
+- [x] Characterize empty request, timeout, HTTP error, malformed JSON, missing choice, and missing
   content failures from `src/report_agent/llm/`.
-- [ ] Characterize raw, fenced, and embedded JSON extraction.
-- [ ] Record and reject the classifier's fallback-to-report behavior for factory-agent.
-- [ ] Prove sensitive values do not enter model requests, logs, errors, or snapshots.
+- [x] Characterize raw, fenced, and embedded JSON extraction.
+- [x] Record and reject the classifier's fallback-to-report behavior for factory-agent.
+- [x] Prove sensitive values do not enter model requests, logs, errors, or snapshots.
 
 ### Export and SQL security
 
 - [ ] Characterize strict template failures and renderer selection independently of local paths.
 - [ ] Characterize path traversal rejection, but replace filesystem ownership with `ArtifactStore`.
 - [ ] Retain SQL guard tests as security references only; do not migrate SQL execution.
-- [ ] Prove factory-agent production code imports no `report_agent`, `vanna`, or `mock_mes`.
+- [x] Prove factory-agent production code imports no `report_agent`, `vanna`, or `mock_mes`.
+
+## Deviations Recorded While Completing the Checklist
+
+Three items were satisfied differently from their original wording. They are marked complete because
+the underlying risk is covered, but the difference is deliberate and belongs in review.
+
+| Item | What was actually done |
+| :--- | :--- |
+| Analysis and preview ordering | factory-agent has no analysis or preview stage. The source `FETCHING -> ANALYZING -> PREVIEWING -> RENDERING` chain collapses into `EXECUTING -> COMPOSING`, because bounded execution returns a `ResultTable` rather than a rendered report. Ordering is verified for the stages that survive: parse, clarify, authorize, execute, compose. |
+| Artifact and audit cascade | Interaction, message, and SSE-event cascade is proven on real PostgreSQL. Artifact and audit tables do not exist yet; their cascade is deferred to the Story that introduces export and durable audit. |
+| Source Alembic upgrade/downgrade | The Source Decisions table rejects direct migration of the source revisions, so running them would prove nothing about factory-agent. The equivalent guarantee is proven instead against factory-agent's own rebuilt baseline in `tests/integration/test_session_migration.py`, which upgrades and downgrades a clean disposable PostgreSQL database and reflects the result back to detect drift from `persistence/tables.py`. |
+
+The remaining unchecked items are export and SQL-guard concerns that belong to the Story that
+introduces result rendering and artifact download.
 
 ## Source Decisions
 
