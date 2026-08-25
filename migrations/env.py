@@ -5,11 +5,13 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from factory_agent.persistence.tables import METADATA
+
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = None
+target_metadata = METADATA
 
 
 def run_migrations_offline() -> None:

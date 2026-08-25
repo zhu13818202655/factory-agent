@@ -8,6 +8,7 @@ from alembic import command
 from alembic.config import Config
 
 from factory_agent.config import get_settings
+from factory_agent.persistence.engine import normalize_dsn
 
 
 def build_alembic_config() -> Config:
@@ -18,7 +19,7 @@ def build_alembic_config() -> Config:
     repository_root = Path(__file__).resolve().parents[3]
     config = Config(repository_root / "alembic.ini")
     config.set_main_option("script_location", str(repository_root / "migrations"))
-    config.set_main_option("sqlalchemy.url", str(settings.postgres_url))
+    config.set_main_option("sqlalchemy.url", normalize_dsn(str(settings.postgres_url)))
     return config
 
 
