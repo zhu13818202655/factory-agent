@@ -7,6 +7,7 @@ from fastapi import APIRouter, FastAPI, Request, Response
 from pydantic import BaseModel
 
 from factory_agent import __version__
+from factory_agent.api.sessions import session_router
 from factory_agent.bootstrap import ApplicationContainer, DependencyOverrides, build_container
 from factory_agent.config import FactoryAgentSettings, get_settings
 from factory_agent.observability.context import (
@@ -66,4 +67,5 @@ def create_app(
     app.middleware("http")(request_id_middleware)
 
     app.include_router(health_router)
+    app.include_router(session_router)
     return app
