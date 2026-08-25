@@ -13,10 +13,12 @@ from factory_agent.application.authorization import (
 from factory_agent.domain import (
     DeptId,
     EmployeeId,
+    MembershipId,
     Role,
     ScopeVersion,
     TenantId,
     TenantMembership,
+    UserId,
 )
 from factory_agent.ports.contracts import TrustedCredential
 from tests.support.ports import FakeClock
@@ -33,10 +35,10 @@ def membership(
     valid_to: datetime | None = None,
 ) -> TenantMembership:
     return TenantMembership(
-        membership_id=membership_id,  # type: ignore[arg-type]
-        user_id=user_id,  # type: ignore[arg-type]
-        tenant_id=tenant_id,  # type: ignore[arg-type]
-        employee_id=employee_id,  # type: ignore[arg-type]
+        membership_id=MembershipId(membership_id),
+        user_id=UserId(user_id),
+        tenant_id=TenantId(tenant_id),
+        employee_id=EmployeeId(employee_id),
         role=role,
         dept_ids=tuple(DeptId(value) for value in dept_ids),
         valid_from=valid_from or FakeClock().current,
@@ -110,7 +112,4 @@ class SeededVersionAssigner:
 
 
 def credential(tenant_id: str, user_id: str) -> TrustedCredential:
-    return TrustedCredential(
-        tenant_id=tenant_id,  # type: ignore[arg-type]
-        user_id=user_id,  # type: ignore[arg-type]
-    )
+    return TrustedCredential(tenant_id=TenantId(tenant_id), user_id=UserId(user_id))
