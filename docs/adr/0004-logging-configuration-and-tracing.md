@@ -143,8 +143,8 @@ overrides explicitly rather than mutating global state.
 | `FACTORY_AGENT_REDIS_URL` | Redis DSN | Optional cache endpoint; non-authoritative |
 | `FACTORY_AGENT_ARTIFACT_ENDPOINT` | URL | S3-compatible artifact endpoint |
 | `FACTORY_AGENT_ARTIFACT_BUCKET` | string | Artifact bucket/container name |
-| `FACTORY_AGENT_LITELLM_BASE_URL` | URL | LiteLLM OpenAI-compatible base URL |
-| `FACTORY_AGENT_LITELLM_API_KEY` | secret | Credential for the LiteLLM Proxy only |
+| `FACTORY_AGENT_MODEL_REGISTRY_PATH` | path | Reviewed model registry; see ADR-0006 |
+| `FACTORY_AGENT_LLM_KEY_*` | secret | Provider keys named by the registry (ADR-0006) |
 | `FACTORY_AGENT_LLM_DEFAULT_MODEL` | string | Logical model alias, not provider model name |
 | `FACTORY_AGENT_LLM_FAST_MODEL` | string | Optional alias for routing/simple classification |
 | `FACTORY_AGENT_LLM_REASONING_MODEL` | string | Optional alias for heavier reasoning |
@@ -154,6 +154,11 @@ overrides explicitly rather than mutating global state.
 | `FACTORY_AGENT_LLM_MAX_REPAIR_ATTEMPTS` | int | Application semantic/schema repair attempts, default at most `1` |
 
 ### LLM Config Boundary
+
+> **Superseded by ADR-0006.** This project does not deploy a LiteLLM Proxy, so
+> the application owns provider configuration through the reviewed registry and
+> delegates fallback, retry, and cooldown to the LiteLLM Router SDK. The
+> sensitive-data rules below remain fully in force.
 
 The application sends requests to one LiteLLM Proxy through the `ModelGateway` port. The app may set:
 
