@@ -24,18 +24,6 @@ class TrustedCredential:
 
 
 @dataclass(frozen=True, slots=True)
-class ModelRequest:
-    model_alias: str
-    messages: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ModelResponse:
-    content: str
-    actual_model: str
-
-
-@dataclass(frozen=True, slots=True)
 class SessionRecord:
     interaction_id: InteractionId
     tenant_id: TenantId
@@ -63,10 +51,6 @@ class MembershipResolver(Protocol):
 
 class MesDataSource(Protocol[MesRequestT, MesResponseT]):
     async def execute(self, request: MesRequestT) -> MesResponseT: ...
-
-
-class ModelGateway(Protocol):
-    async def complete(self, request: ModelRequest) -> ModelResponse: ...
 
 
 class SessionRepository(Protocol):

@@ -11,12 +11,16 @@ from factory_agent.ports.contracts import (
     Clock,
     IdentityProvider,
     MesDataSource,
-    ModelGateway,
-    ModelRequest,
-    ModelResponse,
     SessionRecord,
     SessionRepository,
     TrustedCredential,
+)
+from factory_agent.ports.model import (
+    ModelErrorCategory,
+    ModelGateway,
+    ModelGatewayError,
+    ModelRequest,
+    ModelResponse,
 )
 
 
@@ -56,7 +60,9 @@ class NotConfiguredMesDataSource(MesDataSource[object, object]):
 class NotConfiguredModelGateway(ModelGateway):
     @override
     async def complete(self, request: ModelRequest) -> ModelResponse:
-        _raise("model gateway")
+        raise ModelGatewayError(
+            ModelErrorCategory.NOT_CONFIGURED, "model gateway is not configured"
+        )
 
 
 class NotConfiguredSessionRepository(SessionRepository):

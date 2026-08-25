@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from factory_agent.domain import InteractionId, TenantId
-from factory_agent.ports import ModelRequest, SessionRecord
+from factory_agent.ports import ModelGatewayError, ModelRequest, ModelStage, SessionRecord
 from factory_agent.ports.not_configured import (
     DependencyNotConfiguredError,
     NotConfiguredArtifactStore,
@@ -23,8 +23,15 @@ async def test_not_configured_dependencies_fail_explicitly() -> None:
         await NotConfiguredIdentityProvider().authenticate("credential")
     with pytest.raises(DependencyNotConfiguredError):
         await NotConfiguredMesDataSource().execute(object())
-    with pytest.raises(DependencyNotConfiguredError):
-        await NotConfiguredModelGateway().complete(ModelRequest(model_alias="answer", messages=()))
+    with pytest.raises(ModelGatewayError):
+        await NotConfiguredModelGateway().complete(
+            ModelRequest(
+                model_alias="factory-fast",
+                messages=(),
+                stage=ModelStage.CLASSIFY,
+                logical_call_id="call-1",
+            )
+        )
     with pytest.raises(DependencyNotConfiguredError):
         await NotConfiguredSessionRepository().get(InteractionId("interaction-1"))
     with pytest.raises(DependencyNotConfiguredError):
