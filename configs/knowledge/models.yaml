@@ -1,0 +1,37 @@
+# Reviewed model deployment registry (ADR-0006).
+#
+# Business code only ever names a logical alias. Each alias resolves to an
+# ordered list of OpenAI-compatible deployments; `fallbacks` names the aliases
+# tried after every deployment of this alias has failed.
+#
+# API keys are NEVER written here. `api_key_env` names the environment variable
+# holding the key, which the process resolves into a SecretStr at startup.
+# A deployment whose `api_key_env` is unset is dropped with a warning, so a
+# partially configured environment degrades instead of leaking a null key.
+
+version: 1
+
+aliases:
+  - alias: factory-fast
+    fallbacks: [factory-reasoning]
+    deployments:
+      - model: deepseek/deepseek-chat
+        api_base: https://api.deepseek.com/v1
+        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+        priority: 1
+
+  - alias: factory-reasoning
+    fallbacks: []
+    deployments:
+      - model: deepseek/deepseek-reasoner
+        api_base: https://api.deepseek.com/v1
+        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+        priority: 1
+
+  - alias: factory-summary
+    fallbacks: [factory-fast]
+    deployments:
+      - model: deepseek/deepseek-chat
+        api_base: https://api.deepseek.com/v1
+        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+        priority: 1
