@@ -1,211 +1,449 @@
-# API Catalog: reviewed registry of approved MES operations.
+# API Catalog: reviewed registry of approved MES operations (Story 5).
 # File changes are permission/semantics changes and require human review.
-version: 1
+#
+# - operation_id 采用客户接口名（M13/M15 契约形态）。
+# - parameter_sources: credential（只能来自 MesCredentialBundle）/ scope（只能来自
+#   DataScope）/ filter / clock。凭据参数绝不可来自 filter 或模型输出。
+# - pagination: none 或 list_total（result.list/result.total，累计到 total 结束，M13）。
+# - MoveMenuQuery 登记为 enabled: false（K7）：加载器允许存在但运行时拒绝调用。
+version: 2
 operations:
-  - operation_id: A1_getTenantMembership
-    path: /v1/identity/memberships
+  # ------------------------------------------------------------ 认证与凭证 (3)
+  - operation_id: SystemToken
+    path: /api/system/token
     kind: identity
+    enabled: true
     parameter_sources:
-      as_of: clock
+      app_key: credential
     pagination: none
     timeout_seconds: 10.0
-    min_role: employee
+    sensitive_fields: [access_token, sign, app_key]
+    related_keys: []
+
+  - operation_id: QuerySign
+    path: /api/print/query-sign
+    kind: identity
+    enabled: true
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: [sign, app_key]
+    related_keys: []
+
+  - operation_id: TestPermissions
+    path: /api/print/test-permissions
+    kind: identity
+    enabled: true
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: [sign, app_key]
+    related_keys: []
+
+  # ------------------------------------------------------------ 基础数据 (9)
+  - operation_id: UserInfoQuery
+    path: /api/NetYf/Baseinfo/UserInfoQuery
+    kind: resource
+    resource: user_info
+    required_params: [USERNAME]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      USERNAME: filter
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [username]
+
+  - operation_id: MoveMenuQuery
+    path: /api/NetYf/Baseinfo/MoveMenuQuery
+    kind: resource
+    resource: move_menu
+    enabled: false   # K7: 当前版本不使用；运行时拒绝调用
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [uid]
+
+  - operation_id: HuohaoQuery
+    path: /api/NetYf/Baseinfo/HuohaoQuery
+    kind: resource
+    resource: huohao
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [huohao]
+
+  - operation_id: HuohaoFormQuery
+    path: /api/NetYf/Baseinfo/HuohaoFormQuery
+    kind: resource
+    resource: huohao_form
+    required_params: [huohao]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      huohao: filter
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [huohao]
+
+  - operation_id: ScTypeQuery
+    path: /api/NetYf/Baseinfo/ScTypeQuery
+    kind: resource
+    resource: sc_type
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+    pagination: none
+    timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: []
 
-  - operation_id: A2_listOrganizationAssignments
-    path: /v1/organization-assignments
+  - operation_id: RfidWorktypeQuery
+    path: /api/NetYf/Baseinfo/RfidWorktypeQuery
     kind: resource
-    resource: organization_assignments
+    resource: rfid_worktype
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      from: filter
-      to: filter
-      page: filter
-      size: filter
-    pagination: items_total_page_size
+      app_key: credential
+      timestamp: credential
+      sign: credential
+    pagination: none
     timeout_seconds: 10.0
-    min_role: employee
     sensitive_fields: []
-    related_keys: [employee_id, dept_id]
+    related_keys: [worktype]
 
-  - operation_id: A3_listEffectiveScopes
-    path: /v1/effective-scopes
-    kind: identity
+  - operation_id: HuohaoWorktypeQuery
+    path: /api/NetYf/Baseinfo/HuohaoWorktypeQuery
+    kind: resource
+    resource: huohao_worktype
+    required_params: [huohao]
     parameter_sources:
-      tenant_id: scope
-      as_of: clock
-    pagination: items_total_page_size
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      huohao: filter
+    pagination: none
     timeout_seconds: 10.0
-    min_role: employee
     sensitive_fields: []
-    related_keys: [membership_id]
+    related_keys: [huohao, worktype]
 
-  - operation_id: C1_listPieceworkRecords
-    path: /v1/piecework-records
+  - operation_id: EmployeeQuery
+    path: /api/NetYf/Baseinfo/EmployeeQuery
     kind: resource
-    resource: piecework_records
+    resource: employee
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      employee_ids: scope
-      dept_ids: scope
-      order_ids: filter
-      style_ids: filter
-      operation_ids: filter
-      from: filter
-      to: filter
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      uid: scope
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: [movepassword, mobile, uname]
+    related_keys: [uid, dept]
+
+  - operation_id: DeptQuery
+    path: /api/NetYf/Baseinfo/DeptQuery
+    kind: resource
+    resource: dept
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [dept]
+
+  # ------------------------------------------------------ 生产计划与制单 (4)
+  - operation_id: PlanGridPageList
+    path: /api/NetYf/Plan/GridPageList
+    kind: resource
+    resource: plan
+    required_params: [dates, datee]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
       page: filter
       size: filter
-    pagination: items_total_page_size
+      dates: filter
+      datee: filter
+    pagination: list_total
     timeout_seconds: 10.0
-    min_role: employee
-    sensitive_fields: [unit_rate, amount, completed_quantity, qualified_quantity, defective_quantity]
-    related_keys: [employee_id, dept_id, order_id, style_id, operation_id, plan_id]
+    sensitive_fields: []
+    related_keys: [dh, jhdh, huohao]
 
-  - operation_id: C2_listEmployees
-    path: /v1/employees
+  - operation_id: SclzdGridPageList
+    path: /api/NetYf/Sclzd/GridPageList
     kind: resource
-    resource: employees
+    resource: sclzd
+    required_params: [dates, datee]
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      employee_ids: scope
-      dept_ids: scope
-      from: filter
-      to: filter
+      app_key: credential
+      timestamp: credential
+      sign: credential
       page: filter
       size: filter
-    pagination: items_total_page_size
+      dates: filter
+      datee: filter
+    pagination: list_total
     timeout_seconds: 10.0
-    min_role: employee
-    sensitive_fields: [display_name, employee_number]
-    related_keys: [employee_id, dept_id]
+    sensitive_fields: []
+    related_keys: [dh, dddh, huohao, id]
 
-  - operation_id: C3_listDepartments
-    path: /v1/departments
+  - operation_id: SclzdWorktypeQuery
+    path: /api/NetYf/Sclzd/SclzdWorktypeQuery
     kind: resource
-    resource: departments
+    resource: sclzd_worktype
+    required_params: [dh]
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      dept_ids: scope
-      parent_ids: filter
-      from: filter
-      to: filter
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      dh: filter
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [dh, wt]
+
+  - operation_id: SclzdBarcodeQuery
+    path: /api/NetYf/Sclzd/SclzdBarcodeQuery
+    kind: resource
+    resource: sclzd_barcode
+    required_params: [dh, detailId]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      dh: filter
+      detailId: filter
+    pagination: none
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [dh, id, uid]
+
+  # -------------------------------------------------------- 产量与进度 (6)
+  - operation_id: BarcodeClQuery
+    path: /api/NetYf/Sclzd/BarcodeClQuery
+    kind: resource
+    resource: barcode_cl
+    required_params: [dates, datee]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
       page: filter
       size: filter
-    pagination: items_total_page_size
+      dates: filter
+      datee: filter
+    pagination: list_total
     timeout_seconds: 10.0
-    min_role: employee
-    sensitive_fields: [name]
-    related_keys: [dept_id, parent_id]
+    sensitive_fields: [price, je, sl, sssl]
+    related_keys: [uid, dept, id, huohao, worktype]
 
-  - operation_id: C4_listOrders
-    path: /v1/orders
+  - operation_id: HuohaoWtCLQuery
+    path: /api/NetYf/Sclzd/HuohaoWtCLQuery
     kind: resource
-    resource: orders
+    resource: huohao_wt_cl
+    required_params: [queryFooter, scheme, dates, datee]
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      order_ids: filter
-      style_ids: filter
-      from: filter
-      to: filter
+      app_key: credential
+      timestamp: credential
+      sign: credential
       page: filter
       size: filter
-    pagination: items_total_page_size
+      queryFooter: filter
+      scheme: filter
+      dates: filter
+      datee: filter
+    pagination: list_total
+    supports_footer: true
     timeout_seconds: 10.0
-    min_role: employee
-    sensitive_fields: [ordered_quantity, completed_quantity]
-    related_keys: [order_id, style_id, dept_id]
+    sensitive_fields: [sssl]
+    related_keys: [huohao, worktype]
 
-  - operation_id: C5_listStyles
-    path: /v1/styles
+  - operation_id: PinFengGridPageList
+    path: /api/NetYf/PinFeng/GridPageList
     kind: resource
-    resource: styles
+    resource: pin_feng
+    required_params: [dates, datee]
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      style_ids: filter
-      keyword: filter
-      from: filter
-      to: filter
+      app_key: credential
+      timestamp: credential
+      sign: credential
       page: filter
       size: filter
-    pagination: items_total_page_size
+      dates: filter
+      datee: filter
+    pagination: list_total
     timeout_seconds: 10.0
-    min_role: employee
-    sensitive_fields: [name]
-    related_keys: [style_id]
+    sensitive_fields: [price, je, sl, cp]
+    related_keys: [uid, dept, dh, worktype]
 
-  - operation_id: C6_listOperations
-    path: /v1/operations
+  - operation_id: WorktypeProgressQuery
+    path: /api/NetYf/Sclzd/WorktypeProgressQuery
     kind: resource
-    resource: operations
+    resource: worktype_progress
+    required_params: [userid, uid]
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      operation_ids: filter
-      order_ids: filter
-      style_ids: filter
-      from: filter
-      to: filter
+      app_key: credential
+      timestamp: credential
+      sign: credential
       page: filter
       size: filter
-    pagination: items_total_page_size
+      userid: filter
+      uid: scope
+    pagination: list_total
     timeout_seconds: 10.0
-    min_role: employee
-    sensitive_fields: [unit_rate]
-    related_keys: [operation_id, style_id, order_id]
+    sensitive_fields: []
+    related_keys: [userid, uid, worktype]
 
-  - operation_id: C7_listProductionPlans
-    path: /v1/production-plans
+  - operation_id: YskQuery
+    path: /api/NetYf/Sclzd/YskQuery
     kind: resource
-    resource: production_plans
+    resource: ysk
+    required_params: [Uid, dates, datee]
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      plan_ids: filter
-      dept_ids: scope
-      order_ids: filter
-      style_ids: filter
-      from: filter
-      to: filter
+      app_key: credential
+      timestamp: credential
+      sign: credential
       page: filter
       size: filter
-    pagination: items_total_page_size
+      Uid: scope
+      dates: filter
+      datee: filter
+    pagination: list_total
+    supports_footer: true   # 无 queryFooter 入参但返回 footer
     timeout_seconds: 10.0
-    min_role: employee
-    sensitive_fields: [planned_quantity, completed_quantity]
-    related_keys: [plan_id, dept_id, order_id, style_id]
+    sensitive_fields: [price, je, sl]
+    related_keys: [uid, dept, id, huohao, worktype]
 
-  - operation_id: C8_listPayrollSettlements
-    path: /v1/payroll-settlements
+  - operation_id: WskQuery
+    path: /api/NetYf/Sclzd/WskQuery
     kind: resource
-    resource: payroll_settlements
+    resource: wsk
+    required_params: [dates, datee]
     parameter_sources:
-      tenant_id: scope
-      authorized_employee_ids: scope
-      authorized_dept_ids: scope
-      settlement_ids: filter
-      employee_ids: scope
-      dept_ids: scope
-      from: filter
-      to: filter
+      app_key: credential
+      timestamp: credential
+      sign: credential
       page: filter
       size: filter
-    pagination: items_total_page_size
+      dates: filter
+      datee: filter
+    pagination: list_total
+    supports_footer: true   # 无 queryFooter 入参但返回 footer
     timeout_seconds: 10.0
-    min_role: employee
-    sensitive_fields: [gross_amount, piece_count]
-    related_keys: [settlement_id, employee_id, dept_id]
+    sensitive_fields: []
+    related_keys: [id, huohao, worktype]
+
+  # ---------------------------------------------------------- 工资与排名 (2)
+  - operation_id: GongziMxQuery
+    path: /api/NetYf/Sclzd/GongziMxQuery
+    kind: resource
+    resource: gongzi_mx
+    required_params: [queryFooter, Uid, Flag, Type, scheme, dates, datee]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      page: filter
+      size: filter
+      queryFooter: filter
+      Uid: scope
+      Flag: filter        # C.12 未定默认口径；本期默认 "0"
+      Type: filter
+      scheme: filter
+      dates: filter
+      datee: filter
+    pagination: list_total
+    supports_footer: true
+    timeout_seconds: 10.0
+    sensitive_fields: [price, je, sl, fhsl]
+    related_keys: [uid, dept, id, huohao, worktype]
+
+  - operation_id: GongziJeOrderQuery
+    path: /api/NetYf/Sclzd/GongziJeOrderQuery
+    kind: resource
+    resource: gongzi_je_order
+    required_params: [queryFooter, dates, datee]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      page: filter
+      size: filter
+      queryFooter: filter
+      dates: filter
+      datee: filter
+    pagination: list_total
+    supports_footer: true
+    timeout_seconds: 10.0
+    sensitive_fields: [je, bs, uname]
+    related_keys: [uid, dept]
+
+  # ------------------------------------------------------------------ 吊挂 (3)
+  - operation_id: DgGridPageList
+    path: /api/NetYf/Dg/GridPageList
+    kind: resource
+    resource: dg
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      page: filter
+      size: filter
+    pagination: list_total
+    timeout_seconds: 10.0
+    sensitive_fields: [dg_Pwd, dg_Uid]
+    related_keys: []
+
+  - operation_id: DgZuGridPageList
+    path: /api/NetYf/Dg/DgZuGridPageList
+    kind: resource
+    resource: dg_zu
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      page: filter
+      size: filter
+    pagination: list_total
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: []
+
+  - operation_id: DgClQuery
+    path: /api/NetYf/Dg/DgClQuery
+    kind: resource
+    resource: dg_cl
+    required_params: [dates, datee]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      page: filter
+      size: filter
+      dates: filter
+      datee: filter
+    pagination: list_total
+    timeout_seconds: 10.0
+    sensitive_fields: [price, je, sl]
+    related_keys: [uid, dept, id, huohao, worktype]

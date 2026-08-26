@@ -2,7 +2,9 @@
 
 The fake replays deterministic page sequences, including fault scenarios
 (duplicate pages, missing pages, total drift), and records every request so
-tests can assert zero-call guarantees.
+tests can assert zero-call guarantees. It speaks the customer envelope
+(``result.list`` / ``result.total``) through the ``MesRequest`` / ``MesResponse``
+boundary.
 """
 
 from __future__ import annotations
@@ -13,15 +15,13 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from factory_agent.data_api.canonical import CanonicalRequest
+from factory_agent.data_api.hongzhao import MesRequest, MesResponse
 
 
 @dataclass(frozen=True, slots=True)
 class FakePage:
     items: tuple[dict[str, Any], ...]
     total: int | None = None
-    page: int | None = None
-    size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,24 +47,23 @@ class FakeOperation:
 
 @dataclass
 class FakeMesAdapter:
-    """Records requests and replays scripted Canonical responses."""
+    """Records requests and replays scripted customer-shaped responses."""
 
     operations: dict[str, FakeOperation] = field(default_factory=lambda: {})
-    requests: list[CanonicalRequest] = field(default_factory=lambda: [])
+    requests: list[MesRequest] = field(default_factory=lambda: [])
     raise_error: Exception | None = None
 
-    async def execute(self, request: CanonicalRequest) -> BaseModel:
+    async def execute(self, request: MesRequest) -> MesResponse:
         self.requests.append(request)
         if self.raise_error is not None:
             raise self.raise_error
         operation = self.operations.get(request.operation_id)
         if operation is None:
             raise AssertionError(f"unexpected operation requested: {request.operation_id}")
-        params = dict(request.query)
-        page_number = int(params.get("page", "1"))
+        page_number = int(request.params.get("page", 1))
         return self._page_response(operation, page_number)
 
-    def _page_response(self, operation: FakeOperation, page_number: int) -> BaseModel:
+    def _page_response(self, operation: FakeOperation, page_number: int) -> MesResponse:
         index = min(page_number, len(operation.pages)) - 1
         source = operation.pages[index]
         faults = operation.faults
@@ -82,28 +81,9 @@ class FakeMesAdapter:
             raw_items[0]["synthetic_drift_field"] = "unexpected"
 
         total = faults.wrong_total.get(page_number, source.total or operation.total)
-        payload: dict[str, Any] = {
-            "items": raw_items,
-            "total": total,
-            "page": page_number,
-            "size": source.size or len(raw_items),
-        }
-        model = type(
-            "FakePageResponse",
-            (BaseModel,),
-            {
-                "__annotations__": {
-                    "items": list[operation.item_model],
-                    "total": int,
-                    "page": int,
-                    "size": int,
-                },
-                "model_config": {"extra": "forbid"},
-            },
-        )
-        return model.model_validate(payload)
+        return MesResponse(result={"list": raw_items, "total": total}, footer=None)
 
-    def calls_for(self, operation_id: str) -> list[CanonicalRequest]:
+    def calls_for(self, operation_id: str) -> list[MesRequest]:
         return [request for request in self.requests if request.operation_id == operation_id]
 
 

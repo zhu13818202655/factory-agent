@@ -35,11 +35,12 @@ class IdentityProvider(Protocol):
 
 
 class MembershipResolver(Protocol):
-    """Resolve the unique authorized membership for a trusted credential pair.
+    """Resolve the unique membership for a trusted credential pair.
 
-    Implementations must raise ``MembershipNotFoundError`` when no active
-    membership exists and ``AmbiguousMembershipError`` when the credential pair
-    matches more than one membership (a data error, never silently narrowed).
+    Story 5: the binding comes from the customer credential bundle (tenant =
+    plaintext app_key, employee = token ``user``); one factory has one AppKey,
+    so membership is naturally unique. Implementations raise
+    ``MembershipNotFoundError`` when no active employee record exists.
     """
 
     async def resolve(

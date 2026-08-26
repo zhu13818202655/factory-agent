@@ -1,4 +1,12 @@
-"""Use cases resolving trusted identity, tenant context, and data scopes."""
+"""Use cases resolving trusted identity, tenant context, and data scopes.
+
+Story 5 rework: the A1/A2/A3 membership-closure chain is replaced by the
+customer credential bundle (M1/M4/M15). ``tenant_id`` is the plaintext
+``app_key`` and ``employee_id`` is the token ``user``; one factory has one
+AppKey, so membership is naturally unique (M4) — there is no multi-hit branch.
+Roles are display-only (M11): capability availability is decided by whether
+MES returns data plus the capability registry, never by a role matrix.
+"""
 
 from __future__ import annotations
 
@@ -12,13 +20,24 @@ from factory_agent.domain import (
     DeptId,
     EmployeeId,
     Identity,
-    Role,
     ScopeVersion,
     TenantContext,
     TenantId,
     TenantMembership,
 )
 from factory_agent.ports.contracts import TrustedCredential
+
+__all__ = [
+    "AuthorizationService",
+    "FixedScopeVersionAssigner",
+    "IdentityErrorCode",
+    "IdentityRejectionError",
+    "MembershipSource",
+    "OrganizationSource",
+    "ResolvedAuthorization",
+    "ScopeVersionAssigner",
+    "TenantMembership",
+]
 
 
 class IdentityErrorCode(StrEnum):
@@ -41,29 +60,22 @@ class IdentityRejectionError(Exception):
 
 
 class MembershipSource(Protocol):
-    """Port over Canonical A1: resolve the unique membership for a credential."""
+    """Port resolving the unique membership behind a trusted credential.
+
+    Implementations derive the binding from the customer credential bundle:
+    tenant from plaintext app_key, employee from token ``user``. They raise
+    ``LookupError`` when no active employee record exists.
+    """
 
     async def resolve(self, credential: TrustedCredential, as_of: datetime) -> TenantMembership: ...
 
 
 class OrganizationSource(Protocol):
-    """Port over Canonical A2: list assignments active in a time window."""
+    """Port over EmployeeQuery/DeptQuery current department membership (K2)."""
 
-    async def list_assignments(
-        self,
-        tenant_id: TenantId,
-        employee_id: EmployeeId,
-        start: datetime,
-        end: datetime,
-    ) -> tuple[tuple[DeptId, ...], ...]: ...
-
-
-class ScopeSource(Protocol):
-    """Port over Canonical A3: list effective scopes for the membership."""
-
-    async def list_scopes(
-        self, tenant_id: TenantId, membership_id: str, as_of: datetime
-    ) -> tuple[tuple[frozenset[EmployeeId], frozenset[DeptId]], ...]: ...
+    async def list_current_depts(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> tuple[DeptId, ...]: ...
 
 
 class ScopeVersionAssigner(Protocol):
@@ -82,18 +94,22 @@ class ResolvedAuthorization:
 
 
 class AuthorizationService:
-    """Resolves trusted authorization before any business-data API call."""
+    """Resolves trusted authorization before any business-data API call.
+
+    The computed scope is the minimal provable range: the caller's own
+    employee ID plus their current departments. Wider visibility comes only
+    from MES-side row filtering, recorded as ``mes_filtered`` at the adapter
+    boundary — never claimed here.
+    """
 
     def __init__(
         self,
         memberships: MembershipSource,
-        assignments: OrganizationSource,
-        scopes: ScopeSource,
+        organizations: OrganizationSource,
         versions: ScopeVersionAssigner,
     ) -> None:
         self._memberships = memberships
-        self._assignments = assignments
-        self._scopes = scopes
+        self._organizations = organizations
         self._versions = versions
 
     async def authorize(
@@ -103,7 +119,6 @@ class AuthorizationService:
         identity = Identity(
             tenant_id=membership.tenant_id,
             user_id=membership.user_id,
-            membership=membership,
         )
         tenant_context = TenantContext(
             tenant_id=membership.tenant_id,
@@ -112,7 +127,16 @@ class AuthorizationService:
             role=membership.role,
             resolved_at=as_of,
         )
-        data_scope = await self._compute_scope(membership, as_of)
+        dept_ids = await self._current_depts(membership.tenant_id, membership.employee_id)
+        version = self._versions.new_version()
+        data_scope = DataScope(
+            tenant_id=membership.tenant_id,
+            employee_ids=frozenset({membership.employee_id}),
+            dept_ids=frozenset(dept_ids),
+            evaluated_at=as_of,
+            scope_version=version,
+            mes_filtered=False,
+        )
         return ResolvedAuthorization(
             identity=identity,
             tenant_context=tenant_context,
@@ -127,65 +151,31 @@ class AuthorizationService:
         except LookupError as error:
             raise IdentityRejectionError(
                 IdentityErrorCode.NOT_FOUND,
-                "no active membership for the credential pair",
+                "no active employee record for the credential",
             ) from error
         except RuntimeError as error:
             raise IdentityRejectionError(
                 IdentityErrorCode.INTERNAL_ERROR,
-                "credential must resolve to exactly one membership",
+                "credential resolution failed",
             ) from error
 
         if membership.tenant_id != credential.tenant_id or membership.user_id != credential.user_id:
             raise IdentityRejectionError(
                 IdentityErrorCode.FORBIDDEN,
-                "resolved membership does not match the credential pair",
-            )
-        if not membership.is_active_at(as_of):
-            raise IdentityRejectionError(
-                IdentityErrorCode.NOT_FOUND,
-                "membership is not active at the requested time",
+                "resolved membership does not match the credential",
             )
         return membership
 
-    async def _compute_scope(self, membership: TenantMembership, as_of: datetime) -> DataScope:
-        version = self._versions.new_version()
-        if membership.role is Role.OWNER:
-            return DataScope.whole_tenant(membership.tenant_id, as_of, version)
-
-        scope_entries = await self._scopes.list_scopes(
-            membership.tenant_id, str(membership.membership_id), as_of
-        )
-        if not scope_entries:
+    async def _current_depts(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> tuple[DeptId, ...]:
+        try:
+            return await self._organizations.list_current_depts(tenant_id, employee_id)
+        except LookupError as error:
             raise IdentityRejectionError(
-                IdentityErrorCode.INTERNAL_ERROR,
-                "effective scope source returned no entries",
-            )
-
-        employee_ids: set[EmployeeId] = {membership.employee_id}
-        dept_ids: set[DeptId] = set(membership.dept_ids)
-        for entry_employees, entry_depts in scope_entries:
-            employee_ids |= entry_employees
-            dept_ids |= entry_depts
-
-        if membership.role is Role.MANAGER:
-            managed = await self._assignments.list_assignments(
-                membership.tenant_id, membership.employee_id, membership.valid_from, as_of
-            )
-            for assignment_depts in managed:
-                dept_ids |= set(assignment_depts)
-
-        if not employee_ids or not dept_ids:
-            raise IdentityRejectionError(
-                IdentityErrorCode.INTERNAL_ERROR,
-                "effective scope computation produced an empty scope",
-            )
-        return DataScope(
-            tenant_id=membership.tenant_id,
-            employee_ids=frozenset(employee_ids),
-            dept_ids=frozenset(dept_ids),
-            evaluated_at=as_of,
-            scope_version=version,
-        )
+                IdentityErrorCode.NOT_FOUND,
+                "no current department membership for the employee",
+            ) from error
 
 
 class FixedScopeVersionAssigner:

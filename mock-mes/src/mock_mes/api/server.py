@@ -1,3 +1,5 @@
+"""Mock MES FastAPI application: customer-shaped endpoints (Story 5)."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -7,8 +9,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from mock_mes import __version__
-from mock_mes.api.canonical import CanonicalError
-from mock_mes.api.canonical import router as canonical_router
+from mock_mes.api.customer import MesError
+from mock_mes.api.customer import router as customer_router
 from mock_mes.api.faults import FaultControlMiddleware
 from mock_mes.config import MockMesSettings, get_settings
 from mock_mes.seed import build_dataset
@@ -33,16 +35,12 @@ async def readiness() -> HealthResponse:
     return HealthResponse(status="ok", service="mock-mes", version=__version__)
 
 
-async def canonical_error_handler(request: Request, error: Exception) -> JSONResponse:
-    if not isinstance(error, CanonicalError):
+async def mes_error_handler(request: Request, error: Exception) -> JSONResponse:
+    if not isinstance(error, MesError):
         raise error
     return JSONResponse(
         status_code=error.status_code,
-        content={
-            "code": error.code,
-            "message": error.message,
-            "trace_id": "00000000000000000000000000000000",
-        },
+        content={"code": 0, "message": error.message, "result": None, "timestamp": 0},
     )
 
 
@@ -55,7 +53,7 @@ def create_app(settings: MockMesSettings | None = None) -> FastAPI:
         active_settings.virtual_now,
     )
     app.add_middleware(FaultControlMiddleware)
-    app.add_exception_handler(CanonicalError, canonical_error_handler)
+    app.add_exception_handler(MesError, mes_error_handler)
     app.include_router(health_router)
-    app.include_router(canonical_router)
+    app.include_router(customer_router)
     return app

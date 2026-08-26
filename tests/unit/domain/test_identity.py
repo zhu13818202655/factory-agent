@@ -20,15 +20,18 @@ from factory_agent.domain import (
 
 
 def _scope(
-    employee_ids: frozenset[EmployeeId] | None,
-    dept_ids: frozenset[DeptId] | None,
+    employee_ids: frozenset[EmployeeId] | None = None,
+    dept_ids: frozenset[DeptId] | None = None,
+    *,
+    mes_filtered: bool = False,
 ) -> DataScope:
     return DataScope(
         tenant_id=TenantId("tenant-a"),
-        employee_ids=employee_ids,
-        dept_ids=dept_ids,
+        employee_ids=employee_ids or frozenset(),
+        dept_ids=dept_ids or frozenset(),
         evaluated_at=datetime(2026, 8, 21, tzinfo=timezone.utc),
         scope_version=ScopeVersion("scope-v1"),
+        mes_filtered=mes_filtered,
     )
 
 
@@ -76,11 +79,11 @@ def test_data_scope_has_no_broadening_api() -> None:
         "employee_ids",
         "evaluated_at",
         "is_whole_tenant",
+        "mes_filtered",
         "narrow_to_depts",
         "narrow_to_employees",
         "scope_version",
         "tenant_id",
-        "whole_tenant",
     }
 
 
@@ -97,24 +100,32 @@ def test_data_scope_narrowing_intersects_and_never_unions() -> None:
 
 
 def test_data_scope_narrowing_cannot_add_ids() -> None:
-    scope = _scope(_employees("e1"), None)
+    scope = _scope(_employees("e1"), _depts("g1"))
 
     outside = scope.narrow_to_employees(_employees("e2"))
     assert outside is None
 
 
-def test_data_scope_whole_tenant_only_for_owner_marker() -> None:
-    whole = DataScope.whole_tenant(
-        TenantId("tenant-a"),
-        datetime(2026, 8, 21, tzinfo=timezone.utc),
-        ScopeVersion("v"),
-    )
+def test_data_scope_is_never_whole_tenant_in_story_5() -> None:
+    """M3/M12: there is no locally proven whole-tenant scope."""
+    scope = _scope(_employees("e1"), _depts("g1"))
 
-    assert whole.is_whole_tenant()
-    narrowed = whole.narrow_to_employees(_employees("e1"))
+    assert scope.is_whole_tenant() is False
+    # Even a wide scope does not claim whole-tenant visibility.
+    assert _scope(_employees("e1", "e2"), _depts("g1", "g2")).is_whole_tenant() is False
+
+
+def test_mes_filtered_is_preserved_through_narrowing_and_not_broadened() -> None:
+    scope = _scope(_employees("e1", "e2"), _depts("g1"), mes_filtered=True)
+
+    narrowed = scope.narrow_to_employees(_employees("e2"))
     assert narrowed is not None
-    assert narrowed.employee_ids == _employees("e1")
-    assert not narrowed.is_whole_tenant()
+    assert narrowed.mes_filtered is True
+    # Narrowing can never turn a non-filtered scope into a filtered one.
+    plain = _scope(_employees("e1"), _depts("g1"), mes_filtered=False)
+    plain_narrowed = plain.narrow_to_employees(_employees("e1"))
+    assert plain_narrowed is not None
+    assert plain_narrowed.mes_filtered is False
 
 
 def test_platform_scope_is_independent_of_data_scope() -> None:

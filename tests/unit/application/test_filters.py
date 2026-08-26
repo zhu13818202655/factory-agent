@@ -32,8 +32,14 @@ def scoped_scope() -> DataScope:
     )
 
 
-def whole_scope() -> DataScope:
-    return DataScope.whole_tenant(TenantId("tenant-a"), AS_OF, ScopeVersion("v1"))
+def broad_scope() -> DataScope:
+    return DataScope(
+        tenant_id=TenantId("tenant-a"),
+        employee_ids=employees("e1", "e2", "e3", "e9"),
+        dept_ids=depts("g1", "g2", "g9"),
+        evaluated_at=AS_OF,
+        scope_version=ScopeVersion("v1"),
+    )
 
 
 @dataclass
@@ -70,13 +76,13 @@ def test_empty_intersection_is_rejected_not_treated_as_unfiltered() -> None:
     assert counter.calls == 0
 
 
-def test_out_of_scope_filter_never_broadens_whole_tenant_exit() -> None:
+def test_out_of_scope_filter_never_broadens_the_scope() -> None:
     narrowed = FilterNarrower().narrow(
-        whole_scope(), employee_ids=employees("anyone"), dept_ids=depts("somewhere")
+        broad_scope(), employee_ids=employees("e2"), dept_ids=depts("g9")
     )
 
-    assert narrowed.employee_ids == employees("anyone")
-    assert narrowed.dept_ids == depts("somewhere")
+    assert narrowed.employee_ids == employees("e2")
+    assert narrowed.dept_ids == depts("g9")
 
 
 @pytest.mark.parametrize("explicit", ["order-1", None])

@@ -19,7 +19,8 @@ These rules apply to `mock-mes/`.
   must not be reimplemented here.
 - Organization is a single department (workshop) layer. Do not add group levels or assignment
   effective dates.
-- Use PostgreSQL migrations for schema changes; startup code never creates production tables.
+- The dataset is built in memory by `(scenario, seed, virtual_now)`; there is no database and no
+  migration step. Startup code creates no tables and persists nothing.
 - Admin clock and fault endpoints are enabled only in test or development environments.
 - Fault behavior must be opt-in and scoped to a test, request, or resettable scenario.
 - Include hard cases without silently changing an existing fixture's expected business numbers.

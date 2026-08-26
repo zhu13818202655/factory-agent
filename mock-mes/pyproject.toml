@@ -5,18 +5,14 @@ description = "Deterministic MES simulator for factory-agent development and tes
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "alembic>=1.16.0,<2.0.0",
     "fastapi>=0.116.0,<1.0.0",
-    "psycopg[binary]>=3.2.0,<4.0.0",
     "pydantic>=2.11.0,<3.0.0",
     "pydantic-settings>=2.10.0,<3.0.0",
-    "sqlalchemy>=2.0.0,<3.0.0",
     "uvicorn[standard]>=0.35.0,<1.0.0",
 ]
 
 [project.scripts]
 mock-mes = "mock_mes.__main__:main"
-mock-mes-migrate = "mock_mes.migrations:main"
 mock-mes-seed = "mock_mes.seed:main"
 
 [build-system]

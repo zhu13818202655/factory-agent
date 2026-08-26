@@ -7,7 +7,9 @@ It is independently runnable and is never a production dependency of `factory-ag
 uv run --package mock-mes mock-mes
 ```
 
-The API exposes `GET /health/live` and `GET /health/ready`.
+The API exposes `GET /health/live`, `GET /health/ready`, and 27 customer-shaped
+MES endpoints under `/api/`. Business endpoints use `POST` JSON requests with a
+Bearer token and common `app_key`, `timestamp`, and `sign` body fields.
 
 ## Deterministic data
 
@@ -18,37 +20,34 @@ The dataset is determined by `MOCK_MES_SCENARIO`, `MOCK_MES_SEED`, and
 uv run --package mock-mes mock-mes-seed --scenario small --seed 20260821
 ```
 
-Without `MOCK_MES_DATABASE_URL`, the command prints the reproducible dataset hash and manual
-piecework totals. With a development/test PostgreSQL URL it resets tables created by:
+The command builds the dataset in memory from `(scenario, seed, virtual_now)` and prints the
+reproducible dataset hash and manual piecework totals. There is no database and no migration step.
 
-```bash
-uv run --package mock-mes mock-mes-migrate upgrade head
-```
-
-The default `small` dataset includes synthetic single-tenant identities (one user per tenant),
-same-name employees, one employee in multiple groups, a mid-month transfer, cross-month work,
-unsettled and rework records, defects, parallel operations, a zero plan, and a delayed order.
+The default `small` dataset includes deterministic identities for a factory owner,
+workshop manager, own-data-only worker, and a second company. It covers multiple
+workshops, orders, parallel worktypes, scanned and unscanned work, manual defects,
+delayed orders, and zero plans. `(scenario, seed, virtual_now)` determines the
+complete dataset.
 
 ## Synthetic identity and faults
 
-Canonical endpoints use synthetic bearer subjects `tenant-a-user`, `tenant-b-user`,
-`single-tenant`, and `manager-a`. Each subject resolves to exactly one tenant membership; the
-credential pair `(tenant_id, user_id)` is unique. The active `X-Tenant-Id` and supplied authorized
-ID batches are checked against the deterministic server-side scope. These tokens and role mappings
-are Mock-only behavior, not customer auth rules.
+The token endpoint returns a customer-shaped credential bundle including a
+deterministic JWT-shaped `accessToken`, `sign`, timestamp, plaintext AppKey, and
+empty roles/permissions. Mock identities also accept the legacy test tokens
+`MOCK-TOKEN-01009`, `MOCK-TOKEN-01008`, and `MOCK-TOKEN-01001`.
 
-For one request, set `X-Mock-Fault` to `latency`, `429`, `5xx`, `duplicate_page`, `missing_page`,
-`wrong_total`, `null`, or `field_drift`. `X-Mock-Latency-Ms` is bounded to 2000 ms. Faults affect
-only `/v1/` and never persist into the next request.
+Bearer identity drives company, workshop, and own-data filtering. Request-body
+filters narrow results only; they cannot widen the identity's visibility.
+
+For one request, set `X-Mock-Fault` to `latency`, `429`, `5xx`, `404`, `duplicate_page`,
+`missing_page`, `wrong_total`, `footer_mismatch`, `null`, or `field_drift`.
+`X-Mock-Latency-Ms` is bounded to 2000 ms. Faults affect only the request and never persist.
 
 ## Unconfirmed assumptions
 
-All IDs, names, role codes, organization types, statuses, effective-date boundaries, quantities,
-piece rates, amounts, payroll values, and resource relationships are temporary Canonical development
-fixtures. Time filters currently use UTC half-open intervals `[from, to)`. Piecework `amount` is a
-stored synthetic value and does not establish a customer payroll formula.
+All IDs, names, role codes, quantities, piece rates, payroll values, and relationships are
+deterministic development fixtures. Unconfirmed business formulas are not represented as facts.
 
-Customer field mappings, enums, scope closure, transfer history, pagination limits, formulas, and
-sensitive display rules remain open in
-[`docs/api/customer-confirmation-questionnaire.md`](../docs/api/customer-confirmation-questionnaire.md)
-and [`docs/product/requirements.md`](../docs/product/requirements.md).
+Customer field mappings and unconfirmed metric semantics are recorded in
+[`docs/api/field-dictionary.md`](../docs/api/field-dictionary.md) and the questionnaire.
+Unconfirmed values must be surfaced as `unavailable`.

@@ -26,13 +26,12 @@ from factory_agent.application.intent import (
     CapabilitySpec,
 )
 from factory_agent.application.session import SessionService, StartRequest
-from factory_agent.domain import CapabilityId, EmployeeId, Role, SessionId, TenantId, UserId
+from factory_agent.domain import CapabilityId, Role, SessionId, TenantId, UserId
 from factory_agent.ports import ModelErrorCategory, ModelGatewayError, UsageOutboxEvent
 from factory_agent.ports.contracts import TrustedCredential
 from tests.support.authorization import (
     FakeMembershipSource,
     FakeOrganizationSource,
-    FakeScopeSource,
     membership,
 )
 from tests.support.session import (
@@ -45,7 +44,6 @@ from tests.support.session import (
 
 CONTRACT_ROOT = Path(__file__).resolve().parents[2] / "contracts" / "usage-events" / "v1"
 NOW = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
-VALID_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
 SESSION = SessionId("session-1")
 
 #: Values that must never leave the application inside a usage event.
@@ -102,17 +100,12 @@ def credential() -> TrustedCredential:
 
 
 def authorization(role: Role) -> AuthorizationService:
-    member = membership(
-        "m-1", "user-a", "tenant-a", "emp-1", role, dept_ids=("dept-1",), valid_from=VALID_FROM
-    )
+    member = membership("user-a", "tenant-a", "emp-1", role)
     return AuthorizationService(
         memberships=FakeMembershipSource(
-            memberships_by_credential={("tenant-a", "user-a"): [member]}
+            memberships_by_credential={("tenant-a", "user-a"): member}
         ),
-        assignments=FakeOrganizationSource(assignments_by_employee={"emp-1": (("dept-1",),)}),
-        scopes=FakeScopeSource(
-            scopes_by_membership={"m-1": ((frozenset({EmployeeId("emp-1")}), frozenset()),)}
-        ),
+        organizations=FakeOrganizationSource(depts_by_employee={"emp-1": ("dept-1",)}),
         versions=FixedScopeVersionAssigner(),
     )
 

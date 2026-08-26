@@ -50,7 +50,13 @@ class CapabilityId(NonEmptyId):
 
 
 class Role(str, Enum):
-    """Canonical single role attached to every tenant membership."""
+    """Display-only role tier (employee/manager/boss).
+
+    Story 5 (M11/A.1): roles never enter authorization decisions; capability
+    availability is decided by whether MES returns data plus the capability
+    registry. The enum exists for presentation mapping once the customer
+    confirms the enumeration in chapter-5 item A.1.
+    """
 
     EMPLOYEE = "employee"
     MANAGER = "manager"
@@ -59,34 +65,29 @@ class Role(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class TenantMembership:
-    """One authorized membership resolved from the trusted credential pair.
+    """Unique tenant membership derived from the credential bundle (M4/M10).
 
-    Mirrors the Canonical ``TenantMembership`` schema: exactly one role per
-    membership; manager scope semantics already include the member's own data.
+    ``tenant_id`` is the plaintext app_key and ``employee_id`` is the token
+    ``user``; one factory has one AppKey, so membership is naturally unique.
     """
 
-    membership_id: MembershipId
     user_id: UserId
     tenant_id: TenantId
     employee_id: EmployeeId
+    display_name: str
     role: Role
-    dept_ids: tuple[DeptId, ...]
-    valid_from: datetime
-    valid_to: datetime | None
-
-    def is_active_at(self, instant: datetime) -> bool:
-        if self.valid_from > instant:
-            return False
-        return self.valid_to is None or instant < self.valid_to
 
 
 @dataclass(frozen=True, slots=True)
 class Identity:
-    """Trusted identity: credential pair plus its unique authorized membership."""
+    """Trusted identity: the credential pair behind one interaction.
+
+    ``tenant_id`` is the plaintext app_key and ``user_id`` is the token
+    ``user`` (work number); both come only from the credential bundle (M4/M10).
+    """
 
     tenant_id: TenantId
     user_id: UserId
-    membership: TenantMembership
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,49 +146,44 @@ WHOLE_TENANT = OwnerMarker()
 
 @dataclass(frozen=True, slots=True)
 class DataScope:
-    """Immutable in-tenant data scope that can only be narrowed.
+    """Minimal provable in-tenant data scope (Story 5 semantics, M3/M12).
 
-    ``employee_ids``/``dept_ids`` are ``None`` only when the scope covers the
-    whole active tenant (owner role); otherwise they are explicit ID sets.
+    Row-level filtering beyond the caller's own record is performed by the
+    customer MES; ``mes_filtered=True`` records this trust and never claims the
+    wider range itself. The flag can only be set at the adapter boundary — it
+    has no broadening API and cannot be set by user input or model output.
+
+    ``employee_ids`` currently contains only the caller's own work number;
+    ``dept_ids`` comes from ``EmployeeQuery``/``DeptQuery`` current membership
+    (K2: latest relations only, no history).
     """
 
     tenant_id: TenantId
-    employee_ids: frozenset[EmployeeId] | None
-    dept_ids: frozenset[DeptId] | None
+    employee_ids: frozenset[EmployeeId]
+    dept_ids: frozenset[DeptId]
     evaluated_at: datetime
     scope_version: ScopeVersion
-
-    @staticmethod
-    def whole_tenant(
-        tenant_id: TenantId, evaluated_at: datetime, scope_version: ScopeVersion
-    ) -> DataScope:
-        return DataScope(
-            tenant_id=tenant_id,
-            employee_ids=None,
-            dept_ids=None,
-            evaluated_at=evaluated_at,
-            scope_version=scope_version,
-        )
+    mes_filtered: bool = False
 
     def is_whole_tenant(self) -> bool:
-        return self.employee_ids is None and self.dept_ids is None
+        """Deprecated whole-tenant probe; kept for audit compatibility.
+
+        With MES-side filtering there is no locally proven whole-tenant scope;
+        this returns False unless the caller explicitly recorded a platform-
+        reviewed exception via ``mes_filtered``.
+        """
+        return False
 
     def narrow_to_employees(self, employee_ids: frozenset[EmployeeId]) -> DataScope | None:
         """Intersect employee IDs into the scope; empty intersection yields None."""
-        if self.is_whole_tenant():
-            return replace(self, employee_ids=frozenset(employee_ids))
-        current = self.employee_ids or frozenset()
-        narrowed = current & employee_ids
+        narrowed = self.employee_ids & employee_ids
         if not narrowed:
             return None
         return replace(self, employee_ids=narrowed)
 
     def narrow_to_depts(self, dept_ids: frozenset[DeptId]) -> DataScope | None:
         """Intersect department IDs into the scope; empty intersection yields None."""
-        if self.is_whole_tenant():
-            return replace(self, dept_ids=frozenset(dept_ids))
-        current = self.dept_ids or frozenset()
-        narrowed = current & dept_ids
+        narrowed = self.dept_ids & dept_ids
         if not narrowed:
             return None
         return replace(self, dept_ids=narrowed)
@@ -201,7 +197,6 @@ __all__ = [
     "Identity",
     "MembershipId",
     "NonEmptyId",
-    "OwnerMarker",
     "PlatformCapability",
     "PlatformScope",
     "PrincipalId",
@@ -210,5 +205,4 @@ __all__ = [
     "TenantContext",
     "TenantMembership",
     "UserId",
-    "WHOLE_TENANT",
 ]

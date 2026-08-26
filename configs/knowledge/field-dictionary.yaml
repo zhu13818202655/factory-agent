@@ -1,0 +1,133 @@
+# 客户 MES 字段字典与产量分语境口径表（YAML 供加载器校验）。
+# Markdown 评审版：docs/api/field-dictionary.md。两份必须一致。
+version: 1
+common_fields:
+  uid: 员工工号
+  uname: 姓名
+  dept: 部门（车间）编号
+  deptname: 部门（车间）名称
+  huohao: 货号编号
+  bbreed: 货号名称
+  description: 品名
+  spname: 品名（计划）
+  name_pk: 简拼
+  sctype: 生产类型编码
+  sctypename: 生产类型名称
+  worktype: 工序编号
+  wtname: 工序名称
+  color: 颜色
+  chima: 尺码
+  chuanghao: 床号
+  baohao: 包号
+  ganghao: 缸号
+  dw: 单位
+  rq: 业务日期
+  inputtime: 刷卡时间
+  check_time: 审核时间
+  ischeck: 是否审核（工资明细）
+  price: 工价/单价
+  je: 金额（je = sl × price，M9）
+  cp: 次品数（仅手工账，C.5 未确认）
+  dh: 单号（计划）
+  jhdh: 计划单号（计划）
+  dddh: 计划单号（制单/吊挂/手工账）
+  ddh: 计划单号（手工账）
+  khddh: 客户订单号
+  khhh: 客户货号
+  khid: 客户编号
+  khname: 客户
+  ddsl: 订单数量（计划）
+  zsl: 总数量（计划）
+  paol: 抛量（计划）
+  finish_date: 交货日期
+  zhdate: 下单/制单日期
+  state: 单据状态（1=审核）
+  cid: 条码 ID
+  sffb: 是否分包
+  fbid: 分包 ID
+  zpsl: 正品数量（进度）
+  drdg_status: 导入吊挂（制单）
+  sfjz: 是否结账（吊挂）
+  gxtype: 流转类型（0工序/1仓库/2验布工资专用）
+  section: 工段
+  default_price: 默认工价（工序）
+  xz_price: 限制工价（工序）
+  gongzi_js_type: 工资结算方式（0预发/1实收/2多次实收）
+  default_working_hours: 默认理论工时（工序）
+  theoretical_work_hours: 理论工时（货号工序）
+  vehicle_type: 车种
+  sfzb: 是否整版
+  zhgx: 最后工序
+  sfxs: 是否线上
+  using_state: 使用中
+  move_admin_role: 移动管理员（01是/02否；「00」限查本人，M19）
+  employeeRule: 分配角色 JSON 数组字符串（展示用途，A.1 待确认）
+  move_Login: 移动登录权限
+  movepassword: 移动登录密码（敏感字段）
+  loginUserName: 登录用户绑定
+  lpinpai: 品牌（货号）
+  jst_huohao: 聚水潭货号（货号）
+  pid: 部门上级
+  sysdept: 系统部门（本厂）
+  company: 公司编码
+  js: 件数（手工账）
+
+# 同一字段在不同接口语境下的含义；能力实现按此取数，禁止跨语境混用。
+quantity_contexts:
+  SclzdGridPageList:
+    fhsl: 预发数量
+    sssl: 产量
+  BarcodeClQuery:
+    fhsl: 预发数量
+    sssl: 产量（扫码）
+    sl: 预发数量
+  YskQuery:
+    fhsl: 发卡数量
+    sl: 产量（工资口径，je=sl×price）
+  WskQuery:
+    sl: 预发数量（待扫数量）
+  WorktypeProgressQuery:
+    fhsl: 预发数量
+  PinFengGridPageList:
+    sl: 数量
+    js: 件数
+  PlanGridPageList:
+    sl: 预发数量
+  DgClQuery:
+    sl: 预发数量
+
+# 已确认口径（可直接参与计算与展示）。
+confirmed_metrics:
+  payroll.amount:
+    formula: sl × price
+    source: M9/M18
+  payroll.gross_total:
+    formula: footer.je_total
+    source: M9/M13
+  output.personal:
+    formula: sum(sl)
+    source: M18/C.10 暂定
+  output.order_completed:
+    formula: sum(sssl)
+    source: M18/C.10 暂定
+  progress.ratio:
+    formula: 已扫码工序数（uid 非空）/ 总工序数
+    source: M6/M18
+
+# 未确认口径：被能力引用时必须产生显式 unavailable 列状态，禁止渲染为数字。
+unconfirmed_metrics:
+  quality.defective:
+    gap: 仅手工账有 cp 字段，无统一合格/次品数据源
+    source: 第五章 C.5
+  plan.target_output:
+    gap: 目标产量无数据源（zsl/ddsl/sl 以哪个为准未答复）
+    source: 第五章 C.9
+  org.headcount:
+    gap: 在册人数在职/离职判断字段未答复
+    source: 第五章 C.7
+  production.stage:
+    gap: 量产状态（试产/量产）无数据源
+    source: 第五章 C.8
+  time.flag_default:
+    gap: GongziMxQuery Flag 默认值未定；本期默认 0 并在卡片标注口径
+    source: 第五章 C.12

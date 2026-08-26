@@ -8,9 +8,11 @@ These rules apply to `contracts/`.
   and includes `app_key` / `timestamp` / `sign` in the request body.
 - Every response uses the envelope `{code, message, result, timestamp}`. `code` is `1` (success)
   or `0` (failure); failures are distinguished by `message` text, not by a code taxonomy.
-- Every list response exposes `result.list` and `result.total`. Some endpoints add
-  `result.footer` totals; `footer` is an independent reconciliation source, never a substitute
-  for the detail rows.
+- Every list response exposes `result.list` and `result.total` (M13): the pager walks pages until
+  the accumulated row count reaches `result.total`. Some endpoints add `result.footer` totals
+  (`sl_total`, `je_total`, `bs_total`, ...); `footer` is an independent reconciliation source,
+  never a substitute for the detail rows. Note that `YskQuery` and `WskQuery` return a `footer`
+  even though they accept no `queryFooter` parameter.
 - Permission denial has no dedicated error code. It surfaces as filtered-out (empty) data.
 - `operationId` uses the customer endpoint name (for example `GongziMxQuery`). Do not reintroduce
   `A1_` / `C1_`-style synthetic identifiers.

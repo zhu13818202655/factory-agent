@@ -27,8 +27,6 @@ WORKDIR /app
 RUN useradd --create-home --uid 10001 app
 
 COPY --from=builder /app/.venv /app/.venv
-COPY mock-mes/alembic.ini ./mock-mes/alembic.ini
-COPY mock-mes/migrations ./mock-mes/migrations
 
 USER app
 

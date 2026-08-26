@@ -95,6 +95,7 @@ def interaction_started_event(
     entrypoint: Entrypoint,
     role: Role,
 ) -> UsageOutboxEvent:
+    """Role is display-only (M11); recorded as a category, never a gate."""
     payload = context.envelope("interaction_started", occurred_at)
     payload["capability"] = str(capability) if capability is not None else None
     payload["entrypoint"] = entrypoint

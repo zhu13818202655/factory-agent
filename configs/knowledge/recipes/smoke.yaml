@@ -1,27 +1,27 @@
 # Reviewed L1 capability recipes. File changes are semantics changes and
 # require human review. Real business capability recipes register in Story 5~7;
-# this file ships the minimal smoke recipe used by the kernel integration test.
+# this file ships the minimal EmployeeQuery + DeptQuery smoke recipe.
 version: 1
 capabilities:
   - capability_id: smoke_piecework_summary
-    title: Minimal single-API piecework summary (kernel smoke baseline)
-    required_slots: [time_range]
+    title: Minimal employee and workshop lookup (kernel smoke baseline)
+    required_slots: []
     steps:
-      - step_id: fetch_piecework
+      - step_id: fetch_employee
         kind: api
-        operation_id: C1_listPieceworkRecords
-      - step_id: aggregate_totals
-        kind: local
-        depends_on: [fetch_piecework]
-        compute: sum_qualified_quantity_and_amount
+        operation_id: EmployeeQuery
+      - step_id: fetch_depts
+        kind: api
+        operation_id: DeptQuery
+        parallel_group: lookups
     result_columns:
       - name: qualified_quantity_total
-        source_step: aggregate_totals
-        metric: output_quantity
+        source_step: fetch_employee
+        metric: output_personal
       - name: amount_total
-        source_step: aggregate_totals
-        metric: piecework_wage
+        source_step: fetch_depts
+        metric: org_headcount
     metric_versions:
-      output_quantity: mock-quantity-v1
-      piecework_wage: mock-wage-v1
+      output_personal: customer-output-v1
+      org_headcount: unavailable-c7
     degradation: incomplete_marker

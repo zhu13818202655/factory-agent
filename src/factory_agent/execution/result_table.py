@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -17,14 +17,24 @@ from factory_agent.domain.errors import InvalidRequestError
 
 
 class MetricDefinition(BaseModel):
-    """One named metric with an explicit version and status."""
+    """One named metric with an explicit version and confirmation status.
+
+    ``status`` follows the Story 5 registry contract: ``confirmed`` metrics may
+    participate in numeric computation; ``unconfirmed`` and ``unavailable``
+    metrics must surface as an explicit ``unavailable`` column state instead of
+    a fabricated number.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
     version: str
     description: str
-    assumption_status: str = "mock_formula_pending_customer_confirmation"
+    status: Literal["confirmed", "unconfirmed", "unavailable"] = "unconfirmed"
+    assumption_status: str = ""
+
+    def allows_numeric_rendering(self) -> bool:
+        return self.status == "confirmed"
 
 
 class MetricRegistry:
@@ -49,38 +59,76 @@ class MetricRegistry:
 
 
 def default_metric_registry() -> MetricRegistry:
-    """Mock-formula metrics pending customer confirmation (Q01~Q06 open)."""
+    """Story 5 registry: customer-confirmed formulas plus explicit gaps.
+
+    Confirmed metrics come from M6/M9/M18. Unconfirmed/unavailable entries
+    mirror chapter-5 open items (C.5/C.7/C.8/C.9/C.12) and must never be
+    rendered as numbers.
+    """
     return MetricRegistry(
         metrics=(
             MetricDefinition(
-                name="output_quantity",
-                version="mock-quantity-v1",
-                description="Sum of qualified quantity over piecework records",
+                name="payroll_amount",
+                version="customer-payroll-v1",
+                description="Piecework wage per row: sl x price",
+                status="confirmed",
+                assumption_status="M9/M18 confirmed",
             ),
             MetricDefinition(
-                name="piecework_wage",
-                version="mock-wage-v1",
-                description="Sum of piecework record amounts",
+                name="payroll_gross_total",
+                version="customer-footer-v1",
+                description="Gross payable total from footer.je_total",
+                status="confirmed",
+                assumption_status="M9/M13 confirmed",
             ),
             MetricDefinition(
-                name="plan_progress",
-                version="mock-progress-v1",
-                description="Completed quantity over planned quantity per plan",
+                name="output_personal",
+                version="customer-output-v1",
+                description="Personal output: sum of sl in Ysk/BarcodeCl context",
+                status="confirmed",
+                assumption_status="M18; fine-grained wording pending C.10",
             ),
             MetricDefinition(
-                name="order_achievement",
-                version="mock-achievement-v1",
-                description="Completed quantity over ordered quantity per order",
+                name="output_order_completed",
+                version="customer-completed-v1",
+                description="Order completed quantity: sum of sssl (Sclzd context)",
+                status="confirmed",
+                assumption_status="M18; fine-grained wording pending C.10",
             ),
             MetricDefinition(
-                name="payroll_total",
-                version="mock-payroll-v1",
-                description="Gross amount over payroll settlements",
+                name="progress_ratio",
+                version="customer-progress-v1",
+                description="Scanned worktype count over total worktype count",
+                status="confirmed",
+                assumption_status="M6/M18 confirmed",
             ),
             MetricDefinition(
-                name="alert_threshold",
-                version="mock-alert-v1",
-                description="Bounded alert rule placeholder pending Q06",
+                name="quality_defective",
+                version="unavailable-c5",
+                description="Defective quantity: manual-entry cp only, no unified source",
+                status="unavailable",
+                assumption_status="chapter 5 C.5 unanswered",
+            ),
+            MetricDefinition(
+                name="plan_target_output",
+                version="unavailable-c9",
+                description="Target output / achievement rate has no data source",
+                status="unavailable",
+                assumption_status="chapter 5 C.9 unanswered",
+            ),
+            MetricDefinition(
+                name="org_headcount",
+                version="unavailable-c7",
+                description="Registered headcount lacks active/inactive field",
+                status="unavailable",
+                assumption_status="chapter 5 C.7 unanswered",
+            ),
+            MetricDefinition(
+                name="production_stage",
+                version="unavailable-c8",
+                description="Mass-production stage has no data source",
+                status="unavailable",
+                assumption_status="chapter 5 C.8 unanswered",
             ),
         )
     )

@@ -13,7 +13,6 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
 
 from factory_agent.application.filters import NarrowedFilters
 from factory_agent.data_api.catalog import load_catalog
@@ -23,7 +22,6 @@ from factory_agent.domain import (
     EmployeeId,
     ScopeVersion,
     TenantId,
-    TimeRange,
 )
 from factory_agent.domain.errors import (
     ForbiddenError,
@@ -46,31 +44,30 @@ def _scope() -> DataScope:
     )
 
 
-def _time_range() -> TimeRange:
-    return TimeRange(datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 1, tzinfo=UTC))
+def _time_range() -> tuple[datetime, datetime]:
+    return (datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 1, tzinfo=UTC))
 
 
 @dataclass
 class FakeAdapter:
-    """Scripted page responses with canary-bearing payloads."""
+    """Scripted page responses with canary-bearing payloads (ResourceFetcher)."""
 
     pages: list[list[dict[str, Any]]] = field(default_factory=lambda: [])
     totals: list[int] = field(default_factory=lambda: [])
     requests: list[object] = field(default_factory=lambda: [])
 
-    async def execute(self, request: object) -> object:
-        self.requests.append(request)
+    async def fetch_resource_rows(
+        self,
+        operation_id: str,
+        filters: NarrowedFilters,
+        time_range: tuple[datetime, datetime],
+        page_size: int,
+    ) -> list[dict[str, Any]]:
+        self.requests.append((operation_id, filters, time_range, page_size))
         index = min(len(self.requests) - 1, len(self.pages) - 1)
-
-        class _Page(BaseModel):
-            items: list[dict[str, Any]]
-            total: int
-            page: int
-            size: int
-
-        items = self.pages[index] if index < len(self.pages) else []
-        total = self.totals[index] if index < len(self.totals) else len(items)
-        return _Page(items=items, total=total, page=index + 1, size=len(items))
+        if index < len(self.pages):
+            return list(self.pages[index])
+        return []
 
 
 CANARY = "CANARY-salary-999999"
@@ -88,7 +85,7 @@ async def test_denied_scope_produces_zero_business_calls() -> None:
     with pytest.raises(ForbiddenError):
         await executor.execute_step(
             bad_filters,
-            ExecutionRequest(operation_id="C1_listPieceworkRecords", time_range=_time_range()),
+            ExecutionRequest(operation_id="YskQuery", time_range=_time_range()),
             active_scope=_scope(),
         )
     assert adapter.requests == []
@@ -96,11 +93,12 @@ async def test_denied_scope_produces_zero_business_calls() -> None:
 
 def test_contract_drift_is_structured_upstream_invalid() -> None:
     """A canary-only row missing required fields must fail strict validation."""
-    from factory_agent.data_api.schemas import PieceworkRecordResponse
+    from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE
 
+    model = ROW_MODEL_BY_RESOURCE["ysk"]
     drifted_row = {"record_id": CANARY}
     with pytest.raises(Exception):
-        PieceworkRecordResponse.model_validate(drifted_row)
+        model.model_validate(drifted_row)
 
     # And the error raised by the validation boundary is UpstreamInvalidError.
     mapped = UpstreamInvalidError("response failed schema validation")

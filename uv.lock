@@ -1216,23 +1216,17 @@ name = "mock-mes"
 version = "0.1.0"
 source = { editable = "mock-mes" }
 dependencies = [
-    { name = "alembic" },
     { name = "fastapi" },
-    { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", specifier = ">=1.16.0,<2.0.0" },
     { name = "fastapi", specifier = ">=0.116.0,<1.0.0" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0,<4.0.0" },
     { name = "pydantic", specifier = ">=2.11.0,<3.0.0" },
     { name = "pydantic-settings", specifier = ">=2.10.0,<3.0.0" },
-    { name = "sqlalchemy", specifier = ">=2.0.0,<3.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0,<1.0.0" },
 ]
 

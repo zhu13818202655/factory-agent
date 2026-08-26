@@ -14,8 +14,10 @@ from factory_agent.application.capabilities import CapabilityRegistry
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
 from factory_agent.application.session import SessionLimits, SessionService
 from factory_agent.config import FactoryAgentSettings
-from factory_agent.data_api.canonical import CanonicalMesAdapter
-from factory_agent.domain import DeptId, EmployeeId, MesError, TenantId, TenantMembership
+from factory_agent.data_api.catalog import load_catalog
+from factory_agent.data_api.credentials import MesCredentialBundle
+from factory_agent.data_api.hongzhao import HongzhaoMesAdapter
+from factory_agent.domain import DeptId, EmployeeId, MesError, TenantId, UserId
 from factory_agent.llm.registry import ModelRegistry, load_model_registry
 from factory_agent.llm.router_gateway import LiteLlmRouterGateway
 from factory_agent.observability.audit import AuditSink, InMemoryAuditSink
@@ -88,7 +90,21 @@ def build_container(
         mes = supplied.mes
         mes_status = "fake"
     elif settings.canonical_mes_base_url is not None:
-        mes = CanonicalMesAdapter(str(settings.canonical_mes_base_url), "unconfigured")
+        mes = HongzhaoMesAdapter(
+            str(settings.canonical_mes_base_url),
+            # Placeholder bundle for readiness; real credentials are injected
+            # by the frontend credential bundle at the API boundary, never here.
+            MesCredentialBundle(  # nosec B106 - placeholder, no real secret
+                access_token="unconfigured",
+                app_key="unconfigured",
+                sign="unconfigured",
+                timestamp=0,
+                expires_at=datetime.max.replace(tzinfo=timezone.utc),
+                user=UserId("unconfigured"),
+                uname="unconfigured",
+            ),
+            load_catalog(),
+        )
         mes_status = "configured"
     else:
         mes = NotConfiguredMesDataSource()
@@ -138,8 +154,7 @@ def build_container(
     }
     authorization = supplied.authorization or AuthorizationService(
         memberships=_UnresolvedMemberships(),
-        assignments=_UnresolvedAssignments(),
-        scopes=_UnresolvedScopes(),
+        organizations=_UnresolvedOrganizations(),
         versions=FixedScopeVersionAssigner(),
     )
     clock = supplied.clock or SystemClock()
@@ -206,25 +221,16 @@ def _load_registry(settings: FactoryAgentSettings) -> ModelRegistry | None:
 
 
 class _UnresolvedMemberships:
-    """Placeholder until the Canonical A1 adapter is wired in Story 3."""
+    """Placeholder until the credential-bundle resolver is wired (Story 6+)."""
 
-    async def resolve(self, credential: TrustedCredential, as_of: datetime) -> TenantMembership:
+    async def resolve(self, credential: TrustedCredential, as_of: datetime):
         raise DependencyNotConfiguredError("membership resolver is not configured")
 
 
-class _UnresolvedAssignments:
-    async def list_assignments(
+class _UnresolvedOrganizations:
+    async def list_current_depts(
         self,
         tenant_id: TenantId,
         employee_id: EmployeeId,
-        start: datetime,
-        end: datetime,
-    ) -> tuple[tuple[DeptId, ...], ...]:
+    ) -> tuple[DeptId, ...]:
         raise DependencyNotConfiguredError("organization source is not configured")
-
-
-class _UnresolvedScopes:
-    async def list_scopes(
-        self, tenant_id: TenantId, membership_id: str, as_of: datetime
-    ) -> tuple[tuple[frozenset[EmployeeId], frozenset[DeptId]], ...]:
-        raise DependencyNotConfiguredError("scope source is not configured")

@@ -16,8 +16,9 @@ from factory_agent.execution.result_table import (
 
 def test_metric_registry_resolves_name_and_version() -> None:
     registry = default_metric_registry()
-    metric = registry.resolve("piecework_wage", "mock-wage-v1")
-    assert metric.name == "piecework_wage"
+    metric = registry.resolve("payroll_amount", "customer-payroll-v1")
+    assert metric.name == "payroll_amount"
+    assert metric.allows_numeric_rendering() is True
 
 
 def test_unregistered_metric_is_rejected() -> None:
@@ -29,7 +30,7 @@ def test_unregistered_metric_is_rejected() -> None:
 def test_wrong_version_of_registered_metric_is_rejected() -> None:
     registry = default_metric_registry()
     with pytest.raises(InvalidRequestError):
-        registry.resolve("piecework_wage", "v999")
+        registry.resolve("payroll_amount", "v999")
 
 
 def test_result_table_numbers_trace_to_operations_and_metrics() -> None:
@@ -37,25 +38,25 @@ def test_result_table_numbers_trace_to_operations_and_metrics() -> None:
         capability_id="smoke_piecework_summary",
         columns=(
             ResultColumnMeta(
-                name="qualified_quantity_total",
-                metric_name="output_quantity",
-                metric_version="mock-quantity-v1",
-                source_operations=("C1_listPieceworkRecords",),
+                name="output_total",
+                metric_name="output_personal",
+                metric_version="customer-output-v1",
+                source_operations=("YskQuery", "EmployeeQuery"),
             ),
             ResultColumnMeta(
                 name="amount_total",
-                metric_name="piecework_wage",
-                metric_version="mock-wage-v1",
-                source_operations=("C1_listPieceworkRecords",),
+                metric_name="payroll_amount",
+                metric_version="customer-payroll-v1",
+                source_operations=("GongziMxQuery",),
             ),
         ),
-        rows=({"qualified_quantity_total": 8, "amount_total": Decimal("10.00")},),
-        totals={"qualified_quantity_total": Decimal(8), "amount_total": Decimal("10.00")},
-        source_operations=("C1_listPieceworkRecords",),
+        rows=({"output_total": 8, "amount_total": Decimal("10.00")},),
+        totals={"output_total": Decimal(8), "amount_total": Decimal("10.00")},
+        source_operations=("YskQuery", "GongziMxQuery"),
     )
     trace = table.trace_for("amount_total")
-    assert trace.metric_name == "piecework_wage"
-    assert "C1_listPieceworkRecords" in trace.source_operations
+    assert trace.metric_name == "payroll_amount"
+    assert "GongziMxQuery" in trace.source_operations
 
 
 def test_column_without_metric_provenance_cannot_be_traced() -> None:
@@ -66,12 +67,12 @@ def test_column_without_metric_provenance_cannot_be_traced() -> None:
                 name="raw_count",
                 metric_name=None,
                 metric_version=None,
-                source_operations=("C2_listEmployees",),
+                source_operations=("DeptQuery",),
             ),
         ),
         rows=(),
         totals={},
-        source_operations=("C2_listEmployees",),
+        source_operations=("DeptQuery",),
     )
     with pytest.raises(InvalidRequestError):
         table.trace_for("raw_count")
@@ -91,10 +92,12 @@ def test_incomplete_table_declares_status() -> None:
     assert table.incomplete_reason == "page_budget_exhausted"
 
 
-def test_mock_metrics_carry_assumption_status() -> None:
+def test_unconfirmed_metrics_carry_a_gap_status() -> None:
     registry = default_metric_registry()
-    metric = registry.resolve("plan_progress", "mock-progress-v1")
-    assert "pending" in metric.assumption_status
+    metric = registry.resolve("quality_defective", "unavailable-c5")
+    assert metric.status == "unavailable"
+    assert not metric.allows_numeric_rendering()
+    assert "C.5" in metric.assumption_status
 
 
 def test_duplicate_registration_overwrites_explicitly() -> None:

@@ -2,8 +2,18 @@
 
 Catalog entries are loaded from ``configs/knowledge/apis.yaml`` and validated
 against a strict schema. Unreviewed or malformed entries can never reach the
-runtime registry. Authorization-critical parameters must be declared with the
-``scope`` source, meaning they may only originate from ``DataScope``.
+runtime registry.
+
+Story 5 semantics:
+- ``parameter_sources`` gains the ``credential`` category: those parameters may
+  only originate from ``MesCredentialBundle`` (app_key/timestamp/sign), never
+  from filters or model output.
+- ``enabled: false`` operations (MoveMenuQuery, K7) load but are rejected at
+  runtime before any HTTP traffic.
+- ``required_params`` are validated at load time against the customer contract
+  (e.g. GongziMxQuery.Type/scheme, WorktypeProgressQuery.userid).
+- Pagination is ``list_total``: walk pages until accumulated rows reach
+  ``result.total`` (M13).
 """
 
 from __future__ import annotations
@@ -19,8 +29,8 @@ from factory_agent.domain.errors import InvalidRequestError, UnsupportedOperatio
 
 DEFAULT_CATALOG_PATH = Path("configs/knowledge/apis.yaml")
 
-ParameterSource = Literal["scope", "filter", "clock"]
-PaginationKind = Literal["none", "items_total_page_size"]
+ParameterSource = Literal["credential", "scope", "filter", "clock"]
+PaginationKind = Literal["none", "list_total"]
 
 
 class CatalogOperation(BaseModel):
@@ -32,10 +42,12 @@ class CatalogOperation(BaseModel):
     path: str
     kind: Literal["identity", "resource"]
     resource: str | None = None
+    enabled: bool = True
+    required_params: tuple[str, ...] = ()
     parameter_sources: dict[str, ParameterSource]
     pagination: PaginationKind
+    supports_footer: bool = False
     timeout_seconds: float
-    min_role: Literal["employee", "manager", "owner"]
     sensitive_fields: tuple[str, ...] = ()
     related_keys: tuple[str, ...] = ()
 
@@ -93,10 +105,18 @@ def load_catalog(path: Path | None = None) -> ApiCatalog:
             raise InvalidRequestError("catalog contains duplicate operation IDs")
         if operation.kind == "resource" and operation.resource is None:
             raise InvalidRequestError("resource operations must declare a resource name")
-        if operation.pagination == "items_total_page_size" and operation.kind == "identity":
-            # A3 (identity listing) legitimately uses the page envelope.
-            if operation.operation_id != "A3_listEffectiveScopes":
-                raise InvalidRequestError("only resource operations use page envelopes")
+        if operation.pagination == "list_total" and operation.kind == "identity":
+            raise InvalidRequestError("only resource operations use list envelopes")
+        # Credential-sourced parameters can never come from filters or models.
+        for parameter, source in operation.parameter_sources.items():
+            if source == "credential" and parameter not in {
+                "app_key",
+                "timestamp",
+                "sign",
+            }:
+                raise InvalidRequestError(
+                    f"{operation.operation_id}.{parameter} has an invalid credential source"
+                )
         operations[operation.operation_id] = operation
 
     return ApiCatalog(version=document.version, _operations=operations)

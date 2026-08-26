@@ -4,7 +4,6 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,7 +13,6 @@ class MockMesSettings(BaseSettings):
     environment: Literal["development", "test"] = "development"
     host: str = "127.0.0.1"
     port: int = 8010
-    database_url: SecretStr | None = None
     scenario: Literal["small", "standard"] = "small"
     seed: int = 20260821
     virtual_now: datetime = datetime.fromisoformat("2026-08-21T08:00:00+00:00")

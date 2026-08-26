@@ -29,11 +29,7 @@ class DependencyNotConfiguredError(RuntimeError):
 
 
 class MembershipNotFoundError(LookupError):
-    """No active membership exists for the trusted credential pair."""
-
-
-class AmbiguousMembershipError(RuntimeError):
-    """The credential pair matched multiple memberships; a data error."""
+    """No active employee record exists for the trusted credential."""
 
 
 def _raise(dependency: str) -> NoReturn:

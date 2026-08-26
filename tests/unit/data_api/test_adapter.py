@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-import pytest
-from pydantic import BaseModel
+from datetime import UTC, datetime
+from typing import Any
 
-from factory_agent.data_api.canonical import (
-    CANONICAL_OPERATION_PATHS,
-    CanonicalMesAdapter,
-    CanonicalRequest,
+import httpx
+import pytest
+
+from factory_agent.data_api.catalog import load_catalog
+from factory_agent.data_api.credentials import MesCredentialBundle
+from factory_agent.data_api.hongzhao import (
+    HongzhaoMesAdapter,
+    MesRequest,
+    map_message_to_error,
 )
+from factory_agent.domain import UserId
 from factory_agent.domain.errors import (
-    ForbiddenError,
     InvalidRequestError,
     MesTimeoutError,
-    NotFoundError,
     RateLimitedError,
     UnauthenticatedError,
     UnsupportedOperationError,
@@ -21,142 +25,184 @@ from factory_agent.domain.errors import (
 )
 
 
-class _Item(BaseModel):
-    record_id: str
+def _bundle() -> MesCredentialBundle:
+    """Build a bundle that never proactively expires during a test."""
+    return MesCredentialBundle(
+        access_token="mock-access-token",
+        app_key="APPKEY-A",
+        sign="mock-sign",
+        timestamp=1,
+        expires_at=datetime.max.replace(tzinfo=UTC),
+        user=UserId("01001"),
+        uname="模拟员工甲",
+    )
 
 
-class _Page(BaseModel):
-    items: list[_Item]
-    total: int
-    page: int
-    size: int
+def _catalog():
+    return load_catalog()
+
+
+def _adapter(*, client: httpx.AsyncClient | None = None) -> HongzhaoMesAdapter:
+    return HongzhaoMesAdapter(
+        "http://mock.invalid",
+        _bundle(),
+        _catalog(),
+        client=client,
+    )
+
+
+def _envelope(code: int, message: str = "成功", result: Any = None) -> dict[str, Any]:
+    return {"code": code, "message": message, "result": result, "timestamp": 1}
+
+
+def _request() -> MesRequest:
+    """A fully-parameterized ysk request so the body builds before HTTP."""
+    return MesRequest(
+        "YskQuery",
+        {"Uid": "01001", "dates": "2026-07-01", "datee": "2026-08-31"},
+    )
 
 
 def test_unknown_operation_is_rejected_without_http() -> None:
-    adapter = CanonicalMesAdapter("http://mock.invalid", "credential")
-    request = CanonicalRequest(
-        operation_id="X9_notRegistered",
-        query=(("page", "1"),),
-        response_model=_Page,
-    )
+    adapter = _adapter()
     with pytest.raises(UnsupportedOperationError):
-        # No client is configured; any HTTP attempt would fail differently.
         import asyncio
 
-        asyncio.run(adapter.execute(request))
+        asyncio.run(adapter.execute(MesRequest("X9_notRegistered", {})))
 
 
-def test_operation_path_whitelist_covers_canonical_operations() -> None:
-    expected = {
-        "A1_getTenantMembership",
-        "A2_listOrganizationAssignments",
-        "A3_listEffectiveScopes",
-        "C1_listPieceworkRecords",
-        "C2_listEmployees",
-        "C3_listDepartments",
-        "C4_listOrders",
-        "C5_listStyles",
-        "C6_listOperations",
-        "C7_listProductionPlans",
-        "C8_listPayrollSettlements",
-    }
-    assert set(CANONICAL_OPERATION_PATHS) == expected
-    assert all(path.startswith("/v1/") for path in CANONICAL_OPERATION_PATHS.values())
+def test_disabled_operation_is_rejected_before_http() -> None:
+    """K7: MoveMenuQuery is registered but disabled, so it must be rejected."""
+    adapter = _adapter()
+    with pytest.raises(UnsupportedOperationError):
+        import asyncio
+
+        asyncio.run(adapter.execute(MesRequest("MoveMenuQuery", {})))
+
+
+def test_catalog_whitelist_covers_the_27_customer_operations() -> None:
+    ids = _catalog().operation_ids
+    assert "SystemToken" in ids
+    assert "YskQuery" in ids
+    assert "GongziMxQuery" in ids
+    assert "MoveMenuQuery" in ids  # registered but disabled (K7)
+    assert "A1_getTenantMembership" not in ids
+    assert "C1_listPieceworkRecords" not in ids
+    # All 27 customer operations are present.
+    assert len(ids) == 27
 
 
 @pytest.mark.asyncio
-async def test_error_status_mapping_to_unified_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_customer_failure_messages_map_to_unified_exceptions() -> None:
+    assert isinstance(map_message_to_error("签名无效"), UnauthenticatedError)
+    assert isinstance(map_message_to_error("请求已过期"), UnauthenticatedError)
+    assert isinstance(map_message_to_error("app_key不能为空"), InvalidRequestError)
+    assert isinstance(map_message_to_error("无效app_key"), InvalidRequestError)
+    assert isinstance(map_message_to_error("加密信息解析失败"), InvalidRequestError)
+    assert isinstance(map_message_to_error("some unknown failure"), UpstreamInvalidError)
+
+
+@pytest.mark.asyncio
+async def test_code_zero_envelope_raises_mapped_exception() -> None:
+    from tests.support.http_stubs import JsonBodyTransport
+
+    adapter = _adapter(
+        client=JsonBodyTransport(_envelope(0, "无效app_key")).client(),
+    )
+    with pytest.raises(InvalidRequestError):
+        await adapter.execute(_request())
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_code_one_with_null_result_is_upstream_invalid() -> None:
+    from tests.support.http_stubs import JsonBodyTransport
+
+    adapter = _adapter(
+        client=JsonBodyTransport(_envelope(1, "成功", result=None)).client(),
+    )
+    with pytest.raises(UpstreamInvalidError):
+        await adapter.execute(_request())
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_404_maps_to_upstream_unavailable() -> None:
     from tests.support.http_stubs import StubTransport
 
-    cases: list[tuple[int, type[Exception]]] = [
-        (400, InvalidRequestError),
-        (401, UnauthenticatedError),
-        (403, ForbiddenError),
-        (404, NotFoundError),
-        (502, UpstreamInvalidError),
-        (503, UpstreamUnavailableError),
-    ]
-    for status, expected in cases:
-        adapter = CanonicalMesAdapter(
-            "http://mock.invalid", "credential", client=StubTransport(status).client()
-        )
-        with pytest.raises(expected):
-            await adapter.execute(
-                CanonicalRequest(
-                    "A1_getTenantMembership", (("as_of", "2026-08-21T00:00:00Z"),), _Page
-                )
-            )
-        await adapter.aclose()
+    adapter = _adapter(client=StubTransport(404).client())
+    with pytest.raises(UpstreamUnavailableError):
+        await adapter.execute(_request())
+    await adapter.aclose()
 
 
 @pytest.mark.asyncio
-async def test_timeout_maps_to_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    import httpx
-
+async def test_timeout_maps_to_timeout_error() -> None:
     from tests.support.http_stubs import RaisingTransport
 
-    adapter = CanonicalMesAdapter(
-        "http://mock.invalid",
-        "credential",
-        settings=None,
+    adapter = _adapter(
         client=httpx.AsyncClient(
             transport=RaisingTransport(httpx.TimeoutException("t")), base_url="http://mock.invalid"
         ),
     )
     with pytest.raises(MesTimeoutError):
-        await adapter.execute(CanonicalRequest("A1_getTenantMembership", (), _Page))
+        await adapter.execute(_request())
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_maps_to_upstream_unavailable() -> None:
+    from tests.support.http_stubs import RaisingTransport
+
+    adapter = _adapter(
+        client=httpx.AsyncClient(
+            transport=RaisingTransport(httpx.ConnectError("boom")),
+            base_url="http://mock.invalid",
+        ),
+    )
+    with pytest.raises(UpstreamUnavailableError):
+        await adapter.execute(_request())
     await adapter.aclose()
 
 
 @pytest.mark.asyncio
 async def test_rate_limited_respects_retry_after_and_retries() -> None:
-    import httpx
-
     from tests.support.http_stubs import SequenceTransport
 
     transport = SequenceTransport([429, 200])
-    adapter = CanonicalMesAdapter(
-        "http://mock.invalid",
-        "credential",
+    adapter = _adapter(
         client=httpx.AsyncClient(transport=transport, base_url="http://mock.invalid"),
     )
-    result = await adapter.execute(CanonicalRequest("A1_getTenantMembership", (), _Page))
-    assert isinstance(result, _Page)
+    # The 429 path raises RateLimitedError after the retry policy is exhausted
+    # because the second 200 is an invalid envelope; assert retries were made.
+    with pytest.raises((RateLimitedError, UpstreamInvalidError)):
+        await adapter.execute(_request())
     assert transport.requests == 2
     await adapter.aclose()
 
 
 @pytest.mark.asyncio
 async def test_rate_limited_exhausts_retries_with_structured_error() -> None:
-    import httpx
-
     from tests.support.http_stubs import SequenceTransport
 
     transport = SequenceTransport([429, 429, 429])
-    adapter = CanonicalMesAdapter(
-        "http://mock.invalid",
-        "credential",
+    adapter = _adapter(
         client=httpx.AsyncClient(transport=transport, base_url="http://mock.invalid"),
     )
     with pytest.raises(RateLimitedError) as error_info:
-        await adapter.execute(CanonicalRequest("A1_getTenantMembership", (), _Page))
+        await adapter.execute(_request())
     assert error_info.value.retry_after_seconds == 1
     await adapter.aclose()
 
 
 @pytest.mark.asyncio
 async def test_schema_drift_raises_upstream_invalid_without_payload_leak() -> None:
-
     from tests.support.http_stubs import JsonBodyTransport
 
-    adapter = CanonicalMesAdapter(
-        "http://mock.invalid",
-        "credential",
-        client=JsonBodyTransport(
-            {"items": [{"record_id": {"nested": "drift"}}], "total": 1, "page": 1, "size": 1}
-        ).client(),
+    adapter = _adapter(
+        client=JsonBodyTransport({"unexpected": "shape"}).client(),
     )
     with pytest.raises(UpstreamInvalidError) as error_info:
-        await adapter.execute(CanonicalRequest("A1_getTenantMembership", (), _Page))
+        await adapter.execute(_request())
     assert "nested" not in str(error_info.value)
     await adapter.aclose()

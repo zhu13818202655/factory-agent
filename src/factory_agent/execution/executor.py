@@ -1,31 +1,39 @@
 """Execution kernel entry point with mandatory scope injection.
 
 The executor is the only way application code reaches MES business data. It
-accepts Story 2's ``NarrowedFilters`` as the single scope exit, rejects
+accepts ``NarrowedFilters`` as the single scope exit, rejects
 ``PlatformScope``, and guarantees that out-of-scope IDs never enter adapter
 parameters, sandbox tables, or logs.
+
+Story 5 semantics: scope-derived parameters (``uid``/``Uid``) flow only from
+``NarrowedFilters``; credential parameters (app_key/timestamp/sign) are
+injected by the adapter from ``MesCredentialBundle`` and can never be supplied
+through this path.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from factory_agent.domain import (
     DataScope,
     NarrowedFilters,
     PlatformScope,
-    TimeRange,
 )
-from factory_agent.domain.errors import ForbiddenError, InvalidRequestError
-from factory_agent.domain.queries import ResourceQuery
+from factory_agent.domain.errors import ForbiddenError
 
 
 class ResourceFetcher(Protocol):
     """Port over validated resource fetching; implemented in ``data_api``."""
 
     async def fetch_resource_rows(
-        self, operation_id: str, query: ResourceQuery
+        self,
+        operation_id: str,
+        filters: NarrowedFilters,
+        time_range: tuple[datetime, datetime],
+        page_size: int,
     ) -> list[dict[str, Any]]: ...
 
 
@@ -47,12 +55,10 @@ class StrictScopeVerifier:
     def verify(self, scope: DataScope, filters: NarrowedFilters) -> None:
         if filters.tenant_id != scope.tenant_id:
             raise ForbiddenError("filter tenant does not match the active tenant")
-        if filters.employee_ids is not None and scope.employee_ids is not None:
-            if not filters.employee_ids <= scope.employee_ids:
-                raise ForbiddenError("employee filters exceed the authorized scope")
-        if filters.dept_ids is not None and scope.dept_ids is not None:
-            if not filters.dept_ids <= scope.dept_ids:
-                raise ForbiddenError("department filters exceed the authorized scope")
+        if filters.employee_ids is not None and not filters.employee_ids <= scope.employee_ids:
+            raise ForbiddenError("employee filters exceed the authorized scope")
+        if filters.dept_ids is not None and not filters.dept_ids <= scope.dept_ids:
+            raise ForbiddenError("department filters exceed the authorized scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +66,7 @@ class ExecutionRequest:
     """One bounded execution step requested by a capability recipe."""
 
     operation_id: str
-    time_range: TimeRange
+    time_range: tuple[datetime, datetime]
     pagination_size: int = 50
 
 
@@ -97,34 +103,21 @@ class ScopedExecutor:
         active_scope: DataScope | None = None,
     ) -> StepResult:
         # Authorization completes before any business-data API call.
-        operation = self._catalog.get(request.operation_id)
-        if operation.kind != "resource":
-            raise InvalidRequestError("only resource operations support scoped execution")
+        self._catalog.get(request.operation_id)  # whitelist check before HTTP
         if active_scope is not None:
             self._verifier.verify(active_scope, filters)
 
-        query = self._build_query(filters, request)
-        rows = await self._adapter.fetch_resource_rows(request.operation_id, query)
+        rows = await self._adapter.fetch_resource_rows(
+            request.operation_id,
+            filters,
+            request.time_range,
+            request.pagination_size,
+        )
         return StepResult(
             operation_id=request.operation_id,
             rows=tuple(rows),
-            complete=len(rows) < query.pagination.size,
+            complete=True,
         )
-
-    def _build_query(self, filters: NarrowedFilters, request: ExecutionRequest) -> ResourceQuery:
-        return ResourceQuery(
-            tenant_id=filters.tenant_id,
-            employee_ids=filters.employee_ids,
-            dept_ids=filters.dept_ids,
-            time_range=request.time_range,
-            pagination=_pagination(request.pagination_size),
-        )
-
-
-def _pagination(size: int) -> Any:
-    from factory_agent.domain.queries import PaginationRequest
-
-    return PaginationRequest(page=1, size=size)
 
 
 def reject_platform_scope(scope: object) -> None:

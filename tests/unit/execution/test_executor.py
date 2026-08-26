@@ -16,7 +16,6 @@ from factory_agent.domain import (
     TenantId,
 )
 from factory_agent.domain.errors import ForbiddenError
-from factory_agent.domain.queries import TimeRange
 from factory_agent.execution.executor import ExecutionRequest
 from tests.support.execution_kernel import make_scoped_executor
 
@@ -47,8 +46,8 @@ def _filters(
     )
 
 
-def _time_range() -> TimeRange:
-    return TimeRange(datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 1, tzinfo=UTC))
+def _time_range() -> tuple[datetime, datetime]:
+    return (datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 1, tzinfo=UTC))
 
 
 @pytest.mark.asyncio
@@ -56,13 +55,19 @@ async def test_scope_parameters_flow_only_from_narrowed_filters() -> None:
     adapter, executor = make_scoped_executor()
     result = await executor.execute_step(
         _filters(),
-        ExecutionRequest(operation_id="C1_listPieceworkRecords", time_range=_time_range()),
+        ExecutionRequest(operation_id="YskQuery", time_range=_time_range()),
         active_scope=_scope(),
     )
     assert len(adapter.requests) == 1
-    query = dict(adapter.requests[0].query)
-    assert query["authorized_employee_ids"] == "employee-a1"
-    assert query["authorized_dept_ids"] == "group-a1"
+    operation_id, filters, time_range, page_size = adapter.requests[0]
+    assert operation_id == "YskQuery"
+    assert filters.tenant_id == TenantId("tenant-a")
+    assert filters.employee_ids is not None and {str(item) for item in filters.employee_ids} == {
+        "employee-a1"
+    }
+    assert filters.dept_ids is not None and {str(item) for item in filters.dept_ids} == {"group-a1"}
+    assert time_range == _time_range()
+    assert page_size == 50
     assert result.complete is True
 
 
@@ -72,7 +77,7 @@ async def test_out_of_scope_employee_id_never_reaches_adapter() -> None:
     with pytest.raises(ForbiddenError):
         await executor.execute_step(
             _filters(employees=("employee-other",)),
-            ExecutionRequest(operation_id="C1_listPieceworkRecords", time_range=_time_range()),
+            ExecutionRequest(operation_id="YskQuery", time_range=_time_range()),
             active_scope=_scope(),
         )
     assert adapter.requests == []
@@ -84,7 +89,7 @@ async def test_tenant_rewrite_is_rejected_with_zero_calls() -> None:
     with pytest.raises(ForbiddenError):
         await executor.execute_step(
             _filters(tenant="tenant-b"),
-            ExecutionRequest(operation_id="C1_listPieceworkRecords", time_range=_time_range()),
+            ExecutionRequest(operation_id="YskQuery", time_range=_time_range()),
             active_scope=_scope(),
         )
     assert adapter.requests == []
@@ -96,7 +101,7 @@ async def test_dept_escalation_is_rejected_with_zero_calls() -> None:
     with pytest.raises(ForbiddenError):
         await executor.execute_step(
             _filters(depts=("workshop-b1",)),
-            ExecutionRequest(operation_id="C1_listPieceworkRecords", time_range=_time_range()),
+            ExecutionRequest(operation_id="YskQuery", time_range=_time_range()),
             active_scope=_scope(),
         )
     assert adapter.requests == []

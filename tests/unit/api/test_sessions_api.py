@@ -14,11 +14,10 @@ from factory_agent.application.authorization import (
 from factory_agent.application.intent import CapabilityCatalog, CapabilitySpec
 from factory_agent.bootstrap import DependencyOverrides
 from factory_agent.config import FactoryAgentSettings
-from factory_agent.domain import CapabilityId, EmployeeId, Role
+from factory_agent.domain import CapabilityId, Role
 from tests.support.authorization import (
     FakeMembershipSource,
     FakeOrganizationSource,
-    FakeScopeSource,
     membership,
 )
 from tests.support.session import (
@@ -30,7 +29,6 @@ from tests.support.session import (
 )
 
 NOW = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
-VALID_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
 HEADERS = {TENANT_HEADER: "tenant-a", USER_HEADER: "user-a"}
 INTENT_PAYLOAD = (
     '{"capability_id": "FR-001", "confidence": 0.95, "slots": {"time_expression": "上个月"}}'
@@ -50,20 +48,15 @@ CATALOG = CapabilityCatalog(
 def overrides(
     store: InMemoryInteractionStore, runner: RecordingCapabilityRunner
 ) -> DependencyOverrides:
-    member = membership(
-        "m-1", "user-a", "tenant-a", "emp-1", Role.EMPLOYEE, ("dept-1",), VALID_FROM
-    )
+    member = membership("user-a", "tenant-a", "emp-1", Role.EMPLOYEE)
     return DependencyOverrides(
         model=ScriptedModelGateway(contents=[INTENT_PAYLOAD]),
         clock=FrozenClock(NOW),
         authorization=AuthorizationService(
             memberships=FakeMembershipSource(
-                memberships_by_credential={("tenant-a", "user-a"): [member]}
+                memberships_by_credential={("tenant-a", "user-a"): member}
             ),
-            assignments=FakeOrganizationSource(assignments_by_employee={"emp-1": (("dept-1",),)}),
-            scopes=FakeScopeSource(
-                scopes_by_membership={"m-1": ((frozenset({EmployeeId("emp-1")}), frozenset()),)}
-            ),
+            organizations=FakeOrganizationSource(depts_by_employee={"emp-1": ("dept-1",)}),
             versions=FixedScopeVersionAssigner(),
         ),
         interactions=store,

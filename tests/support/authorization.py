@@ -1,4 +1,10 @@
-"""Fake sources for authorization use-case tests; deterministic and offline."""
+"""Fake sources for authorization use-case tests; deterministic and offline.
+
+Story 5 rework mirrors the new ``AuthorizationService``: membership is unique
+per credential (one factory, one AppKey — M4), the credential bundle supplies
+``tenant_id``/``employee_id``, and department membership comes from
+``EmployeeQuery``/``DeptQuery`` current relations (K2). Roles are display-only.
+"""
 
 from __future__ import annotations
 
@@ -8,12 +14,10 @@ from datetime import datetime
 from factory_agent.application.authorization import (
     MembershipSource,
     OrganizationSource,
-    ScopeSource,
 )
 from factory_agent.domain import (
     DeptId,
     EmployeeId,
-    MembershipId,
     Role,
     ScopeVersion,
     TenantId,
@@ -21,34 +25,34 @@ from factory_agent.domain import (
     UserId,
 )
 from factory_agent.ports.contracts import TrustedCredential
-from tests.support.ports import FakeClock
 
 
 def membership(
-    membership_id: str,
     user_id: str,
     tenant_id: str,
     employee_id: str,
     role: Role,
-    dept_ids: tuple[str, ...] = (),
-    valid_from: datetime | None = None,
-    valid_to: datetime | None = None,
+    display_name: str = "模拟员工",
 ) -> TenantMembership:
+    """Build the unique customer membership for one credential."""
     return TenantMembership(
-        membership_id=MembershipId(membership_id),
         user_id=UserId(user_id),
         tenant_id=TenantId(tenant_id),
         employee_id=EmployeeId(employee_id),
+        display_name=display_name,
         role=role,
-        dept_ids=tuple(DeptId(value) for value in dept_ids),
-        valid_from=valid_from or FakeClock().current,
-        valid_to=valid_to,
     )
 
 
 @dataclass
 class FakeMembershipSource(MembershipSource):
-    memberships_by_credential: dict[tuple[str, str], list[TenantMembership]] = field(
+    """Resolves the single membership behind a trusted credential (M4).
+
+    One factory has one AppKey, so each ``(tenant_id, user_id)`` maps to at
+    most one membership; there is no ambiguity branch.
+    """
+
+    memberships_by_credential: dict[tuple[str, str], TenantMembership] = field(
         default_factory=lambda: {}
     )
     calls: int = 0
@@ -56,49 +60,29 @@ class FakeMembershipSource(MembershipSource):
     async def resolve(self, credential: TrustedCredential, as_of: datetime) -> TenantMembership:
         self.calls += 1
         key = (str(credential.tenant_id), str(credential.user_id))
-        candidates = [
-            item for item in self.memberships_by_credential.get(key, []) if item.is_active_at(as_of)
-        ]
-        if not candidates:
-            raise LookupError("no active membership")
-        if len(candidates) > 1:
-            raise RuntimeError("ambiguous membership")
-        return candidates[0]
+        try:
+            return self.memberships_by_credential[key]
+        except KeyError as error:
+            raise LookupError("no active employee record for the credential") from error
 
 
 @dataclass
 class FakeOrganizationSource(OrganizationSource):
-    assignments_by_employee: dict[str, tuple[tuple[str, ...], ...]] = field(
-        default_factory=lambda: {}
-    )
+    """``list_current_depts`` backed by a static employee → depts mapping."""
+
+    depts_by_employee: dict[str, tuple[str, ...]] = field(default_factory=lambda: {})
     calls: int = 0
 
-    async def list_assignments(
+    async def list_current_depts(
         self,
         tenant_id: TenantId,
         employee_id: EmployeeId,
-        start: datetime,
-        end: datetime,
-    ) -> tuple[tuple[DeptId, ...], ...]:
+    ) -> tuple[DeptId, ...]:
         self.calls += 1
-        return tuple(
-            tuple(DeptId(value) for value in depts)
-            for depts in self.assignments_by_employee.get(str(employee_id), ())
-        )
-
-
-@dataclass
-class FakeScopeSource(ScopeSource):
-    scopes_by_membership: dict[str, tuple[tuple[frozenset[EmployeeId], frozenset[DeptId]], ...]] = (
-        field(default_factory=lambda: {})
-    )
-    calls: int = 0
-
-    async def list_scopes(
-        self, tenant_id: TenantId, membership_id: str, as_of: datetime
-    ) -> tuple[tuple[frozenset[EmployeeId], frozenset[DeptId]], ...]:
-        self.calls += 1
-        return self.scopes_by_membership.get(membership_id, ())
+        depts = self.depts_by_employee.get(str(employee_id))
+        if depts is None:
+            raise LookupError("no current department membership for the employee")
+        return tuple(DeptId(value) for value in depts)
 
 
 @dataclass

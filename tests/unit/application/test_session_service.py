@@ -39,7 +39,6 @@ from factory_agent.ports.contracts import TrustedCredential
 from tests.support.authorization import (
     FakeMembershipSource,
     FakeOrganizationSource,
-    FakeScopeSource,
     membership,
 )
 from tests.support.session import (
@@ -51,7 +50,6 @@ from tests.support.session import (
 )
 
 NOW = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
-VALID_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
 SESSION = SessionId("session-1")
 CANARY = "员工 E-CANARY 上月工资 8213.44 元"
 
@@ -84,23 +82,12 @@ def credential(tenant: str = "tenant-a", user: str = "user-a") -> TrustedCredent
 
 
 def authorization(role: Role = Role.EMPLOYEE) -> AuthorizationService:
-    member = membership(
-        "m-1",
-        "user-a",
-        "tenant-a",
-        "emp-1",
-        role,
-        dept_ids=("dept-1",),
-        valid_from=VALID_FROM,
-    )
+    member = membership("user-a", "tenant-a", "emp-1", role)
     return AuthorizationService(
         memberships=FakeMembershipSource(
-            memberships_by_credential={("tenant-a", "user-a"): [member]}
+            memberships_by_credential={("tenant-a", "user-a"): member}
         ),
-        assignments=FakeOrganizationSource(assignments_by_employee={"emp-1": (("dept-1",),)}),
-        scopes=FakeScopeSource(
-            scopes_by_membership={"m-1": ((frozenset({EmployeeId("emp-1")}), frozenset()),)}
-        ),
+        organizations=FakeOrganizationSource(depts_by_employee={"emp-1": ("dept-1",)}),
         versions=FixedScopeVersionAssigner(),
     )
 
@@ -213,16 +200,21 @@ async def test_executor_only_receives_scope_narrowed_filters() -> None:
 
 
 @pytest.mark.asyncio
-async def test_denied_capability_performs_zero_business_data_calls() -> None:
+async def test_registered_capability_runs_for_any_role() -> None:
+    """M11: roles are display-only, so a registered capability is never denied.
+
+    An employee may run what used to be an owner-only capability; actual data
+    visibility is enforced later by MES-side row filtering (M3/M12).
+    """
     service, store, runner = build([OWNER_ONLY_PAYLOAD], role=Role.EMPLOYEE)
     request = StartRequest(session_id=SESSION, text="全厂工资统计")
     record = await service.start(credential(), request)
 
     events = await drain(service, record.interaction_id)
 
-    assert runner.requests == []
-    assert events[-1].name == "interaction.failed"
-    assert store.interactions[str(record.interaction_id)].error_category == "forbidden"
+    assert len(runner.requests) == 1
+    assert events[-1].name == "interaction.completed"
+    assert store.interactions[str(record.interaction_id)].error_category is None
 
 
 @pytest.mark.asyncio

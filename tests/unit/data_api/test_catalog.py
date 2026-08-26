@@ -8,22 +8,16 @@ import yaml
 from factory_agent.data_api.catalog import DEFAULT_CATALOG_PATH, load_catalog
 
 
-def test_default_catalog_loads_and_covers_canonical_operations() -> None:
+def test_default_catalog_loads_and_covers_27_customer_operations() -> None:
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
-    expected = {
-        "A1_getTenantMembership",
-        "A2_listOrganizationAssignments",
-        "A3_listEffectiveScopes",
-        "C1_listPieceworkRecords",
-        "C2_listEmployees",
-        "C3_listDepartments",
-        "C4_listOrders",
-        "C5_listStyles",
-        "C6_listOperations",
-        "C7_listProductionPlans",
-        "C8_listPayrollSettlements",
-    }
-    assert catalog.operation_ids == expected
+    assert len(catalog.operation_ids) == 27
+    assert "SystemToken" in catalog
+    assert "YskQuery" in catalog
+    assert "GongziMxQuery" in catalog
+    assert "MoveMenuQuery" in catalog  # registered but disabled (K7)
+    assert catalog.get("MoveMenuQuery").enabled is False
+    assert "A1_getTenantMembership" not in catalog
+    assert "C1_listPieceworkRecords" not in catalog
 
 
 def test_unknown_operation_is_rejected_at_runtime() -> None:
@@ -34,27 +28,25 @@ def test_unknown_operation_is_rejected_at_runtime() -> None:
         catalog.get("X9_notRegistered")
 
 
-def test_every_resource_operation_declares_scope_sourced_authorization_params() -> None:
-    """Authorization IDs may only come from DataScope, never filter or clock."""
-    catalog = load_catalog(DEFAULT_CATALOG_PATH)
-    scope_required = ("tenant_id", "authorized_employee_ids", "authorized_dept_ids")
-    for operation_id in catalog.operation_ids:
-        operation = catalog.get(operation_id)
-        if operation.kind != "resource":
-            continue
-        for parameter in scope_required:
-            assert operation.parameter_sources.get(parameter) == "scope", (
-                f"{operation.operation_id}.{parameter} must be scope-sourced"
-            )
-
-
-def test_no_operation_accepts_user_text_as_scope_parameter() -> None:
+def test_scope_sourced_params_only_carry_data_scope_identifiers() -> None:
+    """``scope`` params may only originate from DataScope (uid/Uid), never filters."""
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
     for operation_id in catalog.operation_ids:
         operation = catalog.get(operation_id)
         for parameter, source in operation.parameter_sources.items():
-            if parameter.startswith("authorized_") or parameter == "tenant_id":
-                assert source == "scope"
+            if source == "scope":
+                assert parameter in {"uid", "Uid"}, (operation_id, parameter)
+            if source == "credential":
+                assert parameter in {"app_key", "timestamp", "sign"}, (operation_id, parameter)
+
+
+def test_credential_sourced_params_are_never_filters_or_model_output() -> None:
+    catalog = load_catalog(DEFAULT_CATALOG_PATH)
+    for operation_id in catalog.operation_ids:
+        operation = catalog.get(operation_id)
+        for parameter, source in operation.parameter_sources.items():
+            if parameter in {"app_key", "timestamp", "sign"}:
+                assert source == "credential", (operation_id, parameter)
 
 
 def test_malformed_catalog_fails_closed(tmp_path: Path) -> None:
@@ -66,9 +58,8 @@ def test_malformed_catalog_fails_closed(tmp_path: Path) -> None:
                 "path": "/v1/bad",
                 "kind": "resource",
                 "parameter_sources": {"tenant_id": "user_text"},
-                "pagination": "items_total_page_size",
+                "pagination": "none",
                 "timeout_seconds": 10.0,
-                "min_role": "employee",
             }
         ],
     }
@@ -89,10 +80,9 @@ def test_duplicate_operation_ids_fail_startup(tmp_path: Path) -> None:
         "operation_id": "X1_dup",
         "path": "/v1/dup",
         "kind": "identity",
-        "parameter_sources": {},
+        "parameter_sources": {"app_key": "credential"},
         "pagination": "none",
         "timeout_seconds": 10.0,
-        "min_role": "employee",
     }
     document: dict[str, Any] = {"version": 1, "operations": [entry, dict(entry)]}
     path = tmp_path / "dup.yaml"

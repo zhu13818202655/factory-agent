@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
-from pydantic import BaseModel
 
 from factory_agent.bootstrap import DependencyOverrides, build_container
 from factory_agent.config import FactoryAgentSettings
-from factory_agent.data_api.canonical import CanonicalMesAdapter, CanonicalRequest
+from factory_agent.data_api.catalog import load_catalog
+from factory_agent.data_api.credentials import MesCredentialBundle
+from factory_agent.data_api.hongzhao import HongzhaoMesAdapter, MesRequest
+from factory_agent.domain import UserId
 from factory_agent.ports import AuthenticatedIdentity
 from tests.support.ports import FakeIdentityProvider, FakeMesDataSource
 
@@ -44,20 +48,23 @@ def test_canonical_adapter_is_selected_only_when_configured() -> None:
     assert container.readiness["mes"] == "configured"
 
 
-class EmptyResponse(BaseModel):
-    items: tuple[object, ...]
+def _bundle() -> MesCredentialBundle:
+    return MesCredentialBundle(
+        access_token="unconfigured",
+        app_key="unconfigured",
+        sign="unconfigured",
+        timestamp=0,
+        expires_at=datetime.max.replace(tzinfo=UTC),
+        user=UserId("unconfigured"),
+        uname="unconfigured",
+    )
 
 
 @pytest.mark.asyncio
-async def test_canonical_adapter_rejects_unreviewed_operations_before_http() -> None:
+async def test_hongzhao_adapter_rejects_unreviewed_operations_before_http() -> None:
     from factory_agent.domain.errors import UnsupportedOperationError
 
-    adapter = CanonicalMesAdapter("http://mock-mes:8010", "unconfigured")
-    request = CanonicalRequest(
-        operation_id="unreviewed",
-        query=(),
-        response_model=EmptyResponse,
-    )
+    adapter = HongzhaoMesAdapter("http://mock-mes:8010", _bundle(), load_catalog())
 
     with pytest.raises(UnsupportedOperationError):
-        await adapter.execute(request)
+        await adapter.execute(MesRequest(operation_id="unreviewed", params={}))
