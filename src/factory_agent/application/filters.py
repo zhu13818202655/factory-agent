@@ -24,7 +24,25 @@ class FilterRejectionError(Exception):
 
 
 class FilterNarrower:
-    """Intersects user filters with the active DataScope; never broadens."""
+    """Intersects user filters with the active DataScope; never broadens.
+
+    ``employee_ids`` and ``dept_ids`` are intersected with the scope and an
+    empty intersection is rejected before any business-data call.
+
+    Story 7 business filters (``order_codes`` / ``style_codes`` /
+    ``plan_codes`` and a user-requested department) are narrow-only: they are
+    passed to MES which enforces row-level filtering (M3/M19), and a too-small
+    return is surfaced via the M12 judgement. They are never treated as scope
+    identifiers and can never broaden the scope.
+
+    ``tenant_resolved_employee_ids`` are employees already resolved in the
+    tenant through the MES-filtered ``EmployeeQuery`` (FR-012 target employee).
+    Because that resolution itself obeys MES row-level filtering (a
+    ``move_admin_role="00"`` caller only ever sees their own row), those ids
+    enter the interaction with ``mes_filtered`` trust: MES decides actual
+    visibility on the wage call, and an empty return surfaces as the M12
+    "无权限或无数据" state. They are never accepted from raw user text.
+    """
 
     def narrow(
         self,
@@ -33,9 +51,11 @@ class FilterNarrower:
         dept_ids: frozenset[DeptId] | None = None,
         order_ids: frozenset[str] | None = None,
         style_ids: frozenset[str] | None = None,
+        plan_ids: frozenset[str] | None = None,
+        tenant_resolved_employee_ids: frozenset[EmployeeId] | None = None,
+        *,
+        restrict_to_scope_employees: bool = True,
     ) -> NarrowedFilters:
-        self._reject_unprovable_order_filters(order_ids, style_ids)
-
         narrowed_employees: frozenset[EmployeeId] | None
         if employee_ids is not None:
             narrowed_scope = scope.narrow_to_employees(employee_ids)
@@ -45,8 +65,16 @@ class FilterNarrower:
                     "requested employees are outside the authorized scope",
                 )
             narrowed_employees = narrowed_scope.employee_ids
-        else:
+        elif tenant_resolved_employee_ids is not None:
+            narrowed_employees = tenant_resolved_employee_ids
+        elif restrict_to_scope_employees:
             narrowed_employees = scope.employee_ids
+        else:
+            # Management/boss capabilities: no employee-level restriction on
+            # our side; MES row-level filtering (M3/M19) decides the range.
+            narrowed_employees = None
+
+        requested_depts: frozenset[DeptId] | None = None
         narrowed_depts: frozenset[DeptId] | None
         if dept_ids is not None:
             narrowed_dept_scope = scope.narrow_to_depts(dept_ids)
@@ -56,6 +84,7 @@ class FilterNarrower:
                     "requested departments are outside the authorized scope",
                 )
             narrowed_depts = narrowed_dept_scope.dept_ids
+            requested_depts = narrowed_depts
         else:
             narrowed_depts = scope.dept_ids
 
@@ -68,15 +97,13 @@ class FilterNarrower:
             tenant_id=scope.tenant_id,
             employee_ids=narrowed_employees,
             dept_ids=narrowed_depts,
+            order_codes=_as_set(order_ids),
+            style_codes=_as_set(style_ids),
+            plan_codes=_as_set(plan_ids),
+            requested_dept_ids=requested_depts,
         )
 
-    @staticmethod
-    def _reject_unprovable_order_filters(
-        order_ids: frozenset[str] | None, style_ids: frozenset[str] | None
-    ) -> None:
-        """DEC-012 safe default: explicit order/style IDs cannot prove tenancy."""
-        if order_ids or style_ids:
-            raise FilterRejectionError(
-                "invalid_request",
-                "explicit order or style selection cannot be proven in the active tenant",
-            )
+
+def _as_set(values: frozenset[str] | None) -> frozenset[str] | None:
+    """Return None when empty so a recipe can distinguish "no filter"."""
+    return values if values else None

@@ -1,0 +1,250 @@
+# Reviewed L1 progress recipes (Story 7). File changes are semantics changes
+# and require human review.
+#
+# FR-005 订单/款号进度 and FR-009 全厂订单进度总览 share the same chain:
+#   Plan/GridPageList (locate order) -> Sclzd/GridPageList (dddh <-> jhdh to get
+#   the material id) -> WorktypeProgressQuery (userid = material id, fan-out).
+# 进度% is computed locally as 已完成工序数（uid 非空）/ 总工序数 (M6/M18);
+# 当前工序 = 最大已完成 wsort 的下一道; 完工数量取 Sclzd.sssl; 在制数量取
+# WskQuery.sl (缺失输出 unavailable); 交期状态按 K4 降级为 finish_date 与当前
+# 日期直接比较（已逾期/未逾期），不实现预警阈值。
+#
+# 订单检索只支持精确编号：dh / jhdh / khddh 与货号 huohao 精确匹配（C.6 未答
+# 复前不做模糊/简拼）。注意 Plan 响应模型不含 bbreed，货号匹配以 huohao 为准。
+#
+# fetch_progress 的 userid 通过 param_bindings 从 fetch_sclzd.id 派生，内核按
+# 去重值 fan-out，调用数受 KernelSettings.max_api_calls 预算约束；超预算时产生
+# 结构化 call_budget_exhausted 状态并说明已覆盖订单数。
+version: 1
+capabilities:
+  - capability_id: fr005_order_progress
+    title: 订单/款号进度
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_plan
+        kind: api
+        operation_id: PlanGridPageList
+      - step_id: fetch_sclzd
+        kind: api
+        operation_id: SclzdGridPageList
+        depends_on: [fetch_plan]
+      - step_id: fetch_progress
+        kind: api
+        operation_id: WorktypeProgressQuery
+        depends_on: [fetch_sclzd]
+        param_bindings:
+          userid: {from_step: fetch_sclzd, column: id}
+      - step_id: fetch_wsk
+        kind: api
+        operation_id: WskQuery
+        depends_on: [fetch_plan]
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_plan, fetch_sclzd, fetch_progress, fetch_wsk]
+        filter_bindings:
+          order_codes: order_codes
+          style_codes: style_codes
+        compute: |
+          WITH order_codes AS (
+            SELECT unnest($order_codes) AS c
+          ),
+          style_codes AS (
+            SELECT unnest($style_codes) AS c
+          ),
+          matched_plan AS (
+            SELECT p.* FROM fetch_plan p
+            WHERE (SELECT COUNT(*) FROM order_codes) = 0
+               OR p.dh IN (SELECT c FROM order_codes)
+               OR p.jhdh IN (SELECT c FROM order_codes)
+               OR p.khddh IN (SELECT c FROM order_codes)
+          ),
+          matched_style AS (
+            SELECT p.* FROM matched_plan p
+            WHERE (SELECT COUNT(*) FROM style_codes) = 0
+               OR p.huohao IN (SELECT c FROM style_codes)
+          ),
+          material AS (
+            SELECT
+              s.id AS material_id,
+              s.sssl,
+              p.dh AS plan_dh,
+              p.zsl,
+              p.finish_date,
+              p.huohao AS plan_huohao
+            FROM fetch_sclzd s
+            JOIN matched_style p ON s.dddh = p.jhdh
+          ),
+          per_material AS (
+            SELECT
+              m.material_id,
+              m.sssl,
+              m.plan_dh,
+              m.zsl,
+              m.finish_date,
+              m.plan_huohao,
+              COUNT(g.worktype) AS total_wt,
+              SUM(CASE WHEN g.uid IS NOT NULL AND g.uid <> '' THEN 1 ELSE 0 END) AS done_wt,
+              MAX(CASE WHEN g.uid IS NOT NULL AND g.uid <> '' THEN CAST(g.wsort AS INTEGER) ELSE 0 END) AS max_done_sort
+            FROM material m
+            LEFT JOIN fetch_progress g ON g.userid = m.material_id
+            GROUP BY m.material_id, m.sssl, m.plan_dh, m.zsl, m.finish_date, m.plan_huohao
+          )
+          SELECT
+            plan_dh AS order_code,
+            plan_huohao AS huohao,
+            CAST(CAST(zsl AS DECIMAL) AS VARCHAR) AS plan_qty,
+            CAST(CAST(sssl AS DECIMAL) AS VARCHAR) AS completed_qty,
+            CASE WHEN total_wt > 0
+                 THEN CAST(CAST(done_wt AS DECIMAL) / CAST(total_wt AS DECIMAL) AS VARCHAR)
+                 ELSE 'unavailable' END AS progress_ratio,
+            (SELECT g.name FROM fetch_progress g
+              WHERE g.userid = per_material.material_id
+                AND CAST(g.wsort AS INTEGER) = per_material.max_done_sort + 1
+              LIMIT 1) AS current_worktype,
+            CASE WHEN (SELECT COUNT(*) FROM fetch_wsk w WHERE w.id = per_material.material_id) > 0
+                 THEN CAST((SELECT SUM(CAST(w.sl AS DECIMAL)) FROM fetch_wsk w WHERE w.id = per_material.material_id) AS VARCHAR)
+                 ELSE 'unavailable' END AS in_progress_qty
+          FROM per_material
+          ORDER BY order_code
+    result_columns:
+      - name: order_code
+        source_step: compute
+      - name: huohao
+        source_step: compute
+      - name: plan_qty
+        source_step: compute
+        metric: output_order_plan_qty
+        column_type: quantity
+        unit: 件
+      - name: completed_qty
+        source_step: compute
+        metric: output_order_completed
+        column_type: quantity
+        unit: 件
+      - name: progress_ratio
+        source_step: compute
+        metric: progress_ratio
+        column_type: percent
+      - name: current_worktype
+        source_step: compute
+        metric: worktype_current
+      - name: in_progress_qty
+        source_step: compute
+        metric: output_order_in_progress
+        column_type: quantity
+        unit: 件
+    metric_versions:
+      output_order_plan_qty: customer-plan-v1
+      output_order_completed: customer-completed-v1
+      progress_ratio: customer-progress-v1
+      worktype_current: customer-progress-v1
+      output_order_in_progress: customer-wsk-v1
+    degradation: incomplete_marker
+
+  - capability_id: fr009_factory_order_overview
+    title: 全厂订单进度总览
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_plan
+        kind: api
+        operation_id: PlanGridPageList
+      - step_id: fetch_sclzd
+        kind: api
+        operation_id: SclzdGridPageList
+        depends_on: [fetch_plan]
+      - step_id: fetch_progress
+        kind: api
+        operation_id: WorktypeProgressQuery
+        depends_on: [fetch_sclzd]
+        param_bindings:
+          userid: {from_step: fetch_sclzd, column: id}
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_plan, fetch_sclzd, fetch_progress]
+        filter_bindings:
+          order_codes: order_codes
+          style_codes: style_codes
+        compute: |
+          WITH order_codes AS (
+            SELECT unnest($order_codes) AS c
+          ),
+          style_codes AS (
+            SELECT unnest($style_codes) AS c
+          ),
+          matched_plan AS (
+            SELECT p.* FROM fetch_plan p
+            WHERE (SELECT COUNT(*) FROM order_codes) = 0
+               OR p.dh IN (SELECT c FROM order_codes)
+               OR p.jhdh IN (SELECT c FROM order_codes)
+               OR p.khddh IN (SELECT c FROM order_codes)
+          ),
+          matched_style AS (
+            SELECT p.* FROM matched_plan p
+            WHERE (SELECT COUNT(*) FROM style_codes) = 0
+               OR p.huohao IN (SELECT c FROM style_codes)
+          ),
+          material AS (
+            SELECT
+              s.id AS material_id,
+              s.sssl,
+              p.dh AS plan_dh,
+              p.zsl,
+              p.finish_date,
+              p.huohao AS plan_huohao
+            FROM fetch_sclzd s
+            JOIN matched_style p ON s.dddh = p.jhdh
+          ),
+          per_material AS (
+            SELECT
+              m.material_id,
+              m.sssl,
+              m.plan_dh,
+              m.zsl,
+              m.finish_date,
+              m.plan_huohao,
+              COUNT(g.worktype) AS total_wt,
+              SUM(CASE WHEN g.uid IS NOT NULL AND g.uid <> '' THEN 1 ELSE 0 END) AS done_wt
+            FROM material m
+            LEFT JOIN fetch_progress g ON g.userid = m.material_id
+            GROUP BY m.material_id, m.sssl, m.plan_dh, m.zsl, m.finish_date, m.plan_huohao
+          )
+          SELECT
+            plan_dh AS order_code,
+            plan_huohao AS huohao,
+            CAST(CAST(zsl AS DECIMAL) AS VARCHAR) AS plan_qty,
+            CAST(CAST(sssl AS DECIMAL) AS VARCHAR) AS completed_qty,
+            CASE WHEN total_wt > 0
+                 THEN CAST(CAST(done_wt AS DECIMAL) / CAST(total_wt AS DECIMAL) AS VARCHAR)
+                 ELSE 'unavailable' END AS progress_ratio,
+            CASE WHEN finish_date < (SELECT today FROM _meta)
+                 THEN '已逾期' ELSE '未逾期' END AS overdue_status
+          FROM per_material
+          ORDER BY order_code
+    result_columns:
+      - name: order_code
+        source_step: compute
+      - name: huohao
+        source_step: compute
+      - name: plan_qty
+        source_step: compute
+        metric: output_order_plan_qty
+        column_type: quantity
+        unit: 件
+      - name: completed_qty
+        source_step: compute
+        metric: output_order_completed
+        column_type: quantity
+        unit: 件
+      - name: progress_ratio
+        source_step: compute
+        metric: progress_ratio
+        column_type: percent
+      - name: overdue_status
+        source_step: compute
+        metric: order_overdue_status
+    metric_versions:
+      output_order_plan_qty: customer-plan-v1
+      output_order_completed: customer-completed-v1
+      progress_ratio: customer-progress-v1
+      order_overdue_status: factory-overdue-v1
+    degradation: incomplete_marker

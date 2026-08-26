@@ -14,6 +14,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from factory_agent.domain.errors import InvalidRequestError
+from factory_agent.ports.contracts import UNAVAILABLE_VALUE
+
+#: ``UNAVAILABLE_VALUE`` is defined in ports.contracts and re-exported here for
+#: callers that read it from the registry module.
 
 
 class MetricDefinition(BaseModel):
@@ -117,9 +121,100 @@ def default_metric_registry() -> MetricRegistry:
                 assumption_status="M18; fine-grained wording pending C.10",
             ),
             MetricDefinition(
-                name="progress_ratio",
+                name="output_order_plan_qty",
+                version="customer-plan-v1",
+                description="Order planned quantity: zsl/ddsl from Plan",
+                status="confirmed",
+                assumption_status="M18 confirmed",
+            ),
+            MetricDefinition(
+                name="output_order_in_progress",
+                version="customer-wsk-v1",
+                description="In-process quantity: WskQuery sl (待扫数量)",
+                status="confirmed",
+                assumption_status="M18; context table 1.5",
+            ),
+            MetricDefinition(
+                name="output_participant_count",
+                version="factory-participant-v1",
+                description="Distinct uid with output in the window (factory-defined)",
+                status="confirmed",
+                assumption_status="factory-defined; distinct uid dedupe",
+            ),
+            MetricDefinition(
+                name="workshop_output_total",
+                version="customer-workshop-v1",
+                description="Workshop output total: sum of output grouped by dept",
+                status="confirmed",
+                assumption_status="M16; dept grouping single-level (M5)",
+            ),
+            MetricDefinition(
+                name="workshop_effective_headcount",
+                version="factory-effective-headcount-v1",
+                description="Effective headcount: distinct uid with output per dept",
+                status="confirmed",
+                assumption_status="factory-defined; C.7 headcount unavailable",
+            ),
+            MetricDefinition(
+                name="workshop_output_per_capita",
+                version="factory-per-capita-v1",
+                description="Per-capita output: dept total over effective headcount",
+                status="confirmed",
+                assumption_status="factory-defined; non-customer denominator",
+            ),
+            MetricDefinition(
+                name="workshop_rank",
+                version="factory-rank-v1",
+                description="Workshop rank by total output, descending (1-based)",
+                status="confirmed",
+                assumption_status="factory-defined; M16 aggregation",
+            ),
+            MetricDefinition(
+                name="payroll_rank_position",
+                version="factory-rank-v1",
+                description="Payroll rank position by returned order (M7)",
+                status="confirmed",
+                assumption_status="M7: position follows GongziJeOrderQuery order",
+            ),
+            MetricDefinition(
+                name="payroll_gross_by_dept",
+                version="customer-footer-v1",
+                description="Gross payable total grouped by dept (M9 je total)",
+                status="confirmed",
+                assumption_status="M9/M13 confirmed",
+            ),
+            MetricDefinition(
+                name="payroll_output_headcount",
+                version="factory-output-headcount-v1",
+                description="Headcount with output: distinct uid in wage rows",
+                status="confirmed",
+                assumption_status="factory-defined; C.7 headcount unavailable",
+            ),
+            MetricDefinition(
+                name="payroll_package_count",
+                version="customer-rank-v1",
+                description="Package count bs returned by GongziJeOrderQuery",
+                status="confirmed",
+                assumption_status="customer-returned bs field",
+            ),
+            MetricDefinition(
+                name="payroll_avg_by_dept",
+                version="unavailable-c7",
+                description="Average wage by dept depends on registered headcount (C.7)",
+                status="unavailable",
+                assumption_status="chapter 5 C.7 unanswered",
+            ),
+            MetricDefinition(
+                name="order_overdue_status",
+                version="factory-overdue-v1",
+                description="Overdue status: finish_date compared with today (K4)",
+                status="confirmed",
+                assumption_status="K4: date comparison only, no warning thresholds",
+            ),
+            MetricDefinition(
+                name="worktype_current",
                 version="customer-progress-v1",
-                description="Scanned worktype count over total worktype count",
+                description="Current worktype: next after max completed wsort",
                 status="confirmed",
                 assumption_status="M6/M18 confirmed",
             ),
@@ -129,6 +224,13 @@ def default_metric_registry() -> MetricRegistry:
                 description="Defective quantity: manual-entry cp only, no unified source",
                 status="unavailable",
                 assumption_status="chapter 5 C.5 unanswered",
+            ),
+            MetricDefinition(
+                name="progress_ratio",
+                version="customer-progress-v1",
+                description="Scanned worktype count over total worktype count",
+                status="confirmed",
+                assumption_status="M6/M18 confirmed",
             ),
             MetricDefinition(
                 name="plan_target_output",
@@ -195,6 +297,7 @@ class ResultTable:
 
 
 __all__ = [
+    "UNAVAILABLE_VALUE",
     "MetricDefinition",
     "MetricRegistry",
     "ResultColumnMeta",

@@ -1,0 +1,185 @@
+# Reviewed L1 payroll list/statistics recipes (Story 7). File changes are
+# semantics changes and require human review.
+#
+# FR-008 员工工资清单与排名: GongziJeOrderQuery 已按 je 倒序返回（含 dept），
+# 位次按返回顺序编号（M7），可按 dept 分组呈现。同名员工以 uid 区分（卡片与
+# Excel 同时展示 uid 与 uname）。返回范围明显小于请求范围时按 M12 提示。
+#
+# FR-011 全厂工资统计: GongziMxQuery (scheme=hz) 按 dept 分组返回应发合计
+# （M9）。「在册人数」无数据源（C.7）输出 unavailable；人均工资因此同样不可
+# 计算（unavailable）；以「有产出人数」（distinct uid）作为我方定义替代指标。
+#
+# FR-012 任一员工工资查询: 复用 FR-002 的 GongziMxQuery 汇总配方，Uid 改为目标
+# 员工（由应用层经 EmployeeQuery 在当前租户解析后进入 NarrowedFilters，任何
+# 工资调用前完成校验；解析不到或同名未定 uid 均零业务调用拒绝）。
+version: 1
+capabilities:
+  - capability_id: fr008_payroll_ranking
+    title: 员工工资清单与排名
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_je_order
+        kind: api
+        operation_id: GongziJeOrderQuery
+        params:
+          queryFooter: "1"
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_je_order]
+        filter_bindings:
+          requested_dept_ids: requested_dept_ids
+        compute: |
+          WITH requested_depts AS (
+            SELECT unnest($requested_dept_ids) AS c
+          ),
+          ranked AS (
+            SELECT
+              uid,
+              uname,
+              dept,
+              bs,
+              je
+            FROM fetch_je_order
+            WHERE (SELECT COUNT(*) FROM requested_depts) = 0
+               OR dept IN (SELECT c FROM requested_depts)
+          )
+          SELECT
+            uid,
+            uname,
+            dept,
+            CAST(CAST(bs AS DECIMAL) AS VARCHAR) AS package_count,
+            CAST(CAST(je AS DECIMAL) AS VARCHAR) AS gross,
+            CAST(ROW_NUMBER() OVER (ORDER BY CAST(je AS DECIMAL) DESC) AS VARCHAR) AS rank_position
+          FROM ranked
+          ORDER BY CAST(je AS DECIMAL) DESC
+    result_columns:
+      - name: uid
+        source_step: compute
+      - name: uname
+        source_step: compute
+      - name: dept
+        source_step: compute
+      - name: package_count
+        source_step: compute
+        metric: payroll_package_count
+        column_type: quantity
+        unit: 包
+      - name: gross
+        source_step: compute
+        metric: payroll_amount
+        column_type: money
+        unit: 元
+      - name: rank_position
+        source_step: compute
+        metric: payroll_rank_position
+        column_type: quantity
+    metric_versions:
+      payroll_package_count: customer-rank-v1
+      payroll_amount: customer-payroll-v1
+      payroll_rank_position: factory-rank-v1
+    degradation: incomplete_marker
+
+  - capability_id: fr011_factory_payroll_stats
+    title: 全厂工资统计
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_wages
+        kind: api
+        operation_id: GongziMxQuery
+        params:
+          scheme: "hz"
+          Type: "0,1,2"
+          Flag: "0"
+          queryFooter: "1"
+      - step_id: fetch_dept
+        kind: api
+        operation_id: DeptQuery
+        depends_on: [fetch_wages]
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_wages, fetch_dept]
+        filter_bindings:
+          requested_dept_ids: requested_dept_ids
+        compute: |
+          WITH requested_depts AS (
+            SELECT unnest($requested_dept_ids) AS c
+          )
+          SELECT
+            d.name AS dept_name,
+            CAST(SUM(CAST(w.je AS DECIMAL)) AS VARCHAR) AS gross_total,
+            CAST(COUNT(DISTINCT w.uid) AS VARCHAR) AS output_headcount,
+            'unavailable' AS headcount,
+            'unavailable' AS avg_wage
+          FROM fetch_wages w
+          LEFT JOIN fetch_dept d ON d.id = w.dept
+          WHERE ((SELECT COUNT(*) FROM requested_depts) = 0
+                 OR w.dept IN (SELECT c FROM requested_depts))
+          GROUP BY d.name, d.id
+          ORDER BY gross_total DESC
+    result_columns:
+      - name: dept_name
+        source_step: compute
+      - name: gross_total
+        source_step: compute
+        metric: payroll_gross_by_dept
+        column_type: money
+        unit: 元
+      - name: output_headcount
+        source_step: compute
+        metric: payroll_output_headcount
+        column_type: quantity
+        unit: 人
+      - name: headcount
+        source_step: compute
+        metric: org_headcount
+        column_type: quantity
+        unit: 人
+      - name: avg_wage
+        source_step: compute
+        metric: payroll_avg_by_dept
+        column_type: money
+        unit: 元
+    metric_versions:
+      payroll_gross_by_dept: customer-footer-v1
+      payroll_output_headcount: factory-output-headcount-v1
+      org_headcount: unavailable-c7
+      payroll_avg_by_dept: unavailable-c7
+    degradation: incomplete_marker
+
+  - capability_id: fr012_employee_payroll
+    title: 任一员工工资查询
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_wages
+        kind: api
+        operation_id: GongziMxQuery
+        params:
+          scheme: "hz"
+          Type: "0,1,2"
+          Flag: "0"
+          queryFooter: "1"
+      - step_id: aggregate
+        kind: local
+        depends_on: [fetch_wages]
+        compute: |
+          SELECT
+            CAST(COALESCE(SUM(CAST(je AS DECIMAL)), 0) AS VARCHAR) AS gross_total,
+            CAST(COALESCE(SUM(CAST(sl AS DECIMAL)), 0) AS VARCHAR) AS piece_count
+          FROM fetch_wages
+    result_columns:
+      - name: gross_total
+        source_step: aggregate
+        metric: payroll_gross_total
+        column_type: money
+        unit: 元
+      - name: piece_count
+        source_step: aggregate
+        metric: payroll_piece_count
+        column_type: quantity
+        unit: 件
+    metric_versions:
+      payroll_gross_total: customer-footer-v1
+      payroll_piece_count: customer-payroll-v1
+    footer_reconciliation:
+      gross_total: je_total
+    degradation: incomplete_marker

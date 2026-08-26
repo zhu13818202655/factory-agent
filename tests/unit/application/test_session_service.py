@@ -10,6 +10,12 @@ from factory_agent.application.authorization import (
     FixedScopeVersionAssigner,
     IdentityRejectionError,
 )
+from factory_agent.application.business_filters import (
+    BusinessFilterResolver,
+    DeptRecord,
+    DirectoryError,
+    EmployeeRecord,
+)
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.intent import CapabilityCatalog, CapabilitySpec
 from factory_agent.application.session import (
@@ -24,6 +30,7 @@ from factory_agent.domain import (
     INTERACTION_RESULT,
     INTERACTION_STARTED,
     CapabilityId,
+    DataScope,
     EmployeeId,
     InteractionId,
     InteractionStatus,
@@ -65,6 +72,11 @@ CATALOG = CapabilityCatalog(
             title="全厂计件统计",
             required_slots=("time_range",),
         ),
+        CapabilitySpec(
+            capability_id=CapabilityId("FR-012"),
+            title="任一员工工资查询",
+            required_slots=("time_range", "employee_names"),
+        ),
     )
 )
 
@@ -74,7 +86,32 @@ INTENT_PAYLOAD = (
 OWNER_ONLY_PAYLOAD = (
     '{"capability_id": "FR-011", "confidence": 0.95, "slots": {"time_expression": "上个月"}}'
 )
+ANY_EMPLOYEE_PAYLOAD = (
+    '{"capability_id": "FR-012", "confidence": 0.95, "slots": '
+    '{"time_expression": "上个月", "employee_names": ["模拟员工甲"]}}'
+)
 INCOMPLETE_PAYLOAD = '{"capability_id": null, "confidence": 0.2, "slots": {}}'
+
+
+class FakeDirectory:
+    def __init__(
+        self,
+        *,
+        dept_error: DirectoryError | None = None,
+        employee_error: DirectoryError | None = None,
+    ) -> None:
+        self._dept_error = dept_error
+        self._employee_error = employee_error
+
+    async def list_depts(self, scope: DataScope) -> tuple[DeptRecord, ...]:
+        if self._dept_error is not None:
+            raise self._dept_error
+        return (DeptRecord("dept-1", "一车间", "YCJ"),)
+
+    async def list_employees(self, scope: DataScope) -> tuple[EmployeeRecord, ...]:
+        if self._employee_error is not None:
+            raise self._employee_error
+        return (EmployeeRecord("emp-1", "模拟员工甲", "MNYGJ"),)
 
 
 def credential(tenant: str = "tenant-a", user: str = "user-a") -> TrustedCredential:
@@ -100,6 +137,7 @@ def build(
     runner: RecordingCapabilityRunner | None = None,
     limits: SessionLimits | None = None,
     store: InMemoryInteractionStore | None = None,
+    directory: FakeDirectory | None = None,
 ) -> tuple[SessionService, InMemoryInteractionStore, RecordingCapabilityRunner]:
     from factory_agent.application.intent import CapabilityIntentParser
 
@@ -118,6 +156,7 @@ def build(
         new_id=SequentialIds(),
         limits=limits,
         sleep=_no_sleep,
+        business_filters=BusinessFilterResolver(directory or FakeDirectory()),
     )
     return service, resolved_store, resolved_runner
 
@@ -421,3 +460,62 @@ async def test_ownership_filter_is_used_for_every_store_read() -> None:
 
     assert await store.get_interaction(foreign, record.interaction_id) is None
     assert await store.list_events(foreign, record.interaction_id, 0) == ()
+
+
+# ---------------------------------------------------------------------------
+# Story 7: business filter resolution (FR-012 target employee, dept names).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fr012_resolves_target_employee_into_narrowed_filters() -> None:
+    """FR-012 resolves the employee via the MES-filtered directory before any
+    wage call; the runner receives employee_ids={target} (mes_filtered trust)."""
+    service, _, runner = build([ANY_EMPLOYEE_PAYLOAD])
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="查模拟员工甲的工资")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert any(event.name == INTERACTION_RESULT for event in events)
+    filters = runner.requests[0].filters
+    assert filters.employee_ids == frozenset({EmployeeId("emp-1")})
+    assert filters.tenant_id == TenantId("tenant-a")
+
+
+@pytest.mark.asyncio
+async def test_fr012_ambiguous_name_asks_for_uid_not_run() -> None:
+    """同名员工追问稳定 uid，不用姓名关联（FR-012）。"""
+    directory = FakeDirectory(
+        employee_error=DirectoryError("ambiguous", "员工「模拟员工甲」存在同名，请提供工号")
+    )
+    service, _, runner = build([ANY_EMPLOYEE_PAYLOAD], directory=directory)
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="查模拟员工甲的工资")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert any(event.name == INTERACTION_CLARIFICATION for event in events)
+    clarifying = next(e for e in events if e.name == INTERACTION_CLARIFICATION)
+    assert "工号" in str(clarifying.data["question"])
+
+
+@pytest.mark.asyncio
+async def test_fr012_unresolved_employee_rejects_with_zero_business_calls() -> None:
+    """解析不到目标员工 → 直接拒绝且零业务调用（FR-012）。"""
+    directory = FakeDirectory(
+        employee_error=DirectoryError("not_found", "未找到员工「不存在的人」")
+    )
+    service, store, runner = build([ANY_EMPLOYEE_PAYLOAD], directory=directory)
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="查不存在的人的工资")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert events[-1].name == "interaction.failed"
+    assert store.interactions[str(record.interaction_id)].error_category == "filter_not_found"

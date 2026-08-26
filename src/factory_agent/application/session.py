@@ -18,6 +18,12 @@ from factory_agent.application.authorization import (
     AuthorizationService,
     ResolvedAuthorization,
 )
+from factory_agent.application.business_filters import (
+    BusinessFilterResolver,
+    DirectoryError,
+    ResolvedBusinessFilters,
+)
+from factory_agent.application.capability_map import fr_id_for
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.filters import FilterNarrower, FilterRejectionError
 from factory_agent.application.intent import CapabilityIntentParser, clarification_for
@@ -82,6 +88,15 @@ class SessionLimits:
     follow_timeout_seconds: float = 300.0
 
 
+_EMPTY_BUSINESS_FILTERS = ResolvedBusinessFilters(
+    employee_ids=None,
+    dept_ids=None,
+    order_codes=None,
+    style_codes=None,
+    plan_codes=None,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class StartRequest:
     """Everything a turn needs; ownership never comes from the request body."""
@@ -103,6 +118,7 @@ class SessionService:
         *,
         new_id: IdFactory,
         narrower: FilterNarrower | None = None,
+        business_filters: BusinessFilterResolver | None = None,
         limits: SessionLimits | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
         exporter: ArtifactExporter | None = None,
@@ -114,6 +130,7 @@ class SessionService:
         self._clock = clock
         self._new_id = new_id
         self._narrower = narrower or FilterNarrower()
+        self._business_filters = business_filters
         self._limits = limits or SessionLimits()
         self._sleep = sleep or asyncio.sleep
         self._exporter = exporter
@@ -330,14 +347,16 @@ class SessionService:
                 yield event
             return
 
-        yield await self._phase(state, SessionState.AUTHORIZING, "intent_complete")
-
         # Re-resolve scope after parsing so a context patch can never reuse an
-        # older, broader scope.
+        # older, broader scope. Authorization, business-filter resolution and
+        # narrowing all complete while the state is still PARSING so a directory
+        # ambiguity can legitimately become a clarification (no illegal
+        # AUTHORIZING -> CLARIFYING transition) and every denial path happens
+        # before any business-data call.
         decision_context = authorization.tenant_context
         scope = authorization.data_scope
         try:
-            capability = Capability(str(capability_id))
+            capability = Capability(fr_id_for(str(capability_id)))
         except ValueError:
             async for event in self._fail(state, "capability_unregistered", usage_events):
                 yield event
@@ -349,8 +368,65 @@ class SessionService:
                 yield event
             return
 
+        # Story 7: resolve user business filters (dept/employee names, order/
+        # style/plan codes) from the intent slots against the MES-filtered
+        # directory. Every resolution failure happens before any business-data
+        # call and never falls back to a broader scope.
+        resolved = _EMPTY_BUSINESS_FILTERS
+        if self._business_filters is not None:
+            try:
+                resolved = await self._business_filters.resolve(scope, intent.slots)
+            except DirectoryError as exc:
+                if exc.code == "ambiguous":
+                    async for event in self._clarify_message(state, exc.message, usage_events):
+                        yield event
+                    return
+                async for event in self._reject_message(
+                    state, f"filter_{exc.code}", exc.message, usage_events
+                ):
+                    yield event
+                return
+
+        # FR-012 resolves the target employee in-tenant through the MES-filtered
+        # EmployeeQuery; the employee enters the interaction with mes_filtered
+        # trust and MES decides actual visibility on the wage call (M12).
+        # Personal capabilities (FR-001/002/003) bind the caller's own uid;
+        # management/boss capabilities leave employee_ids unset so MES row-level
+        # filtering (M3/M19) decides the visible range.
+        is_any_employee = capability == Capability.ANY_EMPLOYEE_PAYROLL
+        is_personal = capability in {
+            Capability.OWN_OUTPUT,
+            Capability.OWN_PAYROLL_SUMMARY,
+            Capability.OWN_PAYROLL_DETAIL,
+        }
         try:
-            filters = self._narrower.narrow(scope)
+            if is_any_employee:
+                filters = self._narrower.narrow(
+                    scope,
+                    dept_ids=resolved.dept_ids,
+                    order_ids=resolved.order_codes,
+                    style_ids=resolved.style_codes,
+                    plan_ids=resolved.plan_codes,
+                    tenant_resolved_employee_ids=resolved.employee_ids,
+                )
+            elif is_personal:
+                filters = self._narrower.narrow(
+                    scope,
+                    employee_ids=scope.employee_ids,
+                    dept_ids=resolved.dept_ids,
+                    order_ids=resolved.order_codes,
+                    style_ids=resolved.style_codes,
+                    plan_ids=resolved.plan_codes,
+                )
+            else:
+                filters = self._narrower.narrow(
+                    scope,
+                    dept_ids=resolved.dept_ids,
+                    order_ids=resolved.order_codes,
+                    style_ids=resolved.style_codes,
+                    plan_ids=resolved.plan_codes,
+                    restrict_to_scope_employees=False,
+                )
         except FilterRejectionError as exc:
             async for event in self._reject(state, f"filter_{exc.code}", usage_events):
                 yield event
@@ -362,6 +438,7 @@ class SessionService:
                 yield event
             return
 
+        yield await self._phase(state, SessionState.AUTHORIZING, "intent_complete")
         yield await self._phase(state, SessionState.EXECUTING, "authorized")
 
         try:
@@ -505,14 +582,23 @@ class SessionService:
         usage_events: list[UsageOutboxEvent],
     ) -> AsyncIterator[SessionEvent]:
         question = clarification_for(intent) or "请补充更多信息。"
+        async for event in self._clarify_message(state, question, usage_events):
+            yield event
+
+    async def _clarify_message(
+        self,
+        state: _RunState,
+        question: str,
+        usage_events: list[UsageOutboxEvent],
+    ) -> AsyncIterator[SessionEvent]:
         clarifying = self._advance(state.record, SessionState.CLARIFYING, "slots_missing")
         event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_CLARIFICATION,
             data={
                 "question": question,
-                "missing": list(intent.missing),
-                "ambiguous": list(intent.ambiguous),
+                "missing": [],
+                "ambiguous": [],
             },
         )
         terminal = SessionEvent(
@@ -579,12 +665,24 @@ class SessionService:
     async def _reject(
         self, state: _RunState, category: str, usage_events: list[UsageOutboxEvent]
     ) -> AsyncIterator[SessionEvent]:
+        async for event in self._reject_message(
+            state, category, "当前角色无权执行该查询。", usage_events
+        ):
+            yield event
+
+    async def _reject_message(
+        self,
+        state: _RunState,
+        category: str,
+        message: str,
+        usage_events: list[UsageOutboxEvent],
+    ) -> AsyncIterator[SessionEvent]:
         async for event in self._terminate(
             state,
             InteractionStatus.FAILED,
             category,
             usage_events,
-            "当前角色无权执行该查询。",
+            message,
         ):
             yield event
 

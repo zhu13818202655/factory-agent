@@ -621,6 +621,9 @@ async def ysk_query(request: Request) -> JSONResponse:
         for row in visible_rows(dataset_from(request).ysk, identity)
         if in_date_window(row, "rq", start, end)
     ]
+    target_uid = body.get("Uid")
+    if target_uid:
+        rows = [row for row in rows if str(row["uid"]) == str(target_uid)]
 
     def footer(source: list[Record]) -> dict[str, str]:
         return {
@@ -765,6 +768,11 @@ async def gongzi_mx_query(request: Request) -> JSONResponse:
         for row in _gongzi_rows(data, identity, types)
         if start <= datetime.strptime(str(row["_day"])[:10], "%Y-%m-%d").date() <= end
     ]
+    # Story 7: honor the Uid filter for manager/boss identities (M19 row-level
+    # filtering simulates the customer contract where Uid is a required param).
+    target_uid = body.get("Uid")
+    if target_uid:
+        rows = [row for row in rows if str(row["uid"]) == str(target_uid)]
     summary_mode = scheme.lower() in ("汇总", "hz")
 
     def footer(source: list[Record]) -> dict[str, str]:

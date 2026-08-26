@@ -17,12 +17,13 @@ from typing import Any
 import xlsxwriter  # pyright: ignore[reportMissingTypeStubs]
 
 from factory_agent.export.sanitize import safe_cell_text
-from factory_agent.ports.contracts import RenderTable
+from factory_agent.ports.contracts import UNAVAILABLE_VALUE, RenderTable
 
 _MONEY_FORMAT = "#,##0.00"
 _PERCENT_FORMAT = "0.00%"
 _DATE_FORMAT = "yyyy-mm-dd"
 _QUANTITY_FORMAT = "#,##0"
+_UNAVAILABLE_LABEL = "暂无数据源"
 
 
 def render_xlsx(table: RenderTable, *, sheet_title: str | None = None) -> bytes:
@@ -97,6 +98,8 @@ def render_xlsx(table: RenderTable, *, sheet_title: str | None = None) -> bytes:
 def _to_excel_value(value: object, column_type: str | None) -> object:
     if value is None:
         return ""
+    if value == UNAVAILABLE_VALUE:
+        return _UNAVAILABLE_LABEL
     if isinstance(value, Decimal):
         return value
     if column_type == "date" and isinstance(value, str) and len(value) >= 10:

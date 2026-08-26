@@ -25,11 +25,23 @@ class NarrowedFilters:
     ``tenant_id``, ``employee_ids``, and ``dept_ids`` are already intersected
     with the active ``DataScope``; downstream executors must never accept these
     values from any other source.
+
+    ``order_codes`` / ``style_codes`` / ``plan_codes`` are Story 7 business
+    filters: they only narrow the requested range and are enforced by MES-side
+    row-level filtering (M3/M19) plus the M12 "returned range smaller than
+    requested" judgement. They can never broaden the active scope.
     """
 
     tenant_id: TenantId
     employee_ids: frozenset[EmployeeId] | None
     dept_ids: frozenset[DeptId] | None
+    order_codes: frozenset[str] | None = None
+    style_codes: frozenset[str] | None = None
+    plan_codes: frozenset[str] | None = None
+    #: User-requested department intersection (Story 7). ``None`` means the
+    #: user did not restrict to a department; the visible range is then the
+    #: MES-filtered range (M3/M19). When set it only narrows within the scope.
+    requested_dept_ids: frozenset[DeptId] | None = None
 
 
 @dataclass(frozen=True, slots=True)

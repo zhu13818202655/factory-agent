@@ -10,6 +10,12 @@ from factory_agent.domain import InteractionId, TenantId, TenantMembership, User
 MesRequestT = TypeVar("MesRequestT", contravariant=True)
 MesResponseT = TypeVar("MesResponseT", covariant=True)
 
+#: Column-level sentinel for a metric with no data source (C.5/C.7/C.8/C.9).
+#: Renderers must surface it as an explicit "no data source" state, never as a
+#: fabricated number. Lives in ``ports`` so both the execution kernel and the
+#: application renderers share the same contract without crossing packages.
+UNAVAILABLE_VALUE = "unavailable"
+
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedIdentity:

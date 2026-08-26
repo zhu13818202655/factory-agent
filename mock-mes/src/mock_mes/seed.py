@@ -125,6 +125,9 @@ def build_dataset(
             "company": "COMPANY-A",
             "companyName": "模拟服装厂A",
             "pid": "0",
+            # Story 7: the dept field lets DeptQuery respect the M19 dept tier
+            # so a workshop manager only resolves their own workshop.
+            "dept": "dept-a1",
         },
         {
             "id": "dept-a2",
@@ -136,6 +139,7 @@ def build_dataset(
             "company": "COMPANY-A",
             "companyName": "模拟服装厂A",
             "pid": "0",
+            "dept": "dept-a2",
         },
         {
             "id": "dept-b1",
@@ -147,6 +151,7 @@ def build_dataset(
             "company": "COMPANY-B",
             "companyName": "模拟服装厂B",
             "pid": "0",
+            "dept": "dept-b1",
         },
     ]
 
@@ -481,67 +486,9 @@ def build_dataset(
     wsk: list[Record] = []
     dg_cl: list[Record] = []
 
-    detail_id = 1000
-    for plan in plans:
-        company = str(plan["company"])
-        dept = str(plan["dept"])
-        prefix = "ZD-B" if company == "COMPANY-B" else "ZD"
-        dh = str(plan["dh"]).replace("PLAN", prefix)
-        fhsl_total = int(str(plan["sl"]))
-        if fhsl_total <= 0:
-            continue
-        detail_id += 1
-        sclzd.append(
-            {
-                "dh": dh,
-                "zhdate": str(plan["zhdate"]),
-                "dddh": str(plan["jhdh"]),
-                "khid": str(plan["khid"]),
-                "khname": str(plan["khname"]),
-                "drdg_status": 0,
-                "huohao": str(plan["huohao"]),
-                "huohaoname": str(plan["huohaoname"]),
-                "description": str(plan["spname"]),
-                "sctype": "SC1",
-                "sctypename": "大身",
-                "chuanghao": "床号1",
-                "cjr": "模拟裁剪员",
-                "zdr": "admin",
-                "state": 1,
-                "id": str(detail_id),
-                "baohao": "包1",
-                "ganghao": "缸1",
-                "color": str(plan["color"]),
-                "chima": str(plan["chima"]),
-                "fhsl": str(fhsl_total),
-                "sssl": "0",
-                "remark": "",
-                "company": company,
-                "dept": dept,
-            }
-        )
-        for sort, (wt, wt_name) in enumerate(
-            [("WT01", "平车"), ("WT02", "手工钉扣"), ("WT03", "吊挂平车")], start=1
-        ):
-            sclzd_worktypes.append(
-                {
-                    "id": f"sw-{detail_id}-{wt}",
-                    "dh": dh,
-                    "huohao": str(plan["huohao"]),
-                    "huohaoname": str(plan["huohaoname"]),
-                    "wt": wt,
-                    "wtname": wt_name,
-                    "sort": sort,
-                    "zhgx": 1 if sort == 3 else 0,
-                    "sfzb": 0,
-                    "sctype": "SC1",
-                    "sctypename": "大身",
-                    "company": company,
-                    "dept": dept,
-                }
-            )
-
-    # 扫码记录：worker-a1 与 worker-a2 各自的产量；进度一致性由 uid 非空决定。
+    # 扫码记录（Story 7 fixture）：worker-a1 与 worker-a2 各自的产量；进度一致性
+    # 由 uid 非空决定。detail id 必须与下方 sclzd 的物料编号一致（Story 7 通过
+    # param_bindings 用 sclzd.id 派生 WorktypeProgressQuery.userid）。
     scan_plan = [
         # (detail id, plan dh, uid, uname, dept, worktype, qty, price, day)
         (
@@ -588,8 +535,74 @@ def build_dataset(
             "1.2500",
             "2026-08-20",
         ),
-        (1004, "ZD-B-001", "02001", "乙厂员工", "dept-b1", "WT01", "6", "1.2500", "2026-08-20"),
+        (1003, "ZD-B-001", "02001", "乙厂员工", "dept-b1", "WT01", "6", "1.2500", "2026-08-20"),
     ]
+    # 制单语境完成量 sssl = 该物料已扫码产量之和（M18/1.5 分语境表）。
+    sssl_by_detail: dict[int, int] = {}
+    for did, _dh, _uid, _uname, _dept, _wt, qty, _price, _day in scan_plan:
+        sssl_by_detail[did] = sssl_by_detail.get(did, 0) + int(qty)
+
+    detail_id = 1000
+    for plan in plans:
+        company = str(plan["company"])
+        dept = str(plan["dept"])
+        prefix = "ZD-B" if company == "COMPANY-B" else "ZD"
+        dh = str(plan["dh"]).replace("PLAN", prefix)
+        fhsl_total = int(str(plan["sl"]))
+        if fhsl_total <= 0:
+            continue
+        detail_id += 1
+        sclzd.append(
+            {
+                "dh": dh,
+                "zhdate": str(plan["zhdate"]),
+                "dddh": str(plan["jhdh"]),
+                "khid": str(plan["khid"]),
+                "khname": str(plan["khname"]),
+                "drdg_status": 0,
+                "huohao": str(plan["huohao"]),
+                "huohaoname": str(plan["huohaoname"]),
+                "description": str(plan["spname"]),
+                "sctype": "SC1",
+                "sctypename": "大身",
+                "chuanghao": "床号1",
+                "cjr": "模拟裁剪员",
+                "zdr": "admin",
+                "state": 1,
+                "id": str(detail_id),
+                "baohao": "包1",
+                "ganghao": "缸1",
+                "color": str(plan["color"]),
+                "chima": str(plan["chima"]),
+                "fhsl": str(fhsl_total),
+                "sssl": str(sssl_by_detail.get(detail_id, 0)),
+                "remark": "",
+                "company": company,
+                "dept": dept,
+            }
+        )
+        for sort, (wt, wt_name) in enumerate(
+            [("WT01", "平车"), ("WT02", "手工钉扣"), ("WT03", "吊挂平车")], start=1
+        ):
+            sclzd_worktypes.append(
+                {
+                    "id": f"sw-{detail_id}-{wt}",
+                    "dh": dh,
+                    "huohao": str(plan["huohao"]),
+                    "huohaoname": str(plan["huohaoname"]),
+                    "wt": wt,
+                    "wtname": wt_name,
+                    "sort": sort,
+                    "zhgx": 1 if sort == 3 else 0,
+                    "sfzb": 0,
+                    "sctype": "SC1",
+                    "sctypename": "大身",
+                    "company": company,
+                    "dept": dept,
+                }
+            )
+
+    _wtname_by_wt = {"WT01": "平车", "WT02": "手工钉扣", "WT03": "吊挂平车"}
     for did, dh, uid, uname, dept, wt, qty, price, day in scan_plan:
         company = "COMPANY-B" if dept == "dept-b1" else "COMPANY-A"
         je = _d(qty) * _d(price)
@@ -611,6 +624,7 @@ def build_dataset(
             "color": "黑色" if company == "COMPANY-A" else "红色",
             "chima": "M",
             "worktype": wt,
+            "wtname": _wtname_by_wt[wt],
             "fhsl": "98",
             "price": price,
             "company": company,

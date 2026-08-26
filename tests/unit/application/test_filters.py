@@ -85,19 +85,31 @@ def test_out_of_scope_filter_never_broadens_the_scope() -> None:
     assert narrowed.dept_ids == depts("g9")
 
 
-@pytest.mark.parametrize("explicit", ["order-1", None])
-def test_dec_012_explicit_order_or_style_ids_are_rejected(explicit: str | None) -> None:
+def test_story7_order_and_style_filters_pass_through_as_narrow_only() -> None:
+    """Story 7: order/style/plan codes narrow within MES filtering (M3/M12)."""
     counter = CallCounter()
 
-    with pytest.raises(FilterRejectionError) as error:
-        FilterNarrower().narrow(
-            scoped_scope(),
-            order_ids=frozenset({explicit}) if explicit else None,
-            style_ids=frozenset({"style-1"}) if explicit is None else None,
-        )
+    narrowed = FilterNarrower().narrow(
+        scoped_scope(),
+        order_ids=frozenset({"KHDD-07-001"}),
+        style_ids=frozenset({"HH001"}),
+        plan_ids=frozenset({"JH-2607-001"}),
+    )
 
-    assert error.value.code == "invalid_request"
+    assert narrowed.order_codes == frozenset({"KHDD-07-001"})
+    assert narrowed.style_codes == frozenset({"HH001"})
+    assert narrowed.plan_codes == frozenset({"JH-2607-001"})
+    # Scope identifiers still narrowed/unchanged; no MES call happened.
+    assert narrowed.employee_ids == scoped_scope().employee_ids
+    assert narrowed.dept_ids == scoped_scope().dept_ids
     assert counter.calls == 0
+
+
+def test_empty_business_filters_are_none_not_empty_frozenset() -> None:
+    narrowed = FilterNarrower().narrow(scoped_scope())
+    assert narrowed.order_codes is None
+    assert narrowed.style_codes is None
+    assert narrowed.plan_codes is None
 
 
 def test_no_filters_pass_scope_through_unchanged() -> None:

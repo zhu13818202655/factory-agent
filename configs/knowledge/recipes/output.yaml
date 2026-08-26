@@ -1,0 +1,61 @@
+# Reviewed L1 output recipe (Story 7). File changes are semantics changes and
+# require human review.
+#
+# FR-001 个人产量统计: personal output grouped by date x 货号 x 工序.
+# Data source is GongziMxQuery (Type=0,1,2 three-source merge, M18) with Uid
+# scope-sourced from the credential; the quantity column is `sl` (个人产量/工资
+# 语境以 sl 为准, 1.5 分语境表).
+#
+# 合格/次品数量 (defective_qty) has no unified source (C.5): only the manual
+# PinFeng source carries `cp`. The merged wage view cannot attribute cp per
+# row, so the column is bound to the unavailable `quality_defective` metric and
+# every renderer shows 暂无数据源 instead of a fabricated number.
+version: 1
+capabilities:
+  - capability_id: fr001_personal_output
+    title: 个人产量统计
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_wages
+        kind: api
+        operation_id: GongziMxQuery
+        params:
+          scheme: ""
+          Type: "0,1,2"
+          Flag: "0"
+          queryFooter: "1"
+      - step_id: aggregate
+        kind: local
+        depends_on: [fetch_wages]
+        compute: |
+          SELECT
+            rq,
+            huohao,
+            worktype,
+            CAST(SUM(CAST(sl AS DECIMAL)) AS VARCHAR) AS output_qty,
+            'unavailable' AS defective_qty
+          FROM fetch_wages
+          GROUP BY rq, huohao, worktype
+          ORDER BY rq, huohao, worktype
+    result_columns:
+      - name: rq
+        source_step: aggregate
+        column_type: date
+      - name: huohao
+        source_step: aggregate
+      - name: worktype
+        source_step: aggregate
+      - name: output_qty
+        source_step: aggregate
+        metric: output_personal
+        column_type: quantity
+        unit: 件
+      - name: defective_qty
+        source_step: aggregate
+        metric: quality_defective
+        column_type: quantity
+        unit: 件
+    metric_versions:
+      output_personal: customer-output-v1
+      quality_defective: unavailable-c5
+    degradation: incomplete_marker

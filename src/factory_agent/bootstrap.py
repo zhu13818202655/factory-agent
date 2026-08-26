@@ -10,13 +10,18 @@ from factory_agent.application.authorization import (
     AuthorizationService,
     FixedScopeVersionAssigner,
 )
+from factory_agent.application.business_filters import BusinessFilterResolver
 from factory_agent.application.capabilities import CapabilityRegistry
+from factory_agent.application.capability_map import default_capability_catalog
+from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
 from factory_agent.application.session import SessionLimits, SessionService
 from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
+from factory_agent.data_api.directory import MesDirectorySource
 from factory_agent.data_api.hongzhao import HongzhaoMesAdapter
+from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE
 from factory_agent.domain import DeptId, EmployeeId, MesError, TenantId, UserId
 from factory_agent.execution.executor import ScopedExecutor
 from factory_agent.execution.kernel import KernelCapabilityRunner
@@ -167,11 +172,15 @@ def build_container(
         "redis": "configured" if settings.redis_url is not None else "not_configured",
         "export": "configured" if exporter is not None else "not_configured",
     }
+    directory = (
+        MesDirectorySource(mes, load_catalog()) if isinstance(mes, HongzhaoMesAdapter) else None
+    )
     authorization = supplied.authorization or AuthorizationService(
         memberships=_UnresolvedMemberships(),
-        organizations=_UnresolvedOrganizations(),
+        organizations=directory or _UnresolvedOrganizations(),
         versions=FixedScopeVersionAssigner(),
     )
+    business_filters = BusinessFilterResolver(directory) if directory is not None else None
     return ApplicationContainer(
         settings=settings,
         capabilities=CapabilityRegistry(),
@@ -195,6 +204,7 @@ def build_container(
             model,
             capability_runner,
             exporter,
+            business_filters,
         ),
         readiness=readiness,
     )
@@ -209,13 +219,14 @@ def _build_session_service(
     model: ModelGateway,
     capability_runner: CapabilityRunner | None,
     exporter: ArtifactExporter | None,
+    business_filters: BusinessFilterResolver | None,
 ) -> SessionService | None:
     """Only compose the session pipeline when its dependencies exist."""
     if interactions is None or capability_runner is None:
         return None
     parser = CapabilityIntentParser(
         model,
-        supplied.capability_catalog or CapabilityCatalog(),
+        supplied.capability_catalog or default_capability_catalog(),
         model_alias=settings.llm_fast_alias,
         timezone_name=settings.factory_timezone,
         max_repair_attempts=settings.llm_max_repair_attempts,
@@ -229,6 +240,8 @@ def _build_session_service(
         capability_runner,
         clock,
         new_id=supplied.new_id or (lambda: uuid4().hex),
+        narrower=FilterNarrower(),
+        business_filters=business_filters,
         limits=SessionLimits(
             max_input_chars=settings.session_max_input_chars,
             max_clarification_rounds=settings.session_max_clarification_rounds,
@@ -246,6 +259,8 @@ def _build_capability_runner(
 
     Injected fakes always win; a real adapter produces the kernel that closes
     the Story 6 vertical slice (recipe → executor → sandbox → ResultTable).
+    ``resource_columns`` lets an empty fan-out (FR-009 call-budget exhaustion)
+    still register a typed sandbox table for downstream local compute.
     """
     if supplied.capability_runner is not None:
         return supplied.capability_runner
@@ -254,7 +269,17 @@ def _build_capability_runner(
     catalog = load_catalog()
     recipes = load_recipes(catalog.operation_ids)
     executor = ScopedExecutor(adapter=mes, catalog=catalog)
-    return KernelCapabilityRunner(executor, recipes, default_metric_registry())
+    resource_columns: dict[str, tuple[str, ...]] = {}
+    for operation_id in catalog.operation_ids:
+        operation = catalog.get(operation_id)
+        model = ROW_MODEL_BY_RESOURCE.get(operation.resource) if operation.resource else None
+        resource_columns[operation_id] = tuple(model.model_fields) if model else ()
+    return KernelCapabilityRunner(
+        executor,
+        recipes,
+        default_metric_registry(),
+        resource_columns=resource_columns,
+    )
 
 
 def _build_export_service(

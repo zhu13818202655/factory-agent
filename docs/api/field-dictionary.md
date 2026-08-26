@@ -57,6 +57,19 @@ YAML 双份维护于 `configs/knowledge/field-dictionary.yaml`，供加载器校
 | `output.personal` | 明细行 `sl` 合计（YskQuery/BarcodeClQuery 语境） | M18/C.10 暂定 |
 | `output.order_completed` | `sssl` 合计（Sclzd 语境） | M18/C.10 暂定 |
 | `progress.ratio` | 已扫码工序数（`uid` 非空）/ 总工序数（HuohaoWorktypeQuery） | M6/M18 |
+| `output.order_plan_qty` | `Plan.zsl` / `ddsl` | M18 计划量 |
+| `output.order_in_progress` | `WskQuery.sl` 合计（待扫数量） | M18/1.5 分语境表 |
+| `output.participant_count` | 窗口内有产出的去重 `uid` 数 | 我方定义（Story 7 口径登记） |
+| `workshop.output_total` | 按 `dept` 分组汇总产量 | M16/单层车间 M5 |
+| `workshop.effective_headcount` | 各车间有产出去重 `uid` 数 | 我方定义；C.7 在册人数无数据源 |
+| `workshop.output_per_capita` | 车间产量合计 ÷ 有效人数 | 我方定义（分母为我方口径） |
+| `workshop.rank` | 按车间产量倒序编号（1 起） | 我方定义；M16 聚合 |
+| `payroll.rank_position` | 按 `GongziJeOrderQuery` 返回顺序编号位次 | M7（接口已倒序） |
+| `payroll.package_count` | `GongziJeOrderQuery` 返回的 `bs`（包数） | 客户接口返回字段 |
+| `payroll.gross_by_dept` | 按 `dept` 分组的 `je` 合计 | M9 |
+| `payroll.output_headcount` | 工资行内有产出去重 `uid` 数 | 我方定义；C.7 在册人数无数据源 |
+| `order.overdue_status` | `finish_date` 与当前日期直接比较（已逾期/未逾期） | K4（不实现预警阈值与等级） |
+| `worktype.current` | 最大已完成 `wsort` 的下一道工序 | M6/M18 |
 
 ## 未确认指标口径（status: unconfirmed）
 

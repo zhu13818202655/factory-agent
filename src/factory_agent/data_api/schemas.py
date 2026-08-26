@@ -204,6 +204,7 @@ class PlanRow(_CustomerRow):
     paol: str
     sl: str
     remark: str
+    dept: str = ""
 
 
 class SclzdRow(_CustomerRow):

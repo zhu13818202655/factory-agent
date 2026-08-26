@@ -22,6 +22,28 @@ DEFAULT_RECIPE_DIR = Path("configs/knowledge/recipes")
 StepKind = Literal["api", "local"]
 ColumnType = Literal["money", "percent", "date", "quantity"]
 
+#: Business filter keys a recipe may bind into local compute. They narrow
+#: within the MES-filtered range and can never broaden the active DataScope.
+#: ``requested_dept_ids`` is the user-requested department intersection (None
+#: when the user did not restrict to one), distinct from the full scope depts.
+BUSINESS_FILTER_KEYS: frozenset[str] = frozenset(
+    {"order_codes", "style_codes", "plan_codes", "requested_dept_ids"}
+)
+
+
+class ParamBinding(BaseModel):
+    """Derive one API request parameter from a dependency step's rows.
+
+    The kernel resolves the distinct values of ``column`` in the sandbox table
+    registered by ``from_step`` and fans out one API call per value (e.g.
+    ``WorktypeProgressQuery.userid`` = each ``Sclzd.id`` material number).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    from_step: str
+    column: str
+
 
 class RecipeStep(BaseModel):
     """One node of a capability DAG.
@@ -29,6 +51,10 @@ class RecipeStep(BaseModel):
     ``params`` holds reviewed, static filter parameters for the step (e.g. a
     wage ``scheme`` or a fixed ``Type``). They are always ``filter``-sourced in
     the catalog and can never carry scope or credential identifiers.
+
+    ``param_bindings`` derives dynamic filter parameters from a dependency
+    step's rows (fan-out); ``filter_bindings`` binds reviewed business filters
+    from the narrowed request into the local compute as named parameters.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -41,6 +67,8 @@ class RecipeStep(BaseModel):
     optional: bool = False
     compute: str | None = None
     params: dict[str, str] | None = None
+    param_bindings: dict[str, ParamBinding] | None = None
+    filter_bindings: dict[str, str] | None = None
 
 
 class ResultColumn(BaseModel):
@@ -110,6 +138,7 @@ def validate_recipe(recipe: CapabilityRecipe, registered_operations: frozenset[s
     if len(step_ids) != len(recipe.steps):
         raise InvalidRequestError("recipe contains duplicate step IDs")
 
+    api_step_ids = {step.step_id for step in recipe.steps if step.kind == "api"}
     for step in recipe.steps:
         if step.kind == "api":
             if step.operation_id is None or step.operation_id not in registered_operations:
@@ -120,6 +149,22 @@ def validate_recipe(recipe: CapabilityRecipe, registered_operations: frozenset[s
             if dependency not in step_ids:
                 raise InvalidRequestError(
                     f"step {step.step_id} depends on unknown step {dependency}"
+                )
+        for param, binding in (step.param_bindings or {}).items():
+            if binding.from_step not in api_step_ids:
+                raise InvalidRequestError(
+                    f"step {step.step_id} param {param} binds from a non-API step"
+                )
+            if not _is_safe_identifier(binding.from_step) or not _is_safe_identifier(
+                binding.column
+            ):
+                raise InvalidRequestError(
+                    f"step {step.step_id} param {param} binds an unsafe identifier"
+                )
+        for _, filter_key in (step.filter_bindings or {}).items():
+            if filter_key not in BUSINESS_FILTER_KEYS:
+                raise InvalidRequestError(
+                    f"step {step.step_id} binds an unknown business filter {filter_key}"
                 )
 
     _reject_cycles(recipe)
@@ -132,6 +177,15 @@ def validate_recipe(recipe: CapabilityRecipe, registered_operations: frozenset[s
             raise InvalidRequestError(
                 f"result column {column.name} uses a metric without a version"
             )
+
+
+def _is_safe_identifier(value: str) -> bool:
+    """Identifiers used in sandbox SQL must be plain names only."""
+    if not value:
+        return False
+    first = value[0]
+    rest = value[1:]
+    return (first.isalpha() or first == "_") and all(char.isalnum() or char == "_" for char in rest)
 
 
 def _reject_cycles(recipe: CapabilityRecipe) -> None:
@@ -185,8 +239,10 @@ def load_recipes(
 
 
 __all__ = [
+    "BUSINESS_FILTER_KEYS",
     "CapabilityRecipe",
     "DEFAULT_RECIPE_DIR",
+    "ParamBinding",
     "RecipeDocument",
     "RecipeRegistry",
     "ResultColumn",

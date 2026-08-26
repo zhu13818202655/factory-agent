@@ -227,10 +227,20 @@ class HongzhaoMesAdapter:
         }
         if extra_params:
             params.update(extra_params)
-        if operation_id in {"EmployeeQuery", "YskQuery", "GongziMxQuery"}:
+        if operation_id in {
+            "EmployeeQuery",
+            "YskQuery",
+            "GongziMxQuery",
+            "WorktypeProgressQuery",
+        }:
             if filters.employee_ids is not None and len(filters.employee_ids) == 1:
                 employee_id = next(iter(filters.employee_ids))
-                params["uid" if operation_id == "EmployeeQuery" else "Uid"] = str(employee_id)
+                if operation_id == "EmployeeQuery":
+                    params["uid"] = str(employee_id)
+                elif operation_id == "WorktypeProgressQuery":
+                    params["uid"] = str(employee_id)
+                else:
+                    params["Uid"] = str(employee_id)
         return params
 
     def _unwrap(self, envelope: Any) -> MesResponse:

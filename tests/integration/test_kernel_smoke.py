@@ -129,7 +129,9 @@ async def test_mock_mes_filters_by_bearer_identity() -> None:
         MesRequest(
             "YskQuery",
             {
-                "Uid": str(adapter.bundle.user),
+                # Story 7: Uid is a filter; company-A employee 01001 must be
+                # honoured and the company-B worker 02001 must never appear.
+                "Uid": "01001",
                 "dates": WINDOW[0],
                 "datee": WINDOW[1],
             },
@@ -140,6 +142,7 @@ async def test_mock_mes_filters_by_bearer_identity() -> None:
     rows = cast("list[dict[str, Any]]", result_mapping["list"])
     # Company isolation: the company-A identity must never see the company-B worker.
     assert rows
+    assert all(str(row.get("uid")) == "01001" for row in rows)
     assert all(str(row.get("uid")) != "02001" for row in rows)
     assert result_mapping.get("total") == len(rows)
 

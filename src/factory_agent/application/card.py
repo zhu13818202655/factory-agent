@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from factory_agent.ports.contracts import RenderColumn, RenderTable
+from factory_agent.ports.contracts import UNAVAILABLE_VALUE, RenderColumn, RenderTable
 
 _MONEY_UNITS = ("元", "¥")
+_UNAVAILABLE_LABEL = "暂无数据源"
 
 
 def build_card(table: RenderTable, *, title: str | None = None) -> dict[str, object]:
@@ -53,9 +54,19 @@ def build_summary(table: RenderTable) -> str:
         if value is not None:
             unit = column.unit or ""
             parts.append(f"{column.name} {_decimal_str(value)}{unit}")
+    unavailable = [column.name for column in table.columns if _column_unavailable(table, column)]
+    if unavailable:
+        parts.append(f"{'、'.join(unavailable)}：{_UNAVAILABLE_LABEL}")
     if not parts:
         return "未返回可用于生成摘要的数据。"
     return "，".join(parts) + "。"
+
+
+def _column_unavailable(table: RenderTable, column: RenderColumn) -> bool:
+    if not table.rows:
+        return False
+    value = table.rows[0].get(column.name)
+    return value == UNAVAILABLE_VALUE
 
 
 def _column_card_value(column: RenderColumn, table: RenderTable) -> object:
@@ -74,7 +85,9 @@ def _column_numeric(table: RenderTable, column: RenderColumn) -> Decimal | None:
         value = table.rows[0].get(column.name)
         if isinstance(value, Decimal):
             return value
-        if isinstance(value, str):
+        # Only typed numeric columns are treated as numbers; a string column
+        # (e.g. a uid like "01001") must never be summarised as a figure.
+        if column.column_type in ("money", "quantity", "percent") and isinstance(value, str):
             try:
                 return Decimal(value)
             except Exception:  # noqa: BLE001 - non-numeric cells are skipped
@@ -83,6 +96,8 @@ def _column_numeric(table: RenderTable, column: RenderColumn) -> Decimal | None:
 
 
 def _format_cell(value: object, column_type: str | None) -> object:
+    if value == UNAVAILABLE_VALUE:
+        return _UNAVAILABLE_LABEL
     if isinstance(value, Decimal):
         return _decimal_str(value)
     if column_type == "money" and isinstance(value, str):

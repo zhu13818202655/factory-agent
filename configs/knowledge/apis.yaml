@@ -301,7 +301,10 @@ operations:
     path: /api/NetYf/Sclzd/WorktypeProgressQuery
     kind: resource
     resource: worktype_progress
-    required_params: [userid, uid]
+    # Story 7: customer doc says uid is optional (可为空); userid (material id)
+    # is required. uid stays scope-sourced and is injected only when the scope
+    # resolves to a single employee.
+    required_params: [userid]
     parameter_sources:
       app_key: credential
       timestamp: credential
@@ -319,7 +322,9 @@ operations:
     path: /api/NetYf/Sclzd/YskQuery
     kind: resource
     resource: ysk
-    required_params: [Uid, dates, datee]
+    # Story 7: Uid is scope-sourced and optional (factory-wide Ysk aggregations
+    # call without a single employee; MES row-level filtering decides the range).
+    required_params: [dates, datee]
     parameter_sources:
       app_key: credential
       timestamp: credential
@@ -359,7 +364,11 @@ operations:
     path: /api/NetYf/Sclzd/GongziMxQuery
     kind: resource
     resource: gongzi_mx
-    required_params: [queryFooter, Uid, Flag, Type, scheme, dates, datee]
+    # Story 7: Uid is scope-sourced and optional so FR-011 (全厂工资统计) can
+    # call scheme=hz factory-wide without a single employee; MES row-level
+    # filtering (M3/M19) decides the visible range. Personal/target queries
+    # inject Uid from NarrowedFilters.employee_ids.
+    required_params: [queryFooter, Flag, Type, scheme, dates, datee]
     parameter_sources:
       app_key: credential
       timestamp: credential

@@ -1,0 +1,157 @@
+# Reviewed L1 workshop recipes (Story 7). File changes are semantics changes
+# and require human review.
+#
+# FR-007 车间产量对比 and FR-010 车间产量总览 aggregate over the MES-filtered
+# visible range (M3/M19). 车间清单/名称来自 DeptQuery（单层车间，M5）。产量口径：
+# BarcodeCl 语境 sssl = 产量（扫码）；制单语境完成量 = sssl；计划量 = Plan.zsl。
+#
+# 未确认口径一律列级 unavailable：达成率（C.9）与量产状态（C.8）无数据源；
+# 零人数车间的人均输出 unavailable（我方定义规则，不伪造 0）。可选
+# requested_dept_ids 业务过滤只收窄（与 DataScope 求交由 FilterNarrower 完成，
+# 空交集零业务调用）。
+version: 1
+capabilities:
+  - capability_id: fr007_workshop_output_comparison
+    title: 车间产量对比
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_barcode
+        kind: api
+        operation_id: BarcodeClQuery
+      - step_id: fetch_dept
+        kind: api
+        operation_id: DeptQuery
+        depends_on: [fetch_barcode]
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_barcode, fetch_dept]
+        filter_bindings:
+          requested_dept_ids: requested_dept_ids
+        compute: |
+          WITH requested_depts AS (
+            SELECT unnest($requested_dept_ids) AS c
+          ),
+          agg AS (
+            SELECT
+              d.id AS dept_id,
+              d.name AS dept_name,
+              SUM(CAST(b.sssl AS DECIMAL)) AS total,
+              COUNT(DISTINCT b.uid) AS headcount
+            FROM fetch_barcode b
+            LEFT JOIN fetch_dept d ON d.id = b.dept
+            WHERE b.dept IS NOT NULL AND b.dept <> ''
+              AND ((SELECT COUNT(*) FROM requested_depts) = 0
+                   OR b.dept IN (SELECT c FROM requested_depts))
+            GROUP BY d.id, d.name
+          )
+          SELECT
+            dept_name,
+            CAST(total AS VARCHAR) AS output_total,
+            CAST(headcount AS VARCHAR) AS effective_headcount,
+            CASE WHEN headcount > 0
+                 THEN CAST(CAST(total AS DECIMAL) / CAST(headcount AS DECIMAL) AS VARCHAR)
+                 ELSE 'unavailable' END AS per_capita,
+            CAST(RANK() OVER (ORDER BY total DESC) AS VARCHAR) AS rank_position,
+            'unavailable' AS achievement_rate
+          FROM agg
+          ORDER BY total DESC
+    result_columns:
+      - name: dept_name
+        source_step: compute
+      - name: output_total
+        source_step: compute
+        metric: workshop_output_total
+        column_type: quantity
+        unit: 件
+      - name: effective_headcount
+        source_step: compute
+        metric: workshop_effective_headcount
+        column_type: quantity
+        unit: 人
+      - name: per_capita
+        source_step: compute
+        metric: workshop_output_per_capita
+        column_type: quantity
+        unit: 件/人
+      - name: rank_position
+        source_step: compute
+        metric: workshop_rank
+        column_type: quantity
+      - name: achievement_rate
+        source_step: compute
+        metric: plan_target_output
+        column_type: percent
+    metric_versions:
+      workshop_output_total: customer-workshop-v1
+      workshop_effective_headcount: factory-effective-headcount-v1
+      workshop_output_per_capita: factory-per-capita-v1
+      workshop_rank: factory-rank-v1
+      plan_target_output: unavailable-c9
+    degradation: incomplete_marker
+
+  - capability_id: fr010_workshop_output_overview
+    title: 车间产量总览
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_plan
+        kind: api
+        operation_id: PlanGridPageList
+      - step_id: fetch_sclzd
+        kind: api
+        operation_id: SclzdGridPageList
+        depends_on: [fetch_plan]
+      - step_id: fetch_dept
+        kind: api
+        operation_id: DeptQuery
+        depends_on: [fetch_plan]
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_plan, fetch_sclzd, fetch_dept]
+        filter_bindings:
+          requested_dept_ids: requested_dept_ids
+        compute: |
+          WITH requested_depts AS (
+            SELECT unnest($requested_dept_ids) AS c
+          )
+          SELECT
+            d.name AS dept_name,
+            p.huohao,
+            CAST(SUM(CAST(p.zsl AS DECIMAL)) AS VARCHAR) AS plan_qty,
+            CAST(COALESCE(SUM(CAST(s.sssl AS DECIMAL)), 0) AS VARCHAR) AS completed_qty,
+            'unavailable' AS production_stage,
+            'unavailable' AS achievement_rate
+          FROM fetch_plan p
+          LEFT JOIN fetch_sclzd s ON s.dddh = p.jhdh
+          LEFT JOIN fetch_dept d ON d.id = p.dept
+          WHERE ((SELECT COUNT(*) FROM requested_depts) = 0
+                 OR p.dept IN (SELECT c FROM requested_depts))
+          GROUP BY d.name, p.huohao
+          ORDER BY d.name, p.huohao
+    result_columns:
+      - name: dept_name
+        source_step: compute
+      - name: huohao
+        source_step: compute
+      - name: plan_qty
+        source_step: compute
+        metric: output_order_plan_qty
+        column_type: quantity
+        unit: 件
+      - name: completed_qty
+        source_step: compute
+        metric: output_order_completed
+        column_type: quantity
+        unit: 件
+      - name: production_stage
+        source_step: compute
+        metric: production_stage
+      - name: achievement_rate
+        source_step: compute
+        metric: plan_target_output
+        column_type: percent
+    metric_versions:
+      output_order_plan_qty: customer-plan-v1
+      output_order_completed: customer-completed-v1
+      production_stage: unavailable-c8
+      plan_target_output: unavailable-c9
+    degradation: incomplete_marker

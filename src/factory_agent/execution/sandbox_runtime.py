@@ -9,7 +9,7 @@ extension loading, ``ATTACH``, ``COPY``, DDL, and DML are all blocked.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import duckdb
 
@@ -125,12 +125,27 @@ class InteractionSandbox:
                 connection.execute(insert_sql, params)
         self._registered.add(name)
 
-    def execute(self, sql: str, params: Sequence[Any] | None = None) -> list[tuple[Any, ...]]:
-        """Run one reviewed read-only statement and fetch all rows."""
+    def execute(
+        self,
+        sql: str,
+        params: Mapping[str, Any] | Sequence[Any] | None = None,
+    ) -> list[tuple[Any, ...]]:
+        """Run one reviewed read-only statement and fetch all rows.
+
+        Named parameters are passed through as a dict so reviewed local compute
+        can reference ``$order_codes``-style bindings (Story 7 business
+        filters); positional sequences are passed as a list. Values are always
+        bound parameters — never interpolated into the SQL text.
+        """
         self._assert_read_only(sql)
         connection = self._conn()
         try:
-            result = connection.execute(sql, list(params) if params else [])
+            if params is None:
+                result = connection.execute(sql)
+            elif isinstance(params, Mapping):
+                result = connection.execute(sql, dict(params))
+            else:
+                result = connection.execute(sql, list(params))
             rows: list[tuple[Any, ...]] = result.fetchall()
         except duckdb.Error as error:
             raise InvalidRequestError(f"sandbox rejected the statement: {error}") from error

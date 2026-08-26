@@ -14,29 +14,39 @@ reach the executor only through ``NarrowedFilters`` and reviewed recipe params.
 
 from __future__ import annotations
 
+import itertools
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Protocol, cast
+from typing import Any, Mapping, Protocol, cast
 
 from factory_agent.domain import CapabilityId, TimeRange
 from factory_agent.domain.errors import InvalidRequestError
 from factory_agent.execution.executor import ExecutionRequest
-from factory_agent.execution.recipes import CapabilityRecipe, RecipeRegistry
-from factory_agent.execution.result_table import (
-    MetricRegistry,
-    ResultColumnMeta,
-    ResultTable,
+from factory_agent.execution.recipes import (
+    BUSINESS_FILTER_KEYS,
+    CapabilityRecipe,
+    ParamBinding,
+    RecipeRegistry,
 )
+from factory_agent.execution.result_table import MetricRegistry, ResultColumnMeta, ResultTable
 from factory_agent.execution.sandbox_runtime import InteractionSandbox, SandboxTable
-from factory_agent.ports.contracts import RenderColumn, RenderTable, ResourceFetchResult
+from factory_agent.ports.contracts import (
+    UNAVAILABLE_VALUE,
+    RenderColumn,
+    RenderTable,
+    ResourceFetchResult,
+)
 from factory_agent.ports.session import CapabilityRunRequest, CapabilityRunResult
 
 _METADATA_TABLE = "_meta"
 
 #: Reviewed filter params a recipe step may declare; they are never scope or
 #: credential identifiers.
-_FILTER_PARAM_KEYS = frozenset({"scheme", "Type", "Flag", "queryFooter"})
+_FILTER_PARAM_KEYS = frozenset(
+    {"scheme", "Type", "Flag", "queryFooter", "userid", "huohao", "dh", "detailId"}
+)
 
 
 class StepExecutor(Protocol):
@@ -60,6 +70,11 @@ class KernelSettings:
     """Conservative first-release bounds for the wage vertical slice."""
 
     page_size: int = 200
+    #: Story 3 call budget for fan-out API steps (FR-009 batch progress). When
+    #: a fan-out would exceed it, remaining work is skipped and surfaced as a
+    #: structured ``call_budget_exhausted`` incomplete state with the covered
+    #: order count; a number is never fabricated for the uncovered remainder.
+    max_api_calls: int = 40
 
 
 class KernelCapabilityRunner:
@@ -72,11 +87,18 @@ class KernelCapabilityRunner:
         metrics: MetricRegistry,
         *,
         settings: KernelSettings | None = None,
+        clock: Any | None = None,
+        resource_columns: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
         self._executor = executor
         self._recipes = recipes
         self._metrics = metrics
         self._settings = settings or KernelSettings()
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        #: operation_id -> validated row column names, so an empty fetch (e.g.
+        #: a fan-out that exhausted its call budget) still registers a typed
+        #: sandbox table for downstream local compute.
+        self._resource_columns = resource_columns or {}
 
     @property
     def recipes(self) -> RecipeRegistry:
@@ -90,9 +112,9 @@ class KernelCapabilityRunner:
 
         with InteractionSandbox(allowed_tables=tuple(self._allowed_tables(recipe))) as sandbox:
             self._register_meta(sandbox, time_range)
-            fetches = await self._fetch_api_steps(sandbox, recipe, filters, time_range)
-            render_table = self._build_table(sandbox, recipe, fetches, time_range)
-        result = self._to_run_result(render_table, time_range, fetches, started)
+            fetches, call_count = await self._fetch_api_steps(sandbox, recipe, filters, time_range)
+            render_table = self._build_table(sandbox, recipe, fetches, filters, time_range)
+        result = self._to_run_result(render_table, time_range, fetches, call_count, started)
         return result
 
     def to_render_table(self, result: CapabilityRunResult) -> RenderTable:
@@ -110,11 +132,12 @@ class KernelCapabilityRunner:
 
     def _register_meta(self, sandbox: InteractionSandbox, time_range: TimeRange) -> None:
         days = _natural_days(time_range.start, time_range.end)
+        today = self._clock().date().isoformat()
         sandbox.register_table(
             SandboxTable(
                 name=_METADATA_TABLE,
-                rows=({"days": days},),
-                columns=(("days", "INTEGER"),),
+                rows=({"days": days, "today": today},),
+                columns=(("days", "INTEGER"), ("today", "VARCHAR")),
             )
         )
 
@@ -124,34 +147,137 @@ class KernelCapabilityRunner:
         recipe: CapabilityRecipe,
         filters: Any,
         time_range: TimeRange,
-    ) -> dict[str, ResourceFetchResult]:
+    ) -> tuple[dict[str, ResourceFetchResult], int]:
+        """Execute every API step in recipe order and return fetches + call count.
+
+        A step with ``param_bindings`` fans out one call per distinct value of
+        the bound column in its dependency step's sandbox table (e.g. one
+        ``WorktypeProgressQuery`` per material id), bounded by
+        ``KernelSettings.max_api_calls``. Exceeding the budget skips the
+        remainder and marks the fetch incomplete with
+        ``call_budget_exhausted``; covered rows are never merged with invented
+        numbers for the skipped remainder.
+        """
         fetches: dict[str, ResourceFetchResult] = {}
+        call_count = 0
         for step in recipe.steps:
             if step.kind != "api":
                 continue
             if step.operation_id is None:
                 raise InvalidRequestError(f"api step {step.step_id} has no operation")
-            extra_params = self._reviewed_params(step.params)
-            fetched = await self._executor.execute_full_step(
-                filters,
-                ExecutionRequest(
-                    operation_id=step.operation_id,
-                    time_range=(time_range.start, time_range.end),
-                    pagination_size=self._settings.page_size,
-                ),
-                extra_params=extra_params,
-            )
-            if fetched.rows:
-                columns = _table_columns(fetched.rows, recipe, step.step_id)
-                sandbox.register_table(
-                    SandboxTable(
-                        name=step.step_id,
-                        rows=tuple(cast(dict[str, Any], row) for row in fetched.rows),
-                        columns=columns,
-                    )
+            static_params = self._reviewed_params(step.params)
+            if step.param_bindings:
+                fetched = await self._fetch_fanned(
+                    sandbox, step, static_params, filters, time_range, call_count
                 )
+                call_count += fetched.pages_fetched
+            else:
+                fetched = await self._fetch_one(
+                    step.operation_id, filters, time_range, static_params
+                )
+                call_count += 1
+            columns = self._table_columns_for(step, fetched.rows, recipe)
+            sandbox.register_table(
+                SandboxTable(
+                    name=step.step_id,
+                    rows=tuple(cast(dict[str, Any], row) for row in fetched.rows),
+                    columns=columns,
+                )
+            )
             fetches[step.step_id] = fetched
-        return fetches
+        return fetches, call_count
+
+    def _table_columns_for(
+        self,
+        step: Any,
+        rows: tuple[dict[str, object], ...],
+        recipe: CapabilityRecipe,
+    ) -> tuple[tuple[str, str], ...]:
+        """Typed sandbox columns; an empty fetch falls back to the operation
+        schema so downstream compute never binds to a missing table."""
+        if rows:
+            return _table_columns(rows, recipe, step.step_id)
+        known = self._resource_columns.get(step.operation_id or "", ())
+        if known:
+            return tuple((name, "VARCHAR") for name in known)
+        return (("__empty__", "VARCHAR"),)
+
+    async def _fetch_fanned(
+        self,
+        sandbox: InteractionSandbox,
+        step: Any,
+        static_params: dict[str, str],
+        filters: Any,
+        time_range: TimeRange,
+        call_count: int,
+    ) -> ResourceFetchResult:
+        """Fan out over distinct bound-column values with the call budget."""
+        bindings = cast("dict[str, ParamBinding]", step.param_bindings)
+        value_sets: dict[str, tuple[str, ...]] = {}
+        for param, binding in bindings.items():
+            from_step, column = _binding_identifiers(step.step_id, param, binding)
+            sql = _distinct_values_sql(from_step, column)
+            try:
+                bound_rows = sandbox.execute(sql)
+            except InvalidRequestError as error:
+                raise InvalidRequestError(
+                    f"sandbox rejected param binding for {step.step_id}: {error}"
+                ) from error
+            value_sets[param] = tuple(str(row[0]) for row in bound_rows)
+
+        param_names = tuple(value_sets)
+        combos: list[dict[str, str]] = [
+            dict(zip(param_names, values))
+            for values in itertools.product(*(value_sets[name] for name in param_names))
+        ]
+
+        budget = max(self._settings.max_api_calls - call_count, 0)
+        all_rows: list[dict[str, object]] = []
+        pages_fetched = 0
+        footer: dict[str, str] | None = None
+        complete = True
+        reason: str | None = None
+        covered = 0
+        for combo in combos:
+            if covered >= budget:
+                complete = False
+                reason = "call_budget_exhausted"
+                break
+            params = {**static_params, **combo}
+            fetch = await self._fetch_one(step.operation_id, filters, time_range, params)
+            pages_fetched += 1
+            if fetch.footer is not None:
+                footer = fetch.footer
+            all_rows.extend(cast("list[dict[str, object]]", fetch.rows))
+            if not fetch.complete:
+                complete = False
+                reason = fetch.reason or reason
+            covered += 1
+        return ResourceFetchResult(
+            rows=tuple(all_rows),
+            total=len(all_rows),
+            pages_fetched=pages_fetched,
+            complete=complete,
+            reason=reason,
+            footer=footer if len(combos) <= 1 else None,
+        )
+
+    async def _fetch_one(
+        self,
+        operation_id: str,
+        filters: Any,
+        time_range: TimeRange,
+        extra_params: Mapping[str, str] | None = None,
+    ) -> ResourceFetchResult:
+        return await self._executor.execute_full_step(
+            filters,
+            ExecutionRequest(
+                operation_id=operation_id,
+                time_range=(time_range.start, time_range.end),
+                pagination_size=self._settings.page_size,
+            ),
+            extra_params=dict(extra_params) if extra_params else None,
+        )
 
     @staticmethod
     def _reviewed_params(params: dict[str, str] | None) -> dict[str, str]:
@@ -172,6 +298,7 @@ class KernelCapabilityRunner:
         sandbox: InteractionSandbox,
         recipe: CapabilityRecipe,
         fetches: dict[str, ResourceFetchResult],
+        filters: Any,
         time_range: TimeRange,
     ) -> ResultTable:
         warnings: list[str] = []
@@ -184,12 +311,12 @@ class KernelCapabilityRunner:
                 incomplete_reason = f"pagination_{fetch.reason or 'incomplete'}"
                 warnings.append(f"分页拉取未完整：{fetch.reason}")
 
-        compute_outputs = self._run_compute_steps(sandbox, recipe, fetches)
+        compute_outputs = self._run_compute_steps(sandbox, recipe, fetches, filters)
         source_ops_by_step = _source_operations(recipe)
         warnings_by_column: dict[str, str] = {}
 
         column_metas: list[ResultColumnMeta] = []
-        rendered_rows: list[dict[str, object]] = []
+        unavailable_columns: set[str] = set()
 
         for column in recipe.result_columns:
             source_step = column.source_step
@@ -210,12 +337,16 @@ class KernelCapabilityRunner:
                 incomplete_reason = f"metric_unavailable:{metric.name}"
                 warnings.append(f"口径未确认：{metric.name}（{metric.assumption_status}）")
                 warnings_by_column[column.name] = "unavailable"
+                unavailable_columns.add(column.name)
 
         if self._is_detail(recipe):
             rendered_rows = self._render_detail_rows(recipe, fetches)
         else:
-            aggregate = self._aggregate_row(recipe, compute_outputs, fetches, time_range)
-            rendered_rows = [aggregate] if aggregate is not None else []
+            rendered_rows = self._render_compute_rows(recipe, compute_outputs)
+
+        for row in rendered_rows:
+            for name in unavailable_columns:
+                row[name] = UNAVAILABLE_VALUE
 
         table_rows = tuple(
             {column.name: row.get(column.name) for column in recipe.result_columns}
@@ -245,8 +376,15 @@ class KernelCapabilityRunner:
         sandbox: InteractionSandbox,
         recipe: CapabilityRecipe,
         fetches: dict[str, ResourceFetchResult],
-    ) -> dict[str, dict[str, object]]:
-        outputs: dict[str, dict[str, object]] = {}
+        filters: Any,
+    ) -> dict[str, list[dict[str, object]]]:
+        """Run every local step and keep ALL output rows (multi-row tables).
+
+        ``filter_bindings`` maps a named SQL parameter to a narrowed business
+        filter (``order_codes`` / ``style_codes`` / ``plan_codes``); the values
+        are bound as named DuckDB parameters, never interpolated into SQL.
+        """
+        outputs: dict[str, list[dict[str, object]]] = {}
         for step in recipe.steps:
             if step.kind != "local":
                 continue
@@ -254,36 +392,47 @@ class KernelCapabilityRunner:
                 raise InvalidRequestError(f"local step {step.step_id} has no compute")
             dependency_empty = _dependency_empty(step, fetches)
             if dependency_empty:
-                outputs[step.step_id] = self._zero_aggregate(recipe, step.step_id)
+                outputs[step.step_id] = [self._zero_aggregate(recipe, step.step_id)]
                 continue
+            bind_params = self._business_filter_params(step, filters)
             try:
-                rows = sandbox.execute(step.compute)
+                rows = sandbox.execute(step.compute, bind_params)
             except InvalidRequestError as error:
                 raise InvalidRequestError(
                     f"sandbox rejected local compute for {step.step_id}: {error}"
                 ) from error
-            outputs[step.step_id] = dict(zip(_compute_columns(recipe, step.step_id), rows[0]))
+            columns = _compute_columns(recipe, step.step_id)
+            outputs[step.step_id] = [
+                dict(zip(columns, row)) for row in rows if len(row) == len(columns)
+            ]
         return outputs
+
+    @staticmethod
+    def _business_filter_params(step: Any, filters: Any) -> dict[str, object] | None:
+        if not step.filter_bindings:
+            return None
+        params: dict[str, object] = {}
+        for sql_param, filter_key in step.filter_bindings.items():
+            if filter_key not in BUSINESS_FILTER_KEYS:
+                raise InvalidRequestError(f"unknown business filter binding: {filter_key}")
+            values = getattr(filters, filter_key, None)
+            params[sql_param] = list(values) if values else []
+        return params
 
     def _zero_aggregate(self, recipe: CapabilityRecipe, step_id: str) -> dict[str, object]:
         columns = _compute_columns(recipe, step_id)
         return {column: _zero_for(column, recipe) for column in columns}
 
-    def _aggregate_row(
+    def _render_compute_rows(
         self,
         recipe: CapabilityRecipe,
-        compute_outputs: dict[str, dict[str, object]],
-        fetches: dict[str, ResourceFetchResult],
-        time_range: TimeRange,
-    ) -> dict[str, object] | None:
-        for column in recipe.result_columns:
-            if column.source_step in compute_outputs:
-                output = compute_outputs[column.source_step]
-                aggregate: dict[str, object] = {}
-                for out_column in recipe.result_columns:
-                    aggregate[out_column.name] = output.get(out_column.name)
-                return aggregate
-        return None
+        compute_outputs: dict[str, list[dict[str, object]]],
+    ) -> list[dict[str, object]]:
+        """Render every row of the first local step referenced by result columns."""
+        for step in recipe.steps:
+            if step.kind == "local" and step.step_id in compute_outputs:
+                return compute_outputs[step.step_id]
+        return []
 
     def _render_detail_rows(
         self,
@@ -351,6 +500,7 @@ class KernelCapabilityRunner:
         table: ResultTable,
         time_range: TimeRange,
         fetches: dict[str, ResourceFetchResult],
+        call_count: int,
         started: float,
     ) -> CapabilityRunResult:
         column_names = tuple(column.name for column in table.columns)
@@ -366,7 +516,7 @@ class KernelCapabilityRunner:
             source_operations=table.source_operations,
             incomplete=table.incomplete,
             incomplete_reason=table.incomplete_reason,
-            api_call_count=sum(1 for _ in fetches),
+            api_call_count=call_count,
             duration_ms=int((time.monotonic() - started) * 1000),
             column_types={
                 column.name: column.column_type
@@ -422,6 +572,28 @@ def render_table_from_run_result(result: CapabilityRunResult) -> RenderTable:
     )
 
 
+def _binding_identifiers(step_id: str, param: str, binding: ParamBinding) -> tuple[str, str]:
+    """Defensive identifier whitelist before any sandbox SQL construction."""
+    for value in (binding.from_step, binding.column):
+        if (
+            not value
+            or not (value[0].isalpha() or value[0] == "_")
+            or not all(char.isalnum() or char == "_" for char in value[1:])
+        ):
+            raise InvalidRequestError(f"step {step_id} param {param} binds an unsafe identifier")
+    return binding.from_step, binding.column
+
+
+def _distinct_values_sql(from_step: str, column: str) -> str:
+    """Build the read-only distinct-value query for one param binding.
+
+    Both identifiers are whitelisted to plain ``[A-Za-z_][A-Za-z0-9_]*`` names
+    by ``_binding_identifiers`` before this is called, so the interpolation can
+    never carry an attacker-controlled fragment.
+    """
+    return f'SELECT DISTINCT "{column}" FROM "{from_step}" WHERE "{column}" IS NOT NULL'  # nosec B608 - identifiers whitelisted; read-only DuckDB
+
+
 def _natural_days(start: Any, end: Any) -> int:
     days = (end.date() - start.date()).days
     return max(days, 1)
@@ -453,12 +625,18 @@ def _zero_for(column: str, recipe: CapabilityRecipe) -> object:
 
 
 def _dependency_empty(step: Any, fetches: dict[str, ResourceFetchResult]) -> bool:
-    """A local step depends on an api step; if it fetched zero rows, skip SQL."""
-    for dependency in step.depends_on:
-        fetch = fetches.get(dependency)
-        if fetch is not None and not fetch.rows:
-            return True
-    return False
+    """Every api dependency fetched zero rows → the local step outputs zeros.
+
+    Multi-step recipes (Story 7) keep computing when only one optional source
+    (e.g. WskQuery) is empty; a fully void result still degrades to a zero
+    aggregate instead of a fabricated number.
+    """
+    if not step.depends_on:
+        return False
+    return all(
+        fetches.get(dependency) is None or not fetches[dependency].rows
+        for dependency in step.depends_on
+    )
 
 
 def _source_operations(recipe: CapabilityRecipe) -> dict[str, tuple[str, ...]]:
@@ -523,8 +701,8 @@ def _decimal_or_zero(value: object) -> Decimal:
 
 
 def _to_value(value: object, column: ResultColumnMeta) -> object:
-    if value is None:
-        return None
+    if value is None or value == UNAVAILABLE_VALUE:
+        return value
     if column.column_type in ("money", "quantity") and isinstance(value, str):
         return _decimal_or_zero(value)
     if column.column_type in ("money", "quantity") and isinstance(value, Decimal):
@@ -545,7 +723,7 @@ def _build_totals(
             numeric = [
                 Decimal(str(row.get(column.name)))
                 for row in rows
-                if row.get(column.name) is not None
+                if row.get(column.name) is not None and row.get(column.name) != UNAVAILABLE_VALUE
             ]
             if numeric:
                 totals[column.name] = sum(numeric, Decimal("0"))

@@ -1,0 +1,68 @@
+# Reviewed L1 order output recipe (Story 7). File changes are semantics changes
+# and require human review.
+#
+# FR-006 订单/款号产量: HuohaoWtCLQuery (scheme=货号工序, 必填) 按「货号×工序」
+# 汇总产量，合计以 footer.sl_total 为准；参与人数由 BarcodeClQuery 按 uid 去重
+# 计算（M16 聚合，登记为 output_participant_count 我方定义口径）。同一行
+# BarcodeCl 明细既是计件工资来源之一，也是参与人数去重的依据，因此跨来源不会
+# 重复累计产量（产量只取 HuohaoWtCL 的 sssl）。
+#
+# 可选 style_codes 业务过滤：货号精确匹配；跨租户货号由 MES 行级过滤返回空。
+version: 1
+capabilities:
+  - capability_id: fr006_order_output
+    title: 订单/款号产量
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_huohao_wt_cl
+        kind: api
+        operation_id: HuohaoWtCLQuery
+        params:
+          scheme: "货号工序"
+          queryFooter: "1"
+      - step_id: fetch_barcode
+        kind: api
+        operation_id: BarcodeClQuery
+        depends_on: [fetch_huohao_wt_cl]
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_huohao_wt_cl, fetch_barcode]
+        filter_bindings:
+          style_codes: style_codes
+        compute: |
+          WITH style_codes AS (
+            SELECT unnest($style_codes) AS c
+          )
+          SELECT
+            hw.huohao,
+            hw.worktype,
+            CAST(SUM(CAST(hw.sssl AS DECIMAL)) AS VARCHAR) AS output_qty,
+            CAST((
+              SELECT COUNT(DISTINCT b.uid)
+              FROM fetch_barcode b
+              WHERE b.huohao = hw.huohao AND b.worktype = hw.worktype
+            ) AS VARCHAR) AS participant_count
+          FROM fetch_huohao_wt_cl hw
+          WHERE (SELECT COUNT(*) FROM style_codes) = 0
+             OR hw.huohao IN (SELECT c FROM style_codes)
+          GROUP BY hw.huohao, hw.worktype
+          ORDER BY hw.huohao, hw.worktype
+    result_columns:
+      - name: huohao
+        source_step: compute
+      - name: worktype
+        source_step: compute
+      - name: output_qty
+        source_step: compute
+        metric: output_order_completed
+        column_type: quantity
+        unit: 件
+      - name: participant_count
+        source_step: compute
+        metric: output_participant_count
+        column_type: quantity
+        unit: 人
+    metric_versions:
+      output_order_completed: customer-completed-v1
+      output_participant_count: factory-participant-v1
+    degradation: incomplete_marker
