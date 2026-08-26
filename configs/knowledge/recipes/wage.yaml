@@ -1,0 +1,109 @@
+# Reviewed L1 wage capability recipes (Story 6). File changes are semantics
+# changes and require human review.
+#
+# FR-002 个人工资汇总 and FR-003 个人工资明细 share the same operation
+# `GongziMxQuery` and differ only in `scheme` and result columns:
+#   - scheme empty = 明细 (FR-003), scheme "hz" = 汇总 (FR-002).
+# The `Type=0,1,2` three-source merge (扫码/吊挂/手工账) is confirmed by M18.
+# `Flag` defaults to "0" (扫描日期, C.12) and is labelled 待确认 on card/Excel.
+# `Uid` is scope-sourced (M10) and never accepts user input.
+#
+# Local compute runs inside the per-interaction read-only DuckDB sandbox. The
+# kernel registers a `_meta` table with the natural-day count; `daily_avg`
+# is a factory-defined versioned rule (合计 ÷ 区间自然日天数), not a customer
+# formula, and is surfaced as an assumption label.
+#
+# footer_reconciliation compares the locally aggregated `gross_total` against
+# the MES `footer.je_total`; a mismatch is a structured `reconciliation_failed`,
+# never a silently chosen number.
+version: 1
+capabilities:
+  - capability_id: fr002_personal_wage_summary
+    title: 个人工资汇总
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_wages
+        kind: api
+        operation_id: GongziMxQuery
+        params:
+          scheme: "hz"
+          Type: "0,1,2"
+          Flag: "0"
+          queryFooter: "1"
+      - step_id: aggregate
+        kind: local
+        depends_on: [fetch_wages]
+        compute: |
+          SELECT
+            COALESCE(SUM(CAST(je AS DECIMAL)), 0) AS gross_total,
+            COALESCE(SUM(CAST(sl AS DECIMAL)), 0) AS piece_count,
+            CASE WHEN (SELECT days FROM _meta) > 0
+                 THEN COALESCE(SUM(CAST(je AS DECIMAL)), 0) / (SELECT days FROM _meta)
+                 ELSE 0 END AS daily_avg
+          FROM fetch_wages
+    result_columns:
+      - name: gross_total
+        source_step: aggregate
+        metric: payroll_gross_total
+        column_type: money
+      - name: piece_count
+        source_step: aggregate
+        metric: payroll_piece_count
+        column_type: quantity
+      - name: daily_avg
+        source_step: aggregate
+        metric: payroll_daily_average
+        column_type: money
+    metric_versions:
+      payroll_gross_total: customer-footer-v1
+      payroll_piece_count: customer-payroll-v1
+      payroll_daily_average: factory-daily-average-v1
+    footer_reconciliation:
+      gross_total: je_total
+    degradation: incomplete_marker
+
+  - capability_id: fr003_personal_wage_detail
+    title: 个人工资明细
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_wages
+        kind: api
+        operation_id: GongziMxQuery
+        params:
+          scheme: ""
+          Type: "0,1,2"
+          Flag: "0"
+          queryFooter: "1"
+      - step_id: aggregate
+        kind: local
+        depends_on: [fetch_wages]
+        compute: |
+          SELECT
+            COALESCE(COUNT(*), 0) AS piece_count,
+            COALESCE(SUM(CAST(je AS DECIMAL)), 0) AS gross_total
+          FROM fetch_wages
+    result_columns:
+      - name: rq
+        source_step: fetch_wages
+        column_type: date
+      - name: worktype
+        source_step: fetch_wages
+      - name: sl
+        source_step: fetch_wages
+        metric: payroll_piece_count
+        column_type: quantity
+      - name: price
+        source_step: fetch_wages
+        metric: payroll_unit_price
+        column_type: money
+      - name: je
+        source_step: fetch_wages
+        metric: payroll_amount
+        column_type: money
+    metric_versions:
+      payroll_piece_count: customer-payroll-v1
+      payroll_unit_price: customer-payroll-v1
+      payroll_amount: customer-payroll-v1
+    footer_reconciliation:
+      gross_total: je_total
+    degradation: incomplete_marker

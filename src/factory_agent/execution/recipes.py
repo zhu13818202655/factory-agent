@@ -20,10 +20,16 @@ from factory_agent.domain.errors import InvalidRequestError
 DEFAULT_RECIPE_DIR = Path("configs/knowledge/recipes")
 
 StepKind = Literal["api", "local"]
+ColumnType = Literal["money", "percent", "date", "quantity"]
 
 
 class RecipeStep(BaseModel):
-    """One node of a capability DAG."""
+    """One node of a capability DAG.
+
+    ``params`` holds reviewed, static filter parameters for the step (e.g. a
+    wage ``scheme`` or a fixed ``Type``). They are always ``filter``-sourced in
+    the catalog and can never carry scope or credential identifiers.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -34,14 +40,19 @@ class RecipeStep(BaseModel):
     parallel_group: str | None = None
     optional: bool = False
     compute: str | None = None
+    params: dict[str, str] | None = None
 
 
 class ResultColumn(BaseModel):
+    """One output column with optional type/unit for rendering (Story 6)."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
     source_step: str
     metric: str | None = None
+    column_type: ColumnType | None = None
+    unit: str | None = None
 
 
 class CapabilityRecipe(BaseModel):
@@ -56,6 +67,11 @@ class CapabilityRecipe(BaseModel):
     result_columns: tuple[ResultColumn, ...]
     metric_versions: dict[str, str]
     degradation: Literal["incomplete_marker", "fail"] = "incomplete_marker"
+    #: Optional footer reconciliation: ``{result_column: footer_field}``. The
+    #: kernel compares the locally computed column against the MES ``footer``
+    #: field; a mismatch produces a structured ``reconciliation_failed`` state
+    #: instead of silently picking one number.
+    footer_reconciliation: dict[str, str] | None = None
 
 
 class RecipeDocument(BaseModel):

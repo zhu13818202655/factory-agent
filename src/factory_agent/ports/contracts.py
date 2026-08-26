@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Protocol, TypeVar
 
 from factory_agent.domain import InteractionId, TenantId, TenantMembership, UserId
@@ -48,6 +49,56 @@ class MembershipResolver(Protocol):
         credential: TrustedCredential,
         as_of: datetime,
     ) -> TenantMembership: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceFetchResult:
+    """One provably-complete (or explicitly incomplete) paged resource fetch.
+
+    ``rows`` holds validated customer rows; ``footer`` carries the optional MES
+    ``result.footer`` totals (e.g. ``je_total``) as a string mapping. When
+    pagination verification fails (total drift, duplicate/missing page, budget
+    exhaustion) ``complete`` is ``False`` and ``reason`` names the anomaly so the
+    caller can surface a structured state instead of a fabricated number.
+    """
+
+    rows: tuple[dict[str, object], ...]
+    total: int
+    pages_fetched: int
+    complete: bool
+    reason: str | None = None
+    footer: dict[str, str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RenderColumn:
+    """One output column with optional type/unit for card and Excel rendering."""
+
+    name: str
+    metric_name: str | None
+    metric_version: str | None
+    source_operations: tuple[str, ...]
+    column_type: str | None = None
+    unit: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RenderTable:
+    """Vendor-neutral renderable result consumed by card and Excel renderers.
+
+    Carries only the numbers and approved metadata needed to render a structured
+    card and an XLSX file; it never carries customer field names, credentials,
+    or row filtering internals.
+    """
+
+    capability_id: str
+    columns: tuple[RenderColumn, ...]
+    rows: tuple[dict[str, object], ...]
+    totals: dict[str, Decimal]
+    source_operations: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
+    incomplete: bool = False
+    incomplete_reason: str | None = None
 
 
 class MesDataSource(Protocol[MesRequestT, MesResponseT]):

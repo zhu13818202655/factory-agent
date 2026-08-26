@@ -100,8 +100,28 @@ usage_outbox_table = sa.Table(
     sa.Index("usage_event_outbox_pending_idx", "published_at", "dead_lettered", "available_at"),
 )
 
+artifact_table = sa.Table(
+    "agent_artifact",
+    METADATA,
+    sa.Column("artifact_id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, nullable=False),
+    sa.Column("user_id", sa.Text, nullable=False),
+    sa.Column("interaction_id", sa.Text, nullable=False),
+    sa.Column("capability_id", sa.Text, nullable=False),
+    sa.Column("object_key", sa.Text, nullable=False),
+    sa.Column("filename", sa.Text, nullable=False),
+    sa.Column("content_type", sa.Text, nullable=False),
+    sa.Column("size_bytes", sa.BigInteger, nullable=False),
+    sa.Column("sha256", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("agent_artifact_owner_idx", "tenant_id", "user_id", "artifact_id"),
+    sa.Index("agent_artifact_expiry_idx", "expires_at"),
+)
+
 __all__ = [
     "METADATA",
+    "artifact_table",
     "event_table",
     "interaction_table",
     "message_table",

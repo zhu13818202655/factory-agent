@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Mapping
 
 from factory_agent.application.filters import NarrowedFilters
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.execution.executor import ScopedExecutor
+from factory_agent.ports.contracts import ResourceFetchResult
 
 
 @dataclass
@@ -19,6 +20,8 @@ class RecordingAdapter:
     """
 
     rows: tuple[dict[str, Any], ...] = ()
+    total: int | None = None
+    footer: dict[str, str] | None = None
     requests: list[tuple[str, NarrowedFilters, tuple[datetime, datetime], int]] = field(
         default_factory=lambda: []
     )
@@ -32,6 +35,23 @@ class RecordingAdapter:
     ) -> list[dict[str, Any]]:
         self.requests.append((operation_id, filters, time_range, page_size))
         return list(self.rows)
+
+    async def fetch_resource(
+        self,
+        operation_id: str,
+        filters: NarrowedFilters,
+        time_range: tuple[datetime, datetime],
+        page_size: int,
+        extra_params: Mapping[str, str] | None = None,
+    ) -> ResourceFetchResult:
+        self.requests.append((operation_id, filters, time_range, page_size))
+        return ResourceFetchResult(
+            rows=tuple(self.rows),
+            total=self.total if self.total is not None else len(self.rows),
+            pages_fetched=1,
+            complete=True,
+            footer=self.footer,
+        )
 
 
 def make_scoped_executor() -> tuple[RecordingAdapter, ScopedExecutor]:

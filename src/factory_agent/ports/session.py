@@ -140,6 +140,11 @@ class CapabilityRunResult:
     incomplete_reason: str | None = None
     api_call_count: int = 0
     duration_ms: int = 0
+    #: Render metadata so the card and Excel renderers honour types/units and
+    #: assumptions without re-querying the MES or database.
+    column_types: dict[str, str] | None = None
+    column_units: dict[str, str] | None = None
+    warnings: tuple[str, ...] = ()
 
 
 class CapabilityRunner(Protocol):

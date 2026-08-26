@@ -5,6 +5,7 @@ description = "Read-only factory MES assistant powered by validated API orchestr
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aioboto3>=13.0,<14.0",
     "alembic>=1.16.0,<2.0.0",
     "duckdb>=1.1.0,<2.0.0",
     "fastapi>=0.116.0,<1.0.0",
@@ -16,6 +17,7 @@ dependencies = [
     "pydantic-settings>=2.10.0,<3.0.0",
     "sqlalchemy>=2.0.0,<3.0.0",
     "uvicorn[standard]>=0.35.0,<1.0.0",
+    "xlsxwriter>=3.2,<4.0",
 ]
 
 [dependency-groups]
@@ -37,6 +39,10 @@ factory-agent-migrate = "factory_agent.persistence.migrations:main"
 
 [tool.uv.workspace]
 members = ["mock-mes", "usage-admin"]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [build-system]
 requires = ["hatchling"]

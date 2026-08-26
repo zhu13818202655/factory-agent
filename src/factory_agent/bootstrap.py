@@ -18,9 +18,15 @@ from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
 from factory_agent.data_api.hongzhao import HongzhaoMesAdapter
 from factory_agent.domain import DeptId, EmployeeId, MesError, TenantId, UserId
+from factory_agent.execution.executor import ScopedExecutor
+from factory_agent.execution.kernel import KernelCapabilityRunner
+from factory_agent.execution.recipes import load_recipes
+from factory_agent.execution.result_table import default_metric_registry
+from factory_agent.export_service import ExportService, S3ArtifactStore
 from factory_agent.llm.registry import ModelRegistry, load_model_registry
 from factory_agent.llm.router_gateway import LiteLlmRouterGateway
 from factory_agent.observability.audit import AuditSink, InMemoryAuditSink
+from factory_agent.persistence.artifact_repository import SqlArtifactRepository
 from factory_agent.persistence.engine import create_session_engine
 from factory_agent.persistence.session_store import SqlInteractionStore
 from factory_agent.ports import (
@@ -34,6 +40,7 @@ from factory_agent.ports import (
     SessionRepository,
     TrustedCredential,
 )
+from factory_agent.ports.artifacts import ArtifactExporter
 from factory_agent.ports.not_configured import (
     DependencyNotConfiguredError,
     NotConfiguredArtifactStore,
@@ -61,6 +68,7 @@ class DependencyOverrides:
     audit: AuditSink | None = None
     interactions: InteractionStore | None = None
     capability_runner: CapabilityRunner | None = None
+    artifact_exporter: ArtifactExporter | None = None
     capability_catalog: CapabilityCatalog | None = None
     new_id: Callable[[], str] | None = None
 
@@ -79,6 +87,8 @@ class ApplicationContainer:
     audit: AuditSink
     interactions: InteractionStore | None = None
     sessions_service: SessionService | None = None
+    capability_runner: CapabilityRunner | None = None
+    artifact_exporter: ArtifactExporter | None = None
     readiness: dict[str, str] = field(default_factory=lambda: {})
 
 
@@ -131,6 +141,10 @@ def build_container(
             model = NotConfiguredModelGateway()
             model_status = "not_configured"
 
+    clock = supplied.clock or SystemClock()
+    capability_runner = _build_capability_runner(supplied, mes)
+    artifact_store, exporter = _build_export_service(supplied, settings, clock)
+
     if supplied.interactions is not None:
         interactions: InteractionStore | None = supplied.interactions
         interactions_status = "fake"
@@ -151,13 +165,13 @@ def build_container(
         "postgres": "configured" if settings.postgres_url is not None else "not_configured",
         "litellm": model_status,
         "redis": "configured" if settings.redis_url is not None else "not_configured",
+        "export": "configured" if exporter is not None else "not_configured",
     }
     authorization = supplied.authorization or AuthorizationService(
         memberships=_UnresolvedMemberships(),
         organizations=_UnresolvedOrganizations(),
         versions=FixedScopeVersionAssigner(),
     )
-    clock = supplied.clock or SystemClock()
     return ApplicationContainer(
         settings=settings,
         capabilities=CapabilityRegistry(),
@@ -165,13 +179,22 @@ def build_container(
         mes=mes,
         model=model,
         sessions=supplied.sessions or NotConfiguredSessionRepository(),
-        artifacts=supplied.artifacts or NotConfiguredArtifactStore(),
+        artifacts=artifact_store or supplied.artifacts or NotConfiguredArtifactStore(),
         clock=clock,
         authorization=authorization,
         audit=supplied.audit or InMemoryAuditSink(),
         interactions=interactions,
+        capability_runner=capability_runner,
+        artifact_exporter=exporter,
         sessions_service=_build_session_service(
-            settings, supplied, interactions, authorization, clock, model
+            settings,
+            supplied,
+            interactions,
+            authorization,
+            clock,
+            model,
+            capability_runner,
+            exporter,
         ),
         readiness=readiness,
     )
@@ -184,9 +207,11 @@ def _build_session_service(
     authorization: AuthorizationService,
     clock: Clock,
     model: ModelGateway,
+    capability_runner: CapabilityRunner | None,
+    exporter: ArtifactExporter | None,
 ) -> SessionService | None:
     """Only compose the session pipeline when its dependencies exist."""
-    if interactions is None or supplied.capability_runner is None:
+    if interactions is None or capability_runner is None:
         return None
     parser = CapabilityIntentParser(
         model,
@@ -201,7 +226,7 @@ def _build_session_service(
         interactions,
         authorization,
         parser,
-        supplied.capability_runner,
+        capability_runner,
         clock,
         new_id=supplied.new_id or (lambda: uuid4().hex),
         limits=SessionLimits(
@@ -209,7 +234,67 @@ def _build_session_service(
             max_clarification_rounds=settings.session_max_clarification_rounds,
             heartbeat_seconds=settings.session_heartbeat_seconds,
         ),
+        exporter=exporter,
     )
+
+
+def _build_capability_runner(
+    supplied: DependencyOverrides,
+    mes: MesDataSource[Any, Any],
+) -> CapabilityRunner | None:
+    """Compose the reviewed kernel runner over a real Hongzhao adapter only.
+
+    Injected fakes always win; a real adapter produces the kernel that closes
+    the Story 6 vertical slice (recipe → executor → sandbox → ResultTable).
+    """
+    if supplied.capability_runner is not None:
+        return supplied.capability_runner
+    if not isinstance(mes, HongzhaoMesAdapter):
+        return None
+    catalog = load_catalog()
+    recipes = load_recipes(catalog.operation_ids)
+    executor = ScopedExecutor(adapter=mes, catalog=catalog)
+    return KernelCapabilityRunner(executor, recipes, default_metric_registry())
+
+
+def _build_export_service(
+    supplied: DependencyOverrides,
+    settings: FactoryAgentSettings,
+    clock: Clock,
+) -> tuple[ArtifactStore | None, ArtifactExporter | None]:
+    """Compose the exporter from object-store + PostgreSQL settings when present."""
+    if supplied.artifact_exporter is not None:
+        return supplied.artifacts, supplied.artifact_exporter
+    if settings.artifact_endpoint is None or settings.postgres_url is None:
+        return None, None
+    store = supplied.artifacts
+    if store is None:
+        store = S3ArtifactStore(
+            str(settings.artifact_endpoint),
+            settings.artifact_bucket or "exports",
+            region=settings.artifact_region,
+            access_key=(
+                settings.artifact_access_key.get_secret_value()
+                if settings.artifact_access_key is not None
+                else None
+            ),
+            secret_key=(
+                settings.artifact_secret_key.get_secret_value()
+                if settings.artifact_secret_key is not None
+                else None
+            ),
+            path_prefix=settings.artifact_secret_prefix,
+        )
+    repository = SqlArtifactRepository(create_session_engine(str(settings.postgres_url)))
+    exporter = ExportService(
+        store,
+        repository,
+        presign_expires_seconds=settings.artifact_presign_expires_seconds,
+        cleanup_after_days=settings.artifact_cleanup_after_days,
+        secret_prefix=settings.artifact_secret_prefix,
+        clock=clock,
+    )
+    return store, exporter
 
 
 def _load_registry(settings: FactoryAgentSettings) -> ModelRegistry | None:

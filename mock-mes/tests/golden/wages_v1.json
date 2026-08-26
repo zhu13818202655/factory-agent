@@ -1,0 +1,22 @@
+{
+  "scenario": "small",
+  "seed": 20260821,
+  "employee_uid": "01001",
+  "window": ["2026-07-01", "2026-08-31"],
+  "detail_rows": 5,
+  "detail": [
+    {"type": "扫码产量", "rq": "2026-07-31", "worktype": "WT01", "sl": "4", "price": "1.2500", "je": "5.0000"},
+    {"type": "扫码产量", "rq": "2026-08-05", "worktype": "WT01", "sl": "5", "price": "1.2500", "je": "6.2500"},
+    {"type": "扫码产量", "rq": "2026-08-06", "worktype": "WT03", "sl": "4", "price": "1.0000", "je": "4.0000"},
+    {"type": "吊挂产量", "rq": "2026-08-06", "worktype": "WT03", "sl": "4", "price": "1.0000", "je": "4.0000"},
+    {"type": "手工账产量", "rq": "2026-08-06", "worktype": "WT02", "sl": "3", "price": "0.8000", "je": "2.4000"}
+  ],
+  "footer": {"sl_total": "20", "je_total": "21.6500", "fhsl_total": "301", "bs_total": "1"},
+  "summary_rows": 4,
+  "summary": [
+    {"type": "扫码产量", "worktype": "WT01", "sl": "9", "je": "11.2500"},
+    {"type": "扫码产量", "worktype": "WT03", "sl": "4", "je": "4.0000"},
+    {"type": "吊挂产量", "worktype": "WT03", "sl": "4", "je": "4.0000"},
+    {"type": "手工账产量", "worktype": "WT02", "sl": "3", "je": "2.4000"}
+  ]
+}

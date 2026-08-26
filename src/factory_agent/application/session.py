@@ -10,6 +10,7 @@ scope identifiers reach the executor only through ``NarrowedFilters``.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, replace
 
@@ -63,6 +64,7 @@ from factory_agent.ports import (
     TrustedCredential,
     UsageOutboxEvent,
 )
+from factory_agent.ports.artifacts import ArtifactExporter
 from factory_agent.ports.session import CapabilityRunner
 
 IdFactory = Callable[[], str]
@@ -103,6 +105,7 @@ class SessionService:
         narrower: FilterNarrower | None = None,
         limits: SessionLimits | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        exporter: ArtifactExporter | None = None,
     ) -> None:
         self._store = store
         self._authorization = authorization
@@ -113,6 +116,7 @@ class SessionService:
         self._narrower = narrower or FilterNarrower()
         self._limits = limits or SessionLimits()
         self._sleep = sleep or asyncio.sleep
+        self._exporter = exporter
 
     async def start(
         self, credential: TrustedCredential, request: StartRequest
@@ -264,7 +268,11 @@ class SessionService:
         history: tuple[ConversationTurn, ...],
         after_sequence: int,
     ) -> AsyncIterator[SessionEvent]:
-        state = _RunState(record=record, sequence=max(record.last_event_sequence, after_sequence))
+        state = _RunState(
+            record=record,
+            sequence=max(record.last_event_sequence, after_sequence),
+            started_monotonic=time.monotonic(),
+        )
         started = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_STARTED,
@@ -272,6 +280,8 @@ class SessionService:
                 "interaction_id": str(record.interaction_id),
                 "session_id": str(record.session_id),
                 "state": SessionState.PARSING.value,
+                "stage": "接收",
+                "status": "accepted",
             },
         )
         state.record = replace(
@@ -367,6 +377,23 @@ class SessionService:
 
         yield await self._phase(state, SessionState.COMPOSING, "execution_complete")
 
+        artifact_id = None
+        if self._exporter is not None:
+            try:
+                outcome = await self._exporter.export(
+                    owner=owner,
+                    interaction_id=str(state.record.interaction_id),
+                    capability_id=capability_id,
+                    role=decision_context.role.value,
+                    function=str(capability_id),
+                    time_range_label=_time_range_label(time_range),
+                    result=result,
+                )
+                artifact_id = outcome.artifact_id
+            except Exception:
+                # A failed export must never change the answer outcome.
+                artifact_id = None
+
         state.record = replace(state.record, capability_id=capability_id)
         result_event = SessionEvent(
             sequence=state.next_sequence(),
@@ -377,6 +404,7 @@ class SessionService:
                 "row_count": len(result.rows),
                 "incomplete": result.incomplete,
                 "incomplete_reason": result.incomplete_reason,
+                "artifact_id": artifact_id,
             },
         )
         answered = self._advance(state.record, SessionState.ANSWERED, "result_ready")
@@ -413,6 +441,7 @@ class SessionService:
                             "capability_id": str(capability_id),
                             "columns": list(result.column_names),
                             "row_count": len(result.rows),
+                            "artifact_id": artifact_id,
                         },
                     ),
                 ),
@@ -525,7 +554,13 @@ class SessionService:
         event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_PHASE,
-            data={"state": target.value, "reason": reason},
+            data={
+                "state": target.value,
+                "reason": reason,
+                "stage": _STAGE_LABELS.get(target, target.value),
+                "status": "ok",
+                "duration_ms": state.duration_ms(),
+            },
         )
         state.record = replace(
             advanced, last_event_sequence=event.sequence, updated_at=self._clock.now()
@@ -713,10 +748,14 @@ class SessionService:
 class _RunState:
     record: InteractionRecord
     sequence: int
+    started_monotonic: float = 0.0
 
     def next_sequence(self) -> int:
         self.sequence += 1
         return self.sequence
+
+    def duration_ms(self) -> int:
+        return int((time.monotonic() - self.started_monotonic) * 1000)
 
 
 _TERMINAL_STATUSES = frozenset(
@@ -737,6 +776,23 @@ def _time_range(intent: CapabilityIntent) -> TimeRange | None:
     if start is None or end is None:
         return None
     return TimeRange(start=start, end=end)
+
+
+def _time_range_label(time_range: TimeRange) -> str:
+    return f"{time_range.start.date().isoformat()}_{time_range.end.date().isoformat()}"
+
+
+#: Human-readable stage labels carried on phase events (Story 6 SSE chain).
+_STAGE_LABELS: dict[SessionState, str] = {
+    SessionState.PARSING: "解析",
+    SessionState.AUTHORIZING: "鉴权",
+    SessionState.EXECUTING: "取数",
+    SessionState.COMPOSING: "计算",
+    SessionState.ANSWERED: "完成",
+    SessionState.CLARIFYING: "追问",
+    SessionState.FAILED: "失败",
+    SessionState.CANCELLED: "取消",
+}
 
 
 __all__ = [

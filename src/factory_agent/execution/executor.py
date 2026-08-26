@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from factory_agent.domain import (
     DataScope,
@@ -23,6 +23,7 @@ from factory_agent.domain import (
     PlatformScope,
 )
 from factory_agent.domain.errors import ForbiddenError
+from factory_agent.ports.contracts import ResourceFetchResult
 
 
 class ResourceFetcher(Protocol):
@@ -35,6 +36,23 @@ class ResourceFetcher(Protocol):
         time_range: tuple[datetime, datetime],
         page_size: int,
     ) -> list[dict[str, Any]]: ...
+
+    async def fetch_resource(
+        self,
+        operation_id: str,
+        filters: NarrowedFilters,
+        time_range: tuple[datetime, datetime],
+        page_size: int,
+        extra_params: Mapping[str, str] | None = None,
+    ) -> ResourceFetchResult:
+        """Fetch every page with completeness proof, footer, and any anomalies.
+
+        ``extra_params`` carries reviewed filter parameters for the operation
+        (e.g. a wage ``scheme``/``Flag``/``Type``); it can never carry scope or
+        credential identifiers. A ``complete`` result proves the full range was
+        retrieved up to ``result.total`` (M13).
+        """
+        ...
 
 
 class CatalogReader(Protocol):
@@ -117,6 +135,30 @@ class ScopedExecutor:
             operation_id=request.operation_id,
             rows=tuple(rows),
             complete=True,
+        )
+
+    async def execute_full_step(
+        self,
+        filters: NarrowedFilters,
+        request: ExecutionRequest,
+        active_scope: DataScope | None = None,
+        extra_params: Mapping[str, str] | None = None,
+    ) -> ResourceFetchResult:
+        """Execute one operation with completeness proof and the optional footer.
+
+        Authorization completes before the business-data call; scope parameters
+        come exclusively from ``filters`` and reviewed ``extra_params`` can only
+        carry filter-sourced parameters.
+        """
+        self._catalog.get(request.operation_id)  # whitelist check before HTTP
+        if active_scope is not None:
+            self._verifier.verify(active_scope, filters)
+        return await self._adapter.fetch_resource(
+            request.operation_id,
+            filters,
+            request.time_range,
+            request.pagination_size,
+            extra_params,
         )
 
 

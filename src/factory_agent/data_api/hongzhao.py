@@ -28,6 +28,7 @@ import httpx
 
 from factory_agent.data_api.catalog import ApiCatalog, CatalogOperation
 from factory_agent.data_api.credentials import MesCredentialBundle
+from factory_agent.data_api.pagination import BoundedPager
 from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE, row_to_plain_dict
 from factory_agent.domain.errors import (
     InvalidRequestError,
@@ -39,6 +40,7 @@ from factory_agent.domain.errors import (
     UpstreamUnavailableError,
 )
 from factory_agent.domain.queries import NarrowedFilters
+from factory_agent.ports.contracts import ResourceFetchResult
 
 #: Customer failure messages that indicate credential problems (M8/M14).
 _EXPIRED_MESSAGES = ("请求已过期", "签名无效")
@@ -111,6 +113,7 @@ class HongzhaoMesAdapter:
         settings: AdapterSettings | None = None,
         client: httpx.AsyncClient | None = None,
         clock: Any | None = None,
+        pager: BoundedPager | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._bundle = bundle
@@ -119,6 +122,7 @@ class HongzhaoMesAdapter:
         self._settings = settings or AdapterSettings()
         self._client = client
         self._clock = clock
+        self._pager = pager or BoundedPager(adapter=self)
 
     @property
     def bundle(self) -> MesCredentialBundle:
@@ -170,37 +174,64 @@ class HongzhaoMesAdapter:
         time_range: tuple[datetime, datetime],
         page_size: int,
     ) -> list[dict[str, Any]]:
-        """Fetch and validate customer rows for the bounded execution kernel."""
+        """Fetch validated customer rows; single-page path for the basic kernel."""
+        fetched = await self.fetch_resource(operation_id, filters, time_range, page_size)
+        return list(fetched.rows)
+
+    async def fetch_resource(
+        self,
+        operation_id: str,
+        filters: NarrowedFilters,
+        time_range: tuple[datetime, datetime],
+        page_size: int,
+        extra_params: Mapping[str, str] | None = None,
+    ) -> ResourceFetchResult:
+        """Fetch every approved page with completeness proof and the optional footer.
+
+        Extra params carry reviewed ``filter``-source parameters (e.g. a wage
+        ``scheme``/``Flag``/``Type``); they can never carry scope or credential
+        identifiers. The pager walks to ``result.total`` (M13) and returns a
+        structured incompleteness reason on any anomaly rather than a truncated
+        result.
+        """
         operation = self._operation(operation_id)
         if operation.resource is None:
             raise InvalidRequestError("identity operations cannot fetch resource rows")
         item_model = ROW_MODEL_BY_RESOURCE.get(operation.resource)
         if item_model is None:
             raise UnsupportedOperationError("operation resource has no response model")
+        params = self._resource_params(operation_id, filters, time_range, page_size, extra_params)
+        paged = await self._pager.fetch_all(operation_id, params, item_model)
+        return ResourceFetchResult(
+            rows=tuple(row_to_plain_dict(row) for row in paged.items),
+            total=paged.total,
+            pages_fetched=paged.pages_fetched,
+            complete=paged.complete,
+            reason=paged.reason,
+            footer=paged.footer,
+        )
+
+    def _resource_params(
+        self,
+        operation_id: str,
+        filters: NarrowedFilters,
+        time_range: tuple[datetime, datetime],
+        page_size: int,
+        extra_params: Mapping[str, str] | None,
+    ) -> dict[str, Any]:
+        """Build reviewed request parameters; scope IDs come only from filters."""
         start, end = time_range
         params: dict[str, Any] = {
-            "page": 1,
-            "size": page_size,
             "dates": start.date().isoformat(),
             "datee": end.date().isoformat(),
         }
+        if extra_params:
+            params.update(extra_params)
         if operation_id in {"EmployeeQuery", "YskQuery", "GongziMxQuery"}:
             if filters.employee_ids is not None and len(filters.employee_ids) == 1:
                 employee_id = next(iter(filters.employee_ids))
                 params["uid" if operation_id == "EmployeeQuery" else "Uid"] = str(employee_id)
-        response = await self.execute(MesRequest(operation_id, params))
-        result = response.result
-        if not isinstance(result, dict):
-            raise UpstreamInvalidError("resource result failed schema validation")
-        result_mapping = cast(dict[str, Any], result)
-        raw_rows = result_mapping.get("list")
-        if not isinstance(raw_rows, list):
-            raise UpstreamInvalidError("resource list failed schema validation")
-        try:
-            rows = cast(list[dict[str, Any]], raw_rows)
-            return [row_to_plain_dict(item_model.model_validate(row)) for row in rows]
-        except Exception as error:  # noqa: BLE001 - boundary validation is normalized
-            raise UpstreamInvalidError("resource row failed schema validation") from error
+        return params
 
     def _unwrap(self, envelope: Any) -> MesResponse:
         result = envelope.result

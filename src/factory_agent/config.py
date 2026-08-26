@@ -19,6 +19,16 @@ class FactoryAgentSettings(BaseSettings):
     redis_url: RedisDsn | None = None
     artifact_endpoint: AnyHttpUrl | None = None
     artifact_bucket: str | None = None
+    artifact_region: str = "us-east-1"
+    artifact_access_key: SecretStr | None = None
+    artifact_secret_key: SecretStr | None = None
+    #: Presigned download links default to a short 15-minute lifetime.
+    artifact_presign_expires_seconds: int = Field(default=900, ge=60, le=3600)
+    #: Exported artifacts are retained for 3 months and then cleaned up (K5).
+    artifact_cleanup_after_days: int = Field(default=90, ge=1)
+    artifact_max_size_bytes: int = Field(default=50 * 1024 * 1024, ge=1024)
+    #: Object keys are unguessable UUIDs; no employee IDs or question text.
+    artifact_secret_prefix: str = "factory-agent"
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     request_id_header: str = "X-Request-ID"

@@ -54,6 +54,7 @@ class PagedResult:
     pages_fetched: int
     complete: bool
     reason: str | None = None
+    footer: dict[str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -74,6 +75,7 @@ class BoundedPager:
         items: list[Any] = []
         seen_pages: set[PageFingerprint] = set()
         expected_total: int | None = None
+        footer: dict[str, str] | None = None
         page_number = 1
 
         while True:
@@ -84,6 +86,7 @@ class BoundedPager:
                     pages_fetched=page_number - 1,
                     complete=False,
                     reason="page_budget_exhausted",
+                    footer=footer,
                 )
             if len(items) >= self.budget.max_rows:
                 return PagedResult(
@@ -92,6 +95,7 @@ class BoundedPager:
                     pages_fetched=page_number - 1,
                     complete=False,
                     reason="row_budget_exhausted",
+                    footer=footer,
                 )
 
             params = {
@@ -100,6 +104,8 @@ class BoundedPager:
                 "size": self.budget.page_size,
             }
             payload = await self.adapter.execute(MesRequest(operation_id, params))
+            if payload.footer is not None:
+                footer = payload.footer
             try:
                 result = cast(dict[str, Any], payload.result)
                 raw_items = cast(list[Any], result["list"])
@@ -122,6 +128,7 @@ class BoundedPager:
                     pages_fetched=page_number,
                     complete=False,
                     reason="total_drift",
+                    footer=footer,
                 )
 
             fingerprint = PageFingerprint.of(validated_items)
@@ -132,6 +139,7 @@ class BoundedPager:
                     pages_fetched=page_number,
                     complete=False,
                     reason="duplicate_page",
+                    footer=footer,
                 )
             if validated_items:
                 seen_pages.add(fingerprint)
@@ -146,6 +154,7 @@ class BoundedPager:
                     pages_fetched=page_number,
                     complete=complete,
                     reason=None if complete else "row_overflow",
+                    footer=footer,
                 )
             if not validated_items:
                 # Empty page before reaching total: missing pages detected.
@@ -155,6 +164,7 @@ class BoundedPager:
                     pages_fetched=page_number,
                     complete=False,
                     reason="missing_pages",
+                    footer=footer,
                 )
             page_number += 1
 

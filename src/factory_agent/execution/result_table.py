@@ -82,6 +82,27 @@ def default_metric_registry() -> MetricRegistry:
                 assumption_status="M9/M13 confirmed",
             ),
             MetricDefinition(
+                name="payroll_piece_count",
+                version="customer-payroll-v1",
+                description="Piecework quantity: sum of sl over the window",
+                status="confirmed",
+                assumption_status="M9/M18 confirmed",
+            ),
+            MetricDefinition(
+                name="payroll_unit_price",
+                version="customer-payroll-v1",
+                description="Piecework unit price for one wage detail row",
+                status="confirmed",
+                assumption_status="M9/M18 confirmed",
+            ),
+            MetricDefinition(
+                name="payroll_daily_average",
+                version="factory-daily-average-v1",
+                description="Daily average wage: gross total over natural days",
+                status="confirmed",
+                assumption_status="factory-defined; non-customer denominator",
+            ),
+            MetricDefinition(
                 name="output_personal",
                 version="customer-output-v1",
                 description="Personal output: sum of sl in Ysk/BarcodeCl context",
@@ -130,6 +151,13 @@ def default_metric_registry() -> MetricRegistry:
                 status="unavailable",
                 assumption_status="chapter 5 C.8 unanswered",
             ),
+            MetricDefinition(
+                name="time_flag_default",
+                version="unconfirmed-c12",
+                description="GongziMxQuery Flag default (0 scan date / 1 review date)",
+                status="unconfirmed",
+                assumption_status="chapter 5 C.12 unanswered",
+            ),
         )
     )
 
@@ -140,6 +168,8 @@ class ResultColumnMeta:
     metric_name: str | None
     metric_version: str | None
     source_operations: tuple[str, ...]
+    column_type: str | None = None
+    unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +181,7 @@ class ResultTable:
     rows: tuple[dict[str, Any], ...]
     totals: dict[str, Decimal]
     source_operations: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
     incomplete: bool = False
     incomplete_reason: str | None = None
 
