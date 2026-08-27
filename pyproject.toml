@@ -15,6 +15,7 @@ dependencies = [
     "psycopg[binary]>=3.2.0,<4.0.0",
     "pydantic>=2.11.0,<3.0.0",
     "pydantic-settings>=2.10.0,<3.0.0",
+    "redis>=5.0.0,<7.0.0",
     "sqlalchemy>=2.0.0,<3.0.0",
     "uvicorn[standard]>=0.35.0,<1.0.0",
     "xlsxwriter>=3.2,<4.0",
@@ -36,6 +37,7 @@ dev = [
 [project.scripts]
 factory-agent = "factory_agent.__main__:main"
 factory-agent-migrate = "factory_agent.persistence.migrations:main"
+factory-agent-publish = "factory_agent.usage.publisher_cli:main"
 
 [tool.uv.workspace]
 members = ["mock-mes", "usage-admin"]

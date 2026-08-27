@@ -82,7 +82,8 @@ def test_evaluation_case_matches_the_expected_interpretation(case: dict[str, Any
 def test_every_evaluation_group_is_represented() -> None:
     groups = {str(case["group"]) for case in CASES}
 
-    assert groups == {"intent", "slots", "clarification", "grounding"}
+    # Story 8 adds scope and fault-recovery to the original four groups.
+    assert groups == {"intent", "slots", "clarification", "grounding", "scope", "fault-recovery"}
 
 
 def test_grounding_cases_never_leak_a_rejected_slot_into_the_intent() -> None:

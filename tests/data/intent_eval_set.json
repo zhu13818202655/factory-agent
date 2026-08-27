@@ -251,6 +251,54 @@
         "clarification": null,
         "rejected_slots": ["scope", "tenant_id"]
       }
+    },
+    {
+      "id": "scope-out-of-scope-dept-and-employee-stripped",
+      "group": "scope",
+      "utterance": "查一下二车间 emp-9 这个月的产量",
+      "model_payload": {
+        "capability_id": "FR-007",
+        "confidence": 0.9,
+        "slots": {"time_expression": "本月", "dept_ids": ["dept-2"], "employee_ids": ["emp-9"]}
+      },
+      "expect": {
+        "capability_id": "FR-007",
+        "time_range": ["2026-08-01T00:00:00+08:00", "2026-09-01T00:00:00+08:00"],
+        "missing": ["dept_names"],
+        "ambiguous": [],
+        "clarification": "请说明要看哪个车间或组别。",
+        "rejected_slots": ["dept_ids", "employee_ids"]
+      }
+    },
+    {
+      "id": "fault-empty-payload-becomes-ambiguous",
+      "group": "fault-recovery",
+      "utterance": "帮我查一下",
+      "model_payload": {},
+      "expect": {
+        "capability_id": null,
+        "time_range": null,
+        "missing": [],
+        "ambiguous": ["capability"],
+        "clarification": "没有识别出可执行的查询，请说明您想查看的业务内容。"
+      }
+    },
+    {
+      "id": "fault-missing-required-slot-clarifies",
+      "group": "fault-recovery",
+      "utterance": "订单 SO-1 的进度",
+      "model_payload": {
+        "capability_id": "FR-005",
+        "confidence": 0.9,
+        "slots": {"order_codes": ["SO-1"]}
+      },
+      "expect": {
+        "capability_id": "FR-005",
+        "time_range": null,
+        "missing": ["time_range"],
+        "ambiguous": [],
+        "clarification": "请补充时间范围，例如“本月”“上周”或“2026-08”。"
+      }
     }
   ]
 }

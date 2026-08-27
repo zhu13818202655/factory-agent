@@ -107,3 +107,7 @@ class NotConfiguredCacheStore(CacheStore):
     @override
     async def delete(self, key: str) -> None:
         _raise("cache store")
+
+    @override
+    async def delete_prefix(self, prefix: str) -> None:
+        _raise("cache store")

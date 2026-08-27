@@ -6,7 +6,10 @@ from fastapi import APIRouter, FastAPI, Request
 from pydantic import BaseModel
 
 from usage_admin import __version__
+from usage_admin.api.ingest import ingest_router
+from usage_admin.api.ops import admin_router
 from usage_admin.config import UsageAdminSettings, get_settings
+from usage_admin.container import AdminContainer, build_container
 
 
 class HealthResponse(BaseModel):
@@ -42,9 +45,16 @@ async def readiness(request: Request) -> HealthResponse:
     )
 
 
-def create_app(settings: UsageAdminSettings | None = None) -> FastAPI:
+def create_app(
+    settings: UsageAdminSettings | None = None,
+    *,
+    container: AdminContainer | None = None,
+) -> FastAPI:
     active_settings = settings or get_settings()
     app = FastAPI(title="usage-admin", version=__version__)
     app.state.settings = active_settings
+    app.state.container = container or build_container(active_settings)
     app.include_router(health_router)
+    app.include_router(ingest_router)
+    app.include_router(admin_router)
     return app

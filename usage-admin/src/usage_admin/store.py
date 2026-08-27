@@ -1,0 +1,923 @@
+"""Usage store boundary and implementations.
+
+The service and API layers depend only on ``UsageStore``, so unit tests can
+inject the in-memory implementation without a database or network. The
+PostgreSQL implementation keeps raw events in the monthly-partitioned table and
+computes duration percentiles with ``percentile_cont``.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
+from typing import Any, Protocol
+
+import psycopg
+import psycopg.rows
+
+from usage_admin.events import InteractionFact, LlmCallFact
+
+
+@dataclass(frozen=True, slots=True)
+class Receipt:
+    event_id: str
+    schema_version: str
+    event_type: str
+    tenant_id: str
+    payload_digest: str
+    received_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DeadLetterEntry:
+    event_id: str
+    event_type: str
+    tenant_id: str
+    payload_digest: str
+    reason: str
+    rejected_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RollupRow:
+    tenant_id: str
+    bucket_start: datetime
+    metric: str
+    value: float
+    rollup_version: str
+    rolled_up_at: datetime
+    granularity: str = "hour"
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEntry:
+    audit_id: str
+    principal_id: str
+    action: str
+    target: str | None
+    detail: dict[str, object]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ExportRecord:
+    export_id: str
+    principal_id: str
+    format: str
+    tenant_filter: dict[str, object]
+    metric_version: str
+    status: str
+    artifact_key: str | None
+    created_at: datetime
+    expires_at: datetime
+
+
+class UsageStore(Protocol):
+    """Persistent boundary used by ingest, rollup, ops, and exports."""
+
+    async def receipt_digest(self, event_id: str) -> str | None: ...
+
+    async def record_receipt(self, receipt: Receipt) -> None: ...
+
+    async def insert_raw_event(
+        self, payload: dict[str, object], *, received_at: datetime
+    ) -> None: ...
+
+    async def insert_interaction_fact(self, fact: InteractionFact) -> None: ...
+
+    async def insert_llm_call_fact(self, fact: LlmCallFact) -> None: ...
+
+    async def dead_letter(self, entry: DeadLetterEntry) -> None: ...
+
+    async def list_interaction_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[InteractionFact]: ...
+
+    async def list_llm_call_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[LlmCallFact]: ...
+
+    async def upsert_rollup_rows(self, rows: list[RollupRow]) -> None: ...
+
+    async def list_rollup_rows(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime, granularity: str
+    ) -> list[RollupRow]: ...
+
+    async def list_tenants(self, start: datetime, end: datetime) -> list[str]: ...
+
+    async def query_duration_percentiles(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> dict[str, dict[str, float | None]]: ...
+
+    async def query_user_activity(
+        self,
+        tenant_ids: frozenset[str],
+        start: datetime,
+        end: datetime,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[tuple[str, int]], int]: ...
+
+    async def query_freshness(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> datetime | None: ...
+
+    async def query_distinct_counts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> dict[str, int]: ...
+
+    async def record_audit(self, entry: AuditEntry) -> None: ...
+
+    async def purge_audit_before(self, cutoff: datetime) -> int: ...
+
+    async def create_export(self, export: ExportRecord) -> None: ...
+
+    async def get_export(self, export_id: str) -> ExportRecord | None: ...
+
+    async def mark_export_ready(self, export_id: str, artifact_key: str) -> None: ...
+
+    async def list_exports(self, principal_id: str, limit: int) -> list[ExportRecord]: ...
+
+
+@dataclass
+class InMemoryUsageStore:
+    """In-memory ``UsageStore`` for unit tests and offline development."""
+
+    receipts: dict[str, Receipt] = field(default_factory=dict[str, Receipt])
+    raw_events: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+    interaction_facts: list[InteractionFact] = field(default_factory=list[InteractionFact])
+    llm_call_facts: list[LlmCallFact] = field(default_factory=list[LlmCallFact])
+    dead_letters: list[DeadLetterEntry] = field(default_factory=list[DeadLetterEntry])
+    rollup_rows: list[RollupRow] = field(default_factory=list[RollupRow])
+    audits: list[AuditEntry] = field(default_factory=list[AuditEntry])
+    exports: dict[str, ExportRecord] = field(default_factory=dict[str, ExportRecord])
+
+    async def receipt_digest(self, event_id: str) -> str | None:
+        receipt = self.receipts.get(event_id)
+        return receipt.payload_digest if receipt is not None else None
+
+    async def record_receipt(self, receipt: Receipt) -> None:
+        self.receipts[receipt.event_id] = receipt
+
+    async def insert_raw_event(self, payload: dict[str, object], *, received_at: datetime) -> None:
+        self.raw_events.append(dict(payload))
+
+    async def insert_interaction_fact(self, fact: InteractionFact) -> None:
+        self.interaction_facts.append(fact)
+
+    async def insert_llm_call_fact(self, fact: LlmCallFact) -> None:
+        self.llm_call_facts.append(fact)
+
+    async def dead_letter(self, entry: DeadLetterEntry) -> None:
+        self.dead_letters.append(entry)
+
+    async def list_interaction_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[InteractionFact]:
+        return [
+            fact
+            for fact in self.interaction_facts
+            if fact.tenant_id in tenant_ids and start <= fact.occurred_at < end
+        ]
+
+    async def list_llm_call_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[LlmCallFact]:
+        return [
+            fact
+            for fact in self.llm_call_facts
+            if fact.tenant_id in tenant_ids and start <= fact.occurred_at < end
+        ]
+
+    async def upsert_rollup_rows(self, rows: list[RollupRow]) -> None:
+        existing = {
+            (row.tenant_id, row.bucket_start, row.metric, row.granularity): index
+            for index, row in enumerate(self.rollup_rows)
+        }
+        for row in rows:
+            key = (row.tenant_id, row.bucket_start, row.metric, row.granularity)
+            if key in existing:
+                self.rollup_rows[existing[key]] = row
+            else:
+                existing[key] = len(self.rollup_rows)
+                self.rollup_rows.append(row)
+
+    async def list_rollup_rows(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime, granularity: str
+    ) -> list[RollupRow]:
+        return [
+            row
+            for row in self.rollup_rows
+            if row.tenant_id in tenant_ids
+            and start <= row.bucket_start < end
+            and row.granularity == granularity
+        ]
+
+    async def list_tenants(self, start: datetime, end: datetime) -> list[str]:
+        tenants: set[str] = set()
+        for fact in self.interaction_facts:
+            if start <= fact.occurred_at < end:
+                tenants.add(fact.tenant_id)
+        for fact in self.llm_call_facts:
+            if start <= fact.occurred_at < end:
+                tenants.add(fact.tenant_id)
+        return sorted(tenants)
+
+    async def query_duration_percentiles(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> dict[str, dict[str, float | None]]:
+        values: dict[str, list[float]] = {metric: [] for metric in _DURATION_COLUMN}
+        for fact in self.interaction_facts:
+            if fact.tenant_id not in tenant_ids:
+                continue
+            if not (start <= fact.occurred_at < end):
+                continue
+            for metric, column in _DURATION_COLUMN.items():
+                value = getattr(fact, column, None)
+                if isinstance(value, (int, float)):
+                    values[metric].append(float(value))
+        return {
+            metric: {str(p): percentile(sorted(vals), p) for p in (50, 95, 99)}
+            for metric, vals in values.items()
+        }
+
+    async def query_user_activity(
+        self,
+        tenant_ids: frozenset[str],
+        start: datetime,
+        end: datetime,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[tuple[str, int]], int]:
+        counts: dict[str, int] = {}
+        for fact in self.interaction_facts:
+            if fact.tenant_id not in tenant_ids:
+                continue
+            if not (start <= fact.occurred_at < end):
+                continue
+            if fact.event_type != "interaction_started":
+                continue
+            counts[fact.user_subject_id] = counts.get(fact.user_subject_id, 0) + 1
+        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return ordered[offset : offset + limit], len(ordered)
+
+    async def query_freshness(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> datetime | None:
+        latest: datetime | None = None
+        for fact in [*self.interaction_facts, *self.llm_call_facts]:
+            if fact.tenant_id not in tenant_ids:
+                continue
+            if start <= fact.received_at < end and (latest is None or fact.received_at > latest):
+                latest = fact.received_at
+        return latest
+
+    async def query_distinct_counts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> dict[str, int]:
+        users: set[str] = set()
+        calls: set[str] = set()
+        for fact in self.interaction_facts:
+            if fact.tenant_id not in tenant_ids:
+                continue
+            if start <= fact.occurred_at < end:
+                users.add(fact.user_subject_id)
+        for fact in self.llm_call_facts:
+            if fact.tenant_id not in tenant_ids:
+                continue
+            if start <= fact.occurred_at < end:
+                calls.add(fact.logical_call_id)
+        return {"users": len(users), "llm_logical_calls": len(calls)}
+
+    async def record_audit(self, entry: AuditEntry) -> None:
+        self.audits.append(entry)
+
+    async def purge_audit_before(self, cutoff: datetime) -> int:
+        before = len(self.audits)
+        self.audits = [entry for entry in self.audits if entry.created_at >= cutoff]
+        return before - len(self.audits)
+
+    async def create_export(self, export: ExportRecord) -> None:
+        self.exports[export.export_id] = export
+
+    async def get_export(self, export_id: str) -> ExportRecord | None:
+        return self.exports.get(export_id)
+
+    async def mark_export_ready(self, export_id: str, artifact_key: str) -> None:
+        export = self.exports.get(export_id)
+        if export is not None:
+            self.exports[export_id] = ExportRecord(
+                export_id=export.export_id,
+                principal_id=export.principal_id,
+                format=export.format,
+                tenant_filter=export.tenant_filter,
+                metric_version=export.metric_version,
+                status="ready",
+                artifact_key=artifact_key,
+                created_at=export.created_at,
+                expires_at=export.expires_at,
+            )
+
+    async def list_exports(self, principal_id: str, limit: int) -> list[ExportRecord]:
+        return [export for export in self.exports.values() if export.principal_id == principal_id][
+            :limit
+        ]
+
+
+async def _connect(database_url: str) -> psycopg.AsyncConnection[Any]:
+    return await psycopg.AsyncConnection.connect(
+        database_url,
+        row_factory=psycopg.rows.dict_row,  # type: ignore[arg-type]
+    )
+
+
+class PostgresUsageStore:
+    """Production ``UsageStore`` over PostgreSQL 16.
+
+    Connection-per-operation keeps the service stateless; every statement is
+    parameterised and read-only except the explicit ingest/rollup writes.
+    """
+
+    def __init__(self, database_url: str) -> None:
+        self._database_url = database_url
+
+    async def receipt_digest(self, event_id: str) -> str | None:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                "SELECT payload_digest FROM usage_event_receipt WHERE event_id = %s",
+                (event_id,),
+            )
+            row = await rows.fetchone()
+        return str(row["payload_digest"]) if row else None
+
+    async def record_receipt(self, receipt: Receipt) -> None:
+        async with await _connect(self._database_url) as connection:
+            await connection.execute(
+                """
+                INSERT INTO usage_event_receipt
+                    (event_id, schema_version, event_type, tenant_id, payload_digest, received_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (event_id) DO NOTHING
+                """,
+                (
+                    receipt.event_id,
+                    receipt.schema_version,
+                    receipt.event_type,
+                    receipt.tenant_id,
+                    receipt.payload_digest,
+                    receipt.received_at,
+                ),
+            )
+
+    async def insert_raw_event(self, payload: dict[str, object], *, received_at: datetime) -> None:
+        async with await _connect(self._database_url) as connection:
+            await connection.execute(
+                """
+                INSERT INTO usage_event
+                    (event_id, schema_version, event_type, tenant_id, occurred_at, received_at,
+                     user_subject_id, session_id, interaction_id, trace_id, payload)
+                VALUES (%(event_id)s, %(schema_version)s, %(event_type)s, %(tenant_id)s,
+                        %(occurred_at)s, %(received_at)s, %(user_subject_id)s, %(session_id)s,
+                        %(interaction_id)s, %(trace_id)s, %(payload)s)
+                """,
+                {
+                    **payload,
+                    "received_at": received_at,
+                    "payload": json.dumps(payload),
+                },
+            )
+
+    async def insert_interaction_fact(self, fact: InteractionFact) -> None:
+        async with await _connect(self._database_url) as connection:
+            await connection.execute(
+                """
+                INSERT INTO interaction_fact
+                    (event_id, tenant_id, session_id, interaction_id, event_type, user_subject_id,
+                     occurred_at, capability_id, entrypoint, role_category, status, duration_ms,
+                     mes_duration_ms, llm_duration_ms, local_duration_ms, result_rows_bucket,
+                     error_category, received_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (event_id) DO NOTHING
+                """,
+                (
+                    fact.event_id,
+                    fact.tenant_id,
+                    fact.session_id,
+                    fact.interaction_id,
+                    fact.event_type,
+                    fact.user_subject_id,
+                    fact.occurred_at,
+                    fact.capability_id,
+                    fact.entrypoint,
+                    fact.role_category,
+                    fact.status,
+                    fact.duration_ms,
+                    fact.mes_duration_ms,
+                    fact.llm_duration_ms,
+                    fact.local_duration_ms,
+                    fact.result_rows_bucket,
+                    fact.error_category,
+                    fact.received_at,
+                ),
+            )
+
+    async def insert_llm_call_fact(self, fact: LlmCallFact) -> None:
+        async with await _connect(self._database_url) as connection:
+            await connection.execute(
+                """
+                INSERT INTO llm_call_fact
+                    (event_id, tenant_id, session_id, interaction_id, occurred_at, logical_call_id,
+                     stage, model_alias, actual_model, attempt, prompt_tokens, completion_tokens,
+                     cached_tokens, reasoning_tokens, duration_ms, status, fallback_reason,
+                     error_category, received_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (event_id) DO NOTHING
+                """,
+                (
+                    fact.event_id,
+                    fact.tenant_id,
+                    fact.session_id,
+                    fact.interaction_id,
+                    fact.occurred_at,
+                    fact.logical_call_id,
+                    fact.stage,
+                    fact.model_alias,
+                    fact.actual_model,
+                    fact.attempt,
+                    fact.prompt_tokens,
+                    fact.completion_tokens,
+                    fact.cached_tokens,
+                    fact.reasoning_tokens,
+                    fact.duration_ms,
+                    fact.status,
+                    fact.fallback_reason,
+                    fact.error_category,
+                    fact.received_at,
+                ),
+            )
+
+    async def dead_letter(self, entry: DeadLetterEntry) -> None:
+        async with await _connect(self._database_url) as connection:
+            await connection.execute(
+                """
+                INSERT INTO usage_event_dead_letter
+                    (event_id, event_type, tenant_id, payload_digest, reason, rejected_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (event_id) DO NOTHING
+                """,
+                (
+                    entry.event_id,
+                    entry.event_type,
+                    entry.tenant_id,
+                    entry.payload_digest,
+                    entry.reason,
+                    entry.rejected_at,
+                ),
+            )
+
+    async def list_interaction_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[InteractionFact]:
+        if not tenant_ids:
+            return []
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                SELECT * FROM interaction_fact
+                WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
+                """,
+                (list(tenant_ids), start, end),
+            )
+            fetched = await rows.fetchall()
+        return [_interaction_fact_from_row(row) for row in fetched]
+
+    async def list_llm_call_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[LlmCallFact]:
+        if not tenant_ids:
+            return []
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                SELECT * FROM llm_call_fact
+                WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
+                """,
+                (list(tenant_ids), start, end),
+            )
+            fetched = await rows.fetchall()
+        return [_llm_call_fact_from_row(row) for row in fetched]
+
+    async def upsert_rollup_rows(self, rows: list[RollupRow]) -> None:
+        if not rows:
+            return
+        async with await _connect(self._database_url) as connection:
+            for row in rows:
+                if row.granularity == "hour":
+                    await connection.execute(
+                        """
+                        INSERT INTO tenant_usage_hourly
+                            (tenant_id, bucket_start, metric, value, rollup_version, rolled_up_at)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (tenant_id, bucket_start, metric)
+                        DO UPDATE SET value = EXCLUDED.value,
+                                      rollup_version = EXCLUDED.rollup_version,
+                                      rolled_up_at = EXCLUDED.rolled_up_at
+                        """,
+                        (
+                            row.tenant_id,
+                            row.bucket_start,
+                            row.metric,
+                            row.value,
+                            row.rollup_version,
+                            row.rolled_up_at,
+                        ),
+                    )
+                else:
+                    await connection.execute(
+                        """
+                        INSERT INTO tenant_usage_daily
+                            (tenant_id, bucket_date, metric, value, rollup_version, rolled_up_at)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (tenant_id, bucket_date, metric)
+                        DO UPDATE SET value = EXCLUDED.value,
+                                      rollup_version = EXCLUDED.rollup_version,
+                                      rolled_up_at = EXCLUDED.rolled_up_at
+                        """,
+                        (
+                            row.tenant_id,
+                            _bucket_date(row.bucket_start),
+                            row.metric,
+                            row.value,
+                            row.rollup_version,
+                            row.rolled_up_at,
+                        ),
+                    )
+
+    async def list_rollup_rows(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime, granularity: str
+    ) -> list[RollupRow]:
+        if not tenant_ids:
+            return []
+        async with await _connect(self._database_url) as connection:
+            if granularity == "hour":
+                result = await connection.execute(
+                    """
+                    SELECT tenant_id, bucket_start, metric, value, rollup_version, rolled_up_at
+                    FROM tenant_usage_hourly
+                    WHERE tenant_id = ANY(%s) AND bucket_start >= %s AND bucket_start < %s
+                    """,
+                    (list(tenant_ids), start, end),
+                )
+            else:
+                result = await connection.execute(
+                    """
+                    SELECT tenant_id, bucket_start, metric, value, rollup_version, rolled_up_at
+                    FROM tenant_usage_daily
+                    WHERE tenant_id = ANY(%s) AND bucket_date >= %s AND bucket_date < %s
+                    """,
+                    (list(tenant_ids), start.date(), end.date()),
+                )
+            fetched = await result.fetchall()
+        rows: list[RollupRow] = []
+        for row in fetched:
+            rows.append(
+                RollupRow(
+                    tenant_id=str(row["tenant_id"]),
+                    bucket_start=row["bucket_start"],
+                    metric=str(row["metric"]),
+                    value=float(row["value"]),
+                    rollup_version=str(row["rollup_version"]),
+                    rolled_up_at=row["rolled_up_at"],
+                    granularity=granularity,
+                )
+            )
+        return rows
+
+    async def list_tenants(self, start: datetime, end: datetime) -> list[str]:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                SELECT DISTINCT tenant_id FROM interaction_fact
+                WHERE occurred_at >= %s AND occurred_at < %s
+                UNION
+                SELECT DISTINCT tenant_id FROM llm_call_fact
+                WHERE occurred_at >= %s AND occurred_at < %s
+                """,
+                (start, end, start, end),
+            )
+            fetched = await rows.fetchall()
+        return sorted(str(row["tenant_id"]) for row in fetched)
+
+    async def query_duration_percentiles(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> dict[str, dict[str, float | None]]:
+        if not tenant_ids:
+            return {}
+        result: dict[str, dict[str, float | None]] = {}
+        async with await _connect(self._database_url) as connection:
+            for metric, column in _DURATION_COLUMN.items():
+                rows = await connection.execute(
+                    f"""
+                    SELECT
+                        percentile_cont(0.50) WITHIN GROUP (ORDER BY {column}) AS p50,
+                        percentile_cont(0.95) WITHIN GROUP (ORDER BY {column}) AS p95,
+                        percentile_cont(0.99) WITHIN GROUP (ORDER BY {column}) AS p99
+                    FROM interaction_fact
+                    WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
+                      AND {column} IS NOT NULL
+                    """,  # type: ignore[arg-type]  # trusted fixed column names
+                    (list(tenant_ids), start, end),
+                )
+                row = await rows.fetchone()
+                result[metric] = {
+                    "50": _opt_float(row["p50"] if row else None),
+                    "95": _opt_float(row["p95"] if row else None),
+                    "99": _opt_float(row["p99"] if row else None),
+                }
+        return result
+
+    async def query_user_activity(
+        self,
+        tenant_ids: frozenset[str],
+        start: datetime,
+        end: datetime,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[tuple[str, int]], int]:
+        if not tenant_ids:
+            return [], 0
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                SELECT user_subject_id, COUNT(*) AS question_count
+                FROM interaction_fact
+                WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
+                  AND event_type = 'interaction_started'
+                GROUP BY user_subject_id
+                ORDER BY question_count DESC, user_subject_id ASC
+                LIMIT %s OFFSET %s
+                """,
+                (list(tenant_ids), start, end, limit, offset),
+            )
+            fetched = await rows.fetchall()
+            total_row = await connection.execute(
+                """
+                SELECT COUNT(DISTINCT user_subject_id) AS total
+                FROM interaction_fact
+                WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
+                  AND event_type = 'interaction_started'
+                """,
+                (list(tenant_ids), start, end),
+            )
+            total_row = await total_row.fetchone()
+        pairs = [(str(row["user_subject_id"]), int(row["question_count"])) for row in fetched]
+        return pairs, int(total_row["total"]) if total_row else 0
+
+    async def query_freshness(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> datetime | None:
+        if not tenant_ids:
+            return None
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                SELECT MAX(received_at) AS latest
+                FROM (
+                    SELECT received_at FROM interaction_fact
+                    WHERE tenant_id = ANY(%s) AND received_at >= %s AND received_at < %s
+                    UNION ALL
+                    SELECT received_at FROM llm_call_fact
+                    WHERE tenant_id = ANY(%s) AND received_at >= %s AND received_at < %s
+                ) AS seen
+                """,
+                (list(tenant_ids), start, end, list(tenant_ids), start, end),
+            )
+            row = await rows.fetchone()
+        return row["latest"] if row else None
+
+    async def query_distinct_counts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> dict[str, int]:
+        if not tenant_ids:
+            return {"users": 0, "llm_logical_calls": 0}
+        async with await _connect(self._database_url) as connection:
+            user_row = await connection.execute(
+                """
+                SELECT COUNT(DISTINCT user_subject_id) AS count
+                FROM interaction_fact
+                WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
+                """,
+                (list(tenant_ids), start, end),
+            )
+            user_row = await user_row.fetchone()
+            call_row = await connection.execute(
+                """
+                SELECT COUNT(DISTINCT logical_call_id) AS count
+                FROM llm_call_fact
+                WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
+                """,
+                (list(tenant_ids), start, end),
+            )
+            call_row = await call_row.fetchone()
+        return {
+            "users": int(user_row["count"]) if user_row else 0,
+            "llm_logical_calls": int(call_row["count"]) if call_row else 0,
+        }
+
+    async def record_audit(self, entry: AuditEntry) -> None:
+        async with await _connect(self._database_url) as connection:
+            await connection.execute(
+                """
+                INSERT INTO admin_audit (audit_id, principal_id, action, target, detail, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    entry.audit_id,
+                    entry.principal_id,
+                    entry.action,
+                    entry.target,
+                    json.dumps(entry.detail),
+                    entry.created_at,
+                ),
+            )
+
+    async def purge_audit_before(self, cutoff: datetime) -> int:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                "DELETE FROM admin_audit WHERE created_at < %s", (cutoff,)
+            )
+        return rows.rowcount
+
+    async def create_export(self, export: ExportRecord) -> None:
+        async with await _connect(self._database_url) as connection:
+            await connection.execute(
+                """
+                INSERT INTO usage_export
+                    (export_id, principal_id, format, tenant_filter, metric_version, status,
+                     artifact_key, created_at, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    export.export_id,
+                    export.principal_id,
+                    export.format,
+                    json.dumps(export.tenant_filter),
+                    export.metric_version,
+                    export.status,
+                    export.artifact_key,
+                    export.created_at,
+                    export.expires_at,
+                ),
+            )
+
+    async def get_export(self, export_id: str) -> ExportRecord | None:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                "SELECT * FROM usage_export WHERE export_id = %s", (export_id,)
+            )
+            row = await rows.fetchone()
+        if row is None:
+            return None
+        return _export_from_row(row)
+
+    async def mark_export_ready(self, export_id: str, artifact_key: str) -> None:
+        async with await _connect(self._database_url) as connection:
+            await connection.execute(
+                """
+                UPDATE usage_export SET status = 'ready', artifact_key = %s WHERE export_id = %s
+                """,
+                (artifact_key, export_id),
+            )
+
+    async def list_exports(self, principal_id: str, limit: int) -> list[ExportRecord]:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                SELECT * FROM usage_export WHERE principal_id = %s ORDER BY created_at DESC LIMIT %s
+                """,
+                (principal_id, limit),
+            )
+            fetched = await rows.fetchall()
+        return [_export_from_row(row) for row in fetched]
+
+
+#: Duration metric name -> fact/column attribute (e2e lives in ``duration_ms``).
+_DURATION_COLUMN: dict[str, str] = {
+    "e2e_duration_ms": "duration_ms",
+    "mes_duration_ms": "mes_duration_ms",
+    "llm_duration_ms": "llm_duration_ms",
+    "local_duration_ms": "local_duration_ms",
+}
+
+
+def _bucket_date(bucket_start: datetime) -> date:
+    return bucket_start.astimezone(timezone.utc).date()
+
+
+def _interaction_fact_from_row(row: dict[str, Any]) -> InteractionFact:
+    return InteractionFact(
+        event_id=str(row["event_id"]),
+        tenant_id=str(row["tenant_id"]),
+        session_id=str(row["session_id"]),
+        interaction_id=str(row["interaction_id"]),
+        event_type=str(row["event_type"]),
+        user_subject_id=str(row["user_subject_id"]),
+        occurred_at=row["occurred_at"],
+        capability_id=_opt_str(row.get("capability_id")),
+        entrypoint=_opt_str(row.get("entrypoint")),
+        role_category=_opt_str(row.get("role_category")),
+        status=_opt_str(row.get("status")),
+        duration_ms=_opt_int(row.get("duration_ms")),
+        mes_duration_ms=_opt_int(row.get("mes_duration_ms")),
+        llm_duration_ms=_opt_int(row.get("llm_duration_ms")),
+        local_duration_ms=_opt_int(row.get("local_duration_ms")),
+        result_rows_bucket=_opt_str(row.get("result_rows_bucket")),
+        error_category=_opt_str(row.get("error_category")),
+        received_at=row["received_at"],
+    )
+
+
+def _llm_call_fact_from_row(row: dict[str, Any]) -> LlmCallFact:
+    return LlmCallFact(
+        event_id=str(row["event_id"]),
+        tenant_id=str(row["tenant_id"]),
+        session_id=str(row["session_id"]),
+        interaction_id=str(row["interaction_id"]),
+        occurred_at=row["occurred_at"],
+        logical_call_id=str(row["logical_call_id"]),
+        stage=str(row["stage"]),
+        model_alias=str(row["model_alias"]),
+        actual_model=str(row["actual_model"]),
+        attempt=int(row["attempt"]),
+        prompt_tokens=int(row["prompt_tokens"]),
+        completion_tokens=int(row["completion_tokens"]),
+        cached_tokens=int(row["cached_tokens"]),
+        reasoning_tokens=int(row["reasoning_tokens"]),
+        duration_ms=int(row["duration_ms"]),
+        status=str(row["status"]),
+        fallback_reason=_opt_str(row.get("fallback_reason")),
+        error_category=_opt_str(row.get("error_category")),
+        received_at=row["received_at"],
+    )
+
+
+def _export_from_row(row: dict[str, Any]) -> ExportRecord:
+    tenant_filter = row["tenant_filter"]
+    if isinstance(tenant_filter, str):
+        tenant_filter = json.loads(tenant_filter)
+    return ExportRecord(
+        export_id=str(row["export_id"]),
+        principal_id=str(row["principal_id"]),
+        format=str(row["format"]),
+        tenant_filter=dict(tenant_filter),
+        metric_version=str(row["metric_version"]),
+        status=str(row["status"]),
+        artifact_key=_opt_str(row.get("artifact_key")),
+        created_at=row["created_at"],
+        expires_at=row["expires_at"],
+    )
+
+
+def _opt_str(value: object | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+def _opt_int(value: object | None) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _opt_float(value: object | None) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def hour_bucket(dt: datetime) -> datetime:
+    return dt.replace(minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+
+
+def percentile(sorted_values: list[float], p: float) -> float | None:
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = p / 100.0 * (len(sorted_values) - 1)
+    lower = int(rank)
+    upper = lower + 1
+    fraction = rank - lower
+    return sorted_values[lower] * (1 - fraction) + sorted_values[upper] * fraction
+
+
+__all__ = [
+    "AuditEntry",
+    "DeadLetterEntry",
+    "ExportRecord",
+    "InMemoryUsageStore",
+    "PostgresUsageStore",
+    "Receipt",
+    "RollupRow",
+    "UsageStore",
+    "hour_bucket",
+    "percentile",
+]

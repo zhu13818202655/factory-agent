@@ -28,6 +28,7 @@ from factory_agent.application.context import ConversationTurn
 from factory_agent.application.filters import FilterNarrower, FilterRejectionError
 from factory_agent.application.intent import CapabilityIntentParser, clarification_for
 from factory_agent.application.permission_matrix import Capability, authorize_capability
+from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.structured import StructuredOutputError
 from factory_agent.application.usage import (
     UsageContext,
@@ -43,6 +44,7 @@ from factory_agent.domain import (
     INTERACTION_PHASE,
     INTERACTION_RESULT,
     INTERACTION_STARTED,
+    CapabilityId,
     CapabilityIntent,
     InteractionId,
     InteractionRecord,
@@ -122,6 +124,7 @@ class SessionService:
         limits: SessionLimits | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
         exporter: ArtifactExporter | None = None,
+        personalization: PersonalizationService | None = None,
     ) -> None:
         self._store = store
         self._authorization = authorization
@@ -134,6 +137,7 @@ class SessionService:
         self._limits = limits or SessionLimits()
         self._sleep = sleep or asyncio.sleep
         self._exporter = exporter
+        self._personalization = personalization
 
     async def start(
         self, credential: TrustedCredential, request: StartRequest
@@ -312,6 +316,8 @@ class SessionService:
 
         async for event in self._pipeline(owner, authorization, state, history):
             yield event
+        if state.record.status in _TERMINAL_STATUSES:
+            await self._record_history(owner, state)
 
     async def _pipeline(
         self,
@@ -332,6 +338,8 @@ class SessionService:
                 yield event
             return
 
+        state.last_intent = intent
+        state.last_intent = intent
         if intent.needs_clarification:
             if state.record.clarification_rounds + 1 >= self._limits.max_clarification_rounds:
                 async for event in self._fail(state, "clarification_exhausted", usage_events):
@@ -736,6 +744,40 @@ class SessionService:
         )
         yield event
 
+    async def _record_history(self, owner: InteractionOwner, state: _RunState) -> None:
+        """Persist a normalized, non-sensitive history entry at terminal state.
+
+        Only the parsed intent survives — never the raw question text, work
+        numbers, or wage/output amounts. History is ownership-filtered and a
+        failure to record history never changes the answer outcome.
+        """
+        intent = state.last_intent
+        if self._personalization is None or intent is None or intent.capability_id is None:
+            return
+        try:
+            capability_id = CapabilityId(fr_id_for(str(intent.capability_id)))
+        except ValueError:
+            return
+        slots = intent.slots
+        non_sensitive: dict[str, object] = {
+            "time_expression": slots.time_expression,
+            "order_codes": list(slots.order_codes),
+            "plan_codes": list(slots.plan_codes),
+            "style_codes": list(slots.style_codes),
+            "dept_names": list(slots.dept_names),
+            "employee_names": list(slots.employee_names),
+        }
+        non_sensitive = {
+            key: value for key, value in non_sensitive.items() if value not in (None, [])
+        }
+        await self._personalization.record_history(
+            owner,
+            capability_id=capability_id,
+            slots=non_sensitive,
+            status=state.record.status.value,
+            now=self._clock.now(),
+        )
+
     async def _replay_tail(
         self, owner: InteractionOwner, interaction_id: InteractionId, after_sequence: int
     ) -> AsyncIterator[SessionEvent]:
@@ -847,6 +889,7 @@ class _RunState:
     record: InteractionRecord
     sequence: int
     started_monotonic: float = 0.0
+    last_intent: CapabilityIntent | None = None
 
     def next_sequence(self) -> int:
         self.sequence += 1

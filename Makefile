@@ -38,13 +38,13 @@ typecheck:
 	$(RUN) pyright
 
 test-unit:
-	$(PYTEST) tests/unit mock-mes/tests/unit usage-admin/tests/unit
+	$(PYTEST) tests/unit tests/eval mock-mes/tests/unit usage-admin/tests/unit
 
 test-contract:
 	$(PYTEST) tests/contract
 
 test-integration:
-	$(PYTEST) tests/integration
+	$(PYTEST) tests/integration usage-admin/tests/integration
 
 test-e2e:
 	$(PYTEST) tests/e2e

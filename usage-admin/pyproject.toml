@@ -12,11 +12,15 @@ dependencies = [
     "pydantic-settings>=2.10.0,<3.0.0",
     "sqlalchemy>=2.0.0,<3.0.0",
     "uvicorn[standard]>=0.35.0,<1.0.0",
+    "xlsxwriter>=3.2,<4.0",
 ]
 
 [project.scripts]
 usage-admin = "usage_admin.__main__:main"
 usage-admin-migrate = "usage_admin.migrations:main"
+usage-admin-rollup = "usage_admin.cli:rollup_main"
+usage-admin-create-partitions = "usage_admin.cli:partition_main"
+usage-admin-retention = "usage_admin.cli:retention_main"
 
 [build-system]
 requires = ["hatchling"]

@@ -16,7 +16,14 @@ def load_compose(name: str) -> dict[str, Any]:
 def test_application_compose_contains_all_services() -> None:
     services = cast(dict[str, dict[str, Any]], load_compose("compose.yaml")["services"])
 
-    assert set(services) == {"agent-api", "mock-mes", "postgres", "redis", "usage-admin"}
+    assert set(services) == {
+        "agent-api",
+        "mock-mes",
+        "postgres",
+        "redis",
+        "usage-admin",
+        "usage-publisher",
+    }
     assert services["agent-api"]["depends_on"] == {
         "mock-mes": {"condition": "service_healthy"},
         "postgres": {"condition": "service_healthy"},
@@ -25,6 +32,11 @@ def test_application_compose_contains_all_services() -> None:
     assert services["mock-mes"]["build"]["dockerfile"] == "mock-mes/Dockerfile"
     assert services["usage-admin"]["depends_on"] == {"postgres": {"condition": "service_healthy"}}
     assert services["usage-admin"]["build"]["dockerfile"] == "usage-admin/Dockerfile"
+    assert services["usage-publisher"]["command"] == ["factory-agent-publish"]
+    assert services["usage-publisher"]["depends_on"] == {
+        "postgres": {"condition": "service_healthy"},
+        "usage-admin": {"condition": "service_healthy"},
+    }
 
 
 def test_middleware_compose_contains_only_local_dependencies() -> None:

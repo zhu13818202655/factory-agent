@@ -66,11 +66,21 @@ class FaultControlMiddleware(BaseHTTPMiddleware):
             "null",
             "field_drift",
         ):
-            response = await _apply_structural_fault(response, fault)
+            footer_field = request.headers.get("X-Mock-Footer-Field", "sl_total")
+            raw_delta = request.headers.get("X-Mock-Footer-Delta", "999")
+            try:
+                footer_delta = int(raw_delta)
+            except ValueError:
+                footer_delta = 999
+            response = await _apply_structural_fault(
+                response, fault, footer_field=footer_field, footer_delta=footer_delta
+            )
         return response
 
 
-async def _apply_structural_fault(response: Response, fault: str) -> Response:
+async def _apply_structural_fault(
+    response: Response, fault: str, *, footer_field: str = "sl_total", footer_delta: int = 999
+) -> Response:
     # Buffer the streaming body produced by BaseHTTPMiddleware.call_next.
     chunks: list[bytes] = []
     async for chunk in response.body_iterator:  # type: ignore[attr-defined]
@@ -112,8 +122,15 @@ async def _apply_structural_fault(response: Response, fault: str) -> Response:
         result["total"] = int(result.get("total", 0)) + 7
     elif fault == "footer_mismatch" and isinstance(result.get("footer"), dict):
         # Footer disagrees with the visible rows: contract drift detection case.
+        # The field and delta are configurable so wage (je_total) and output
+        # (sl_total) reconciliations can both be faulted.
         footer = cast(dict[str, Any], result["footer"])
-        footer["sl_total"] = str(int(footer.get("sl_total", "0") or 0) + 999)
+        current = footer.get(footer_field, "0") or "0"
+        try:
+            current_value = float(current)
+        except ValueError:
+            current_value = 0.0
+        footer[footer_field] = str(current_value + footer_delta)
     elif fault == "null" and items:
         target = next((key for key in items[0] if key.endswith("_id")), next(iter(items[0])))
         items[0][target] = None

@@ -17,6 +17,7 @@ ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     "export": {"domain", "ports"},
     "observability": {"config", "domain", "ports"},
     "usage": {"config", "domain", "observability", "persistence", "ports"},
+    "infrastructure": {"domain", "ports"},
 }
 
 #: Packages allowed to own an outbound HTTP client. ``data_api`` is the only one

@@ -11,10 +11,12 @@ from factory_agent.application.authorization import (
     FixedScopeVersionAssigner,
 )
 from factory_agent.application.business_filters import BusinessFilterResolver
+from factory_agent.application.cache import AuthAwareCache
 from factory_agent.application.capabilities import CapabilityRegistry
 from factory_agent.application.capability_map import default_capability_catalog
 from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
+from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.session import SessionLimits, SessionService
 from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.catalog import load_catalog
@@ -28,11 +30,17 @@ from factory_agent.execution.kernel import KernelCapabilityRunner
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import default_metric_registry
 from factory_agent.export_service import ExportService, S3ArtifactStore
+from factory_agent.infrastructure.cache import RedisCacheStore
 from factory_agent.llm.registry import ModelRegistry, load_model_registry
 from factory_agent.llm.router_gateway import LiteLlmRouterGateway
 from factory_agent.observability.audit import AuditSink, InMemoryAuditSink
 from factory_agent.persistence.artifact_repository import SqlArtifactRepository
 from factory_agent.persistence.engine import create_session_engine
+from factory_agent.persistence.personal_store import (
+    SqlFavoriteRepository,
+    SqlHistoryRepository,
+    SqlUserMappingRepository,
+)
 from factory_agent.persistence.session_store import SqlInteractionStore
 from factory_agent.ports import (
     ArtifactStore,
@@ -75,6 +83,7 @@ class DependencyOverrides:
     capability_runner: CapabilityRunner | None = None
     artifact_exporter: ArtifactExporter | None = None
     capability_catalog: CapabilityCatalog | None = None
+    personalization: PersonalizationService | None = None
     new_id: Callable[[], str] | None = None
 
 
@@ -94,6 +103,8 @@ class ApplicationContainer:
     sessions_service: SessionService | None = None
     capability_runner: CapabilityRunner | None = None
     artifact_exporter: ArtifactExporter | None = None
+    personalization: PersonalizationService | None = None
+    cache: AuthAwareCache | None = None
     readiness: dict[str, str] = field(default_factory=lambda: {})
 
 
@@ -181,6 +192,8 @@ def build_container(
         versions=FixedScopeVersionAssigner(),
     )
     business_filters = BusinessFilterResolver(directory) if directory is not None else None
+    personalization = _build_personalization(supplied, settings, clock)
+    cache = _build_cache(settings)
     return ApplicationContainer(
         settings=settings,
         capabilities=CapabilityRegistry(),
@@ -195,6 +208,8 @@ def build_container(
         interactions=interactions,
         capability_runner=capability_runner,
         artifact_exporter=exporter,
+        personalization=personalization,
+        cache=cache,
         sessions_service=_build_session_service(
             settings,
             supplied,
@@ -205,8 +220,46 @@ def build_container(
             capability_runner,
             exporter,
             business_filters,
+            personalization,
         ),
         readiness=readiness,
+    )
+
+
+def _build_cache(settings: FactoryAgentSettings) -> AuthAwareCache | None:
+    """Authorization-aware Redis cache; absent when Redis is not configured.
+
+    Redis is only an optimization: the cache falls back to the source of truth
+    on any store error, and every key is bound to the tenant and an irreversible
+    scope fingerprint (Story 2 ``scope_version``).
+    """
+    if settings.redis_url is None:
+        return None
+    store = RedisCacheStore(str(settings.redis_url))
+    return AuthAwareCache(
+        store,
+        contract_version="mes-contract-v2",
+        metric_version="metric-registry-v1",
+        data_version="mock-mes-v20260821",
+    )
+
+
+def _build_personalization(
+    supplied: DependencyOverrides,
+    settings: FactoryAgentSettings,
+    clock: Clock,
+) -> PersonalizationService | None:
+    """Compose history/favorites/user-mapping over PostgreSQL when available."""
+    if supplied.personalization is not None:
+        return supplied.personalization
+    if settings.postgres_url is None:
+        return None
+    engine = create_session_engine(str(settings.postgres_url))
+    return PersonalizationService(
+        SqlHistoryRepository(engine),
+        SqlFavoriteRepository(engine),
+        SqlUserMappingRepository(engine),
+        clock=clock.now,
     )
 
 
@@ -220,6 +273,7 @@ def _build_session_service(
     capability_runner: CapabilityRunner | None,
     exporter: ArtifactExporter | None,
     business_filters: BusinessFilterResolver | None,
+    personalization: PersonalizationService | None = None,
 ) -> SessionService | None:
     """Only compose the session pipeline when its dependencies exist."""
     if interactions is None or capability_runner is None:
@@ -248,6 +302,7 @@ def _build_session_service(
             heartbeat_seconds=settings.session_heartbeat_seconds,
         ),
         exporter=exporter,
+        personalization=personalization,
     )
 
 

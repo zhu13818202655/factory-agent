@@ -134,6 +134,45 @@ async def test_events_scheduled_for_the_future_are_not_claimed() -> None:
     assert (cycle.claimed, cycle.backlog) == (0, 0)
 
 
+@pytest.mark.asyncio
+async def test_backlog_after_outage_is_resent_when_usage_admin_recovers() -> None:
+    """A usage-admin outage surfaces as backlog, then recovery resends."""
+    outbox = InMemoryUsageOutbox(records=[record("e-1")])
+
+    class AdvancingClock:
+        def __init__(self, start: datetime) -> None:
+            self._now = start
+
+        def now(self) -> datetime:
+            return self._now
+
+        def advance(self, seconds: float) -> None:
+            self._now += timedelta(seconds=seconds)
+
+    clock = AdvancingClock(NOW)
+    failing = UsageOutboxPublisher(
+        outbox, RecordingUsageSink(failure=UsagePublishError("down", retryable=True)), clock
+    )
+    cycle = await failing.run_once()
+
+    # The outage surfaces as a pending event scheduled for retry (the outbox
+    # backlog alert metric tracks work that is due-now; this one is backoff).
+    assert (cycle.published, cycle.retried) == (0, 1)
+    assert outbox.failed == [(("e-1",), "down", False)]
+    assert outbox.records[0].attempts == 1
+    assert "e-1" not in outbox.published
+
+    # After the retry delay elapses and usage-admin recovers, the same event is
+    # published without any user-visible impact on the earlier answer.
+    clock.advance(backoff_seconds(0))
+    recovered = UsageOutboxPublisher(outbox, RecordingUsageSink(), clock)
+    cycle = await recovered.run_once()
+
+    assert cycle.published == 1
+    assert cycle.backlog == 0
+    assert outbox.published == ["e-1"]  # exactly one terminal publication
+
+
 @pytest.mark.parametrize(
     ("attempts", "expected"),
     [(0, 1), (1, 2), (2, 4), (5, 32), (20, MAX_BACKOFF_SECONDS)],

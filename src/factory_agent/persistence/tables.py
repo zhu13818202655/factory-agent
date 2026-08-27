@@ -119,11 +119,59 @@ artifact_table = sa.Table(
     sa.Index("agent_artifact_expiry_idx", "expires_at"),
 )
 
+user_mapping_table = sa.Table(
+    "agent_user_mapping",
+    METADATA,
+    sa.Column("uid", sa.Text, nullable=False),
+    sa.Column("tenant_id", sa.Text, nullable=False),
+    sa.Column("uname", sa.Text, nullable=False),
+    sa.Column("company", sa.Text, nullable=True),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint("uid", "tenant_id", name="agent_user_mapping_pk"),
+)
+
+query_history_table = sa.Table(
+    "agent_query_history",
+    METADATA,
+    sa.Column("history_id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, nullable=False),
+    sa.Column("user_id", sa.Text, nullable=False),
+    sa.Column("capability_id", sa.Text, nullable=False),
+    sa.Column("intent", sa.JSON, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index(
+        "agent_query_history_owner_idx",
+        "tenant_id",
+        "user_id",
+        "created_at",
+        "history_id",
+    ),
+)
+
+favorite_table = sa.Table(
+    "agent_favorite",
+    METADATA,
+    sa.Column("favorite_id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, nullable=False),
+    sa.Column("user_id", sa.Text, nullable=False),
+    sa.Column("capability_id", sa.Text, nullable=False),
+    sa.Column("title", sa.Text, nullable=False),
+    sa.Column("slots", sa.JSON, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("agent_favorite_owner_idx", "tenant_id", "user_id", "favorite_id"),
+    sa.Index("agent_favorite_expiry_idx", "expires_at"),
+)
+
 __all__ = [
     "METADATA",
     "artifact_table",
     "event_table",
+    "favorite_table",
     "interaction_table",
     "message_table",
+    "query_history_table",
     "usage_outbox_table",
+    "user_mapping_table",
 ]
