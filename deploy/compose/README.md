@@ -24,8 +24,8 @@ make compose-up
 make middleware-up
 ```
 
-PostgreSQL listens on `127.0.0.1:5432` and initializes separate `factory_agent`, `mock_mes`, and
-`usage_admin` databases. Redis listens on `127.0.0.1:6379`. Override host ports with
+PostgreSQL listens on `127.0.0.1:3432` and initializes separate `factory_agent`, `mock_mes`, and
+`usage_admin` databases. Redis listens on `127.0.0.1:3379`. Override host ports with
 `POSTGRES_PORT` and `REDIS_PORT`. The checked-in usernames and passwords are development-only.
 Remove local data explicitly with:
 

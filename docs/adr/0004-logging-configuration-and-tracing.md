@@ -201,7 +201,7 @@ otherwise generate a new opaque ID.
 
 ### OpenTelemetry Trigger Conditions
 
-Reconsider OpenTelemetry in Story 9 only when at least one of these conditions exists:
+Reconsider OpenTelemetry in Story 10 only when at least one of these conditions exists:
 
 - requests cross enough independently operated services that correlation logs are insufficient;
 - production incidents require a call tree rather than per-stage duration logs;
@@ -215,7 +215,7 @@ introduced only because the adapter supports it.
 
 ### Future Trace Attributes
 
-If Story 9 approves OTel, allowed attributes are:
+If Story 10 approves OTel, allowed attributes are:
 
 | Attribute | Description |
 | :--- | :--- |
@@ -253,7 +253,7 @@ on OTel.
 4. **Story 4:** add typed LLM settings, LiteLLM adapter configuration, logical aliases, sampling
   defaults, timeout, and at most one semantic repair.
 5. **Story 4:** emit redacted LLM/MES operation facts and usage events with correlation IDs.
-6. **Story 9:** evaluate the OTel trigger conditions. Add SDK, Collector/exporter configuration,
+6. **Story 10:** evaluate the OTel trigger conditions. Add SDK, Collector/exporter configuration,
   sampling, redaction tests, and runbooks only if tracing is approved and operationally justified.
 
 ## Consequences
