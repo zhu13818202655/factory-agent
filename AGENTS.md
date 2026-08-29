@@ -55,7 +55,9 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 - `data/`: ignored runtime output only.
 
 `factory_agent`, `mock_mes`, and `usage_admin` must never import each other. They communicate only
-through versioned HTTP and event contracts. Production Compose excludes Mock MES but includes
+through versioned HTTP and event contracts, plus the single shared table `tenant_registry`
+(usage-admin owns and writes; factory-agent reads read-only for MES AppKey resolution — ADR-0003
+§4.3). Production Compose excludes Mock MES but includes
 `usage-admin` when usage metering is enabled. Read the nearest scoped `AGENTS.md` before modifying a
 governed directory.
 

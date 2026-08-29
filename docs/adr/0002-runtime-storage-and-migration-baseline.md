@@ -16,8 +16,21 @@ flight-domain code, and process-local streaming behavior that conflict with fact
 
 - Build the application with Python 3.12, FastAPI, Pydantic v2, HTTPX, uv, Ruff, Pyright, and pytest.
 - Use PostgreSQL 16 with Psycopg 3 and Alembic for durable application metadata. Run Mock MES against
-  a separate PostgreSQL database and migration history. Run usage-admin against another separate
-  PostgreSQL database and migration history.
+  a separate PostgreSQL database and migration history. Run usage-admin against its own separate
+  PostgreSQL database and migration history, hosted on the same database server as the application
+  in deployment. The single deliberate cross-service exception is the tenant registry table
+  `tenant_registry` (factory name, AppKey, status): usage-admin owns its schema, migrations, and
+  writes; factory-agent reads it read-only to resolve the AppKey for MES calls. No other table is
+  shared.
+- When services share one database, every table has exactly one owner that holds its DDL and CRUD
+  while the other service only reads. usage-admin owns `tenant_registry`, `admin_audit`, and
+  `platform_principal`; factory-agent owns the business tables (`agent_*`) and every metering table
+  (`usage_event`, `*_fact`, `mes_operation_category`, `tenant_usage_*`, `usage_export`). No table
+  may appear in both migration histories.
+- Give every service its own Alembic version table: factory-agent uses
+  `alembic_version_factory_agent` and usage-admin uses `alembic_version_usage_admin`. A shared
+  `alembic_version` row would make each service abort on the other's revision ids, because the two
+  revision histories are unrelated.
 - Use one in-memory DuckDB connection per interaction for bounded processing of validated,
   authorized data. DuckDB is not a durable store.
 - Use LiteLLM Proxy as the only product model gateway. The application uses logical aliases through
@@ -49,7 +62,15 @@ flight-domain code, and process-local streaming behavior that conflict with fact
 - Stories 2 through 4 fill the stable security and infrastructure boundaries; Story 5 validates them
   with the first complete capability; later Stories add recipes rather than new execution paths.
 - Application, Mock MES, and usage-admin PostgreSQL schemas, credentials, and lifecycle remain
-  separate even if development Compose runs the database instances on one server.
+  separate even if development Compose runs the database instances on one server. The only shared
+  object is `tenant_registry`, which usage-admin owns and factory-agent reads read-only; schema
+  changes to it require synchronized review by both services (ADR-0003 §4.3).
+- Separate Alembic version tables let both services run migrations against one database in any
+  order; migrations stay independent and each service may only create, alter, or drop the tables it
+  owns. Table prefixes make ownership visible in review.
+- One owner per table keeps schema changes in a single service: usage-admin's migration history
+  contains only `tenant_registry`, `admin_audit`, and `platform_principal`; every other table's DDL
+  lives in factory-agent's history.
 - Source behavior from report-agent is preserved only when a factory-agent test states the intended
   behavior. No automatic synchronization with the source repository exists.
 - New dependencies are added in the Story that first executes them, not preinstalled for empty

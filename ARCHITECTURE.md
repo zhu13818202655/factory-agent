@@ -89,7 +89,9 @@ used only for development and tests. `usage-admin/` is a separately built produc
 member for authorized multi-tenant usage aggregation, operational APIs, and reports. Each service
 owns its package, tests, Dockerfile, migrations, configuration, and database. No service imports
 another; they communicate through versioned HTTP and usage-event contracts and can be
-split into separate repositories later.
+split into separate repositories later. The single deliberate storage exception is the tenant
+registry table `tenant_registry`, which usage-admin owns and writes and factory-agent reads
+read-only to resolve the AppKey for MES calls (ADR-0003 §4.3); no other table is shared.
 
 ## Request Invariants
 

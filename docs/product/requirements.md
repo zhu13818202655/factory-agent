@@ -1,7 +1,7 @@
 # 产品需求基线
 
 > 更新日期：2026-08-25
-> 实施顺序：`.github/story/#1.md` 至 `.github/story/#9.md`
+> 实施顺序：`.github/story/#1.md` 至 `.github/story/#12.md`
 > 本次修订依据：`docs/reference/弘兆MES接口整体说明-V2.md`（M1~M20 已确认结论、第五章 14 项
 > 未确认项、K1~K7 范围决策），修订工作登记在 `.github/story/#5.md`。
 

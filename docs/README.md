@@ -4,7 +4,7 @@
 
 | 目录 | 负责回答 | 当前入口 |
 |---|---|---|
-| `product/` | 做什么、谁能看什么、哪些口径待确认 | [`requirements.md`](product/requirements.md)、[`permission-matrix.md`](product/permission-matrix.md)、[`traceability.md`](product/traceability.md) |
+| `product/` | 做什么、谁能看什么、哪些口径待确认 | [`requirements.md`](product/requirements.md)、[`permission-matrix.md`](product/permission-matrix.md)、[`traceability.md`](product/traceability.md)、[`usage-admin-dashboard-gap.md`](product/usage-admin-dashboard-gap.md)（用量后台口径与接口设计） |
 | `adr/` | 架构与运行时决策 | [`0004-logging-configuration-and-tracing.md`](adr/0004-logging-configuration-and-tracing.md) |
 | `api/` | 客户 MES 已提供什么、已确认与仍未确认什么 | [`customer-api-requirements.md`](api/customer-api-requirements.md)、[`customer-confirmation-questionnaire.md`](api/customer-confirmation-questionnaire.md) |
 | `adr/` | 为什么采用某项难以逆转的技术或边界决策 | [`0001-repository-and-service-boundaries.md`](adr/0001-repository-and-service-boundaries.md)、[`0002-runtime-storage-and-migration-baseline.md`](adr/0002-runtime-storage-and-migration-baseline.md)、[`0003-usage-metering-and-admin-service.md`](adr/0003-usage-metering-and-admin-service.md) |

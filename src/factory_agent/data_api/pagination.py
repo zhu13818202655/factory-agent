@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class PagerBudget:
-    """Conservative first-release budgets; placeholder until Story 10 review.
+    """Conservative first-release budgets; placeholder until Story 12 review.
 
     The customer declares no pagination upper bound; ``page_size`` default and
     ``max_pages`` are configuration placeholders to be re-verified during
-    joint debugging (Story 10).
+    joint debugging (Story 12).
     """
 
     max_pages: int = 20

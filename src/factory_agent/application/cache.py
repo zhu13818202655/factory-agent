@@ -20,7 +20,7 @@ from factory_agent.domain import DataScope, TenantId
 from factory_agent.ports import CacheStore
 
 #: Cache domains and their short TTLs (seconds). All TTLs are placeholders to
-#: be confirmed by load testing in Story 10 (K3 — performance is not a gate in
+#: be confirmed by load testing in Story 12 (K3 — performance is not a gate in
 #: this story).
 CACHE_DOMAINS: tuple[str, ...] = ("identity_org", "order_progress", "output", "payroll")
 

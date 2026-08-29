@@ -59,28 +59,27 @@ flowchart LR
     Agent --> MES[Customer MES]
     Agent --> LLM[LiteLLM Proxy]
     Agent --> AppDB[(Application PostgreSQL)]
-    Agent --> Outbox[(usage event outbox)]
-    Publisher[Outbox Publisher] -->|mTLS/internal batch HTTP| Ingest[usage-admin ingest API]
-    Outbox --> Publisher
-    Ingest --> UsageDB[(Usage PostgreSQL)]
-    Rollup[Rollup Worker] --> UsageDB
-    Admin[平台运营人员/产品系统] --> AdminAPI[usage-admin query API]
+    AppDB --> UsageDB[(Usage 计量表<br/>usage_event / *fact / rollup)]
+    Rollup[Rollup 汇总] --> UsageDB
+    Admin[平台运营人员] --> AdminAPI[usage-admin query API]
     AdminAPI --> UsageDB
     AdminAPI --> Export[CSV/XLSX report]
 ```
 
 ### 3.1 写入链路
 
-`factory-agent` 在业务状态落库的同一 PostgreSQL 事务中写入计量 outbox。独立 publisher 按批次
-发送到 `usage-admin` 内部 ingest API，成功后标记已发布。该设计保证：
+两服务共用一个 PostgreSQL，`factory-agent` 在业务状态落库的**同一事务内直接写计量表**
+（`usage_event`、三类 `*_fact`），不再经 outbox + HTTP 间接层（2026-08-29 决议，方案二）。
+该设计保证：
 
-- 主请求不等待统计服务，`usage-admin` 不可用时问答仍能完成；
-- 事件至少一次投递，接收方以 `event_id` 幂等去重；
-- interaction 完成、失败或取消后都能形成可核对的最终事件；
-- 可以监控 outbox 积压，并在恢复后补发。
+- 计量与业务同事务落库，一致性最好，无事件积压 / 投递失败运维面；
+- 以 `event_id` 主键 + `ON CONFLICT DO NOTHING` 幂等去重；
+- **计量写入失败不影响问答**：写入封装在持久化层，异常被捕获转为告警，不回滚业务事务
+  （原 outbox 提供的解耦保护由异常隔离显式承担）；
+- interaction 完成、失败或取消后都能形成可核对的最终记录。
 
-MVP 不引入 Kafka。出现持续高吞吐、多消费者、跨区域或 PostgreSQL outbox 成为瓶颈的测量证据
-后，再评估 Kafka/Redpanda；事件契约不因传输方式变化。
+MVP 不引入 Kafka。出现持续高吞吐、多消费者、跨区域或单库直写成为瓶颈的测量证据后，再评估
+Kafka/Redpanda 或独立分析库；事件契约不因存储方式变化。
 
 ### 3.2 查询链路
 
@@ -99,20 +98,87 @@ MVP 不引入 Kafka。出现持续高吞吐、多消费者、跨区域或 Postgr
 - 切换活动租户必须重新鉴权、重算 `DataScope` 并隔离会话、缓存、artifact 和审计上下文。
 - 用户文本、普通业务参数和 LLM 输出不能声明租户成员关系或扩大活动租户范围。
 
-### 4.2 平台运营权限
+### 4.2 平台运营权限与账号体系
 
-平台运营是独立身份域，通过 `PlatformScope.tenant_ids` 表达获准访问的租户集合，不复用公司或
-工厂角色。建议首期角色：
+平台运营是独立身份域，通过 `PlatformScope` 表达获准访问的租户集合与角色，不复用公司或
+工厂角色。账号体系为**本服务自建**（2026-08-29 决议 D15，本期不引入 OIDC）：
+
+- 新增 `platform_principal` 表（`username`、`password_hash`、`role`、`tenant_scope`、
+  `status`），提供注册 / 登录接口，登录签发 Bearer token；
+- 鉴权双通道：`Authorization: Bearer <token>`（**优先**）与「可信网关注入三 header」
+  （开发 / 测试直连通道）；前端使用平台下发的 `USAGE_ADMIN_API_TOKEN`（决议 D16），
+  不实现前端注册登录；
+- 角色三档（决议 D14）：
 
 | 平台角色 | 权限 |
 | :--- | :--- |
-| `platform_usage_viewer` | 查看所有租户的聚合指标，不查看用户级明细 |
-| `platform_usage_analyst` | 查看伪名化用户级计量和导出受控报表 |
-| `platform_billing_admin` | 管理价格表/账期并生成未来账单；首期只预留，不启用收费 |
-| `tenant_usage_viewer` | 仅查看一个明确租户的聚合使用量，是否开放给客户需产品确认 |
+| `viewer` | 查看所有租户的聚合指标，不查看用户级明细，不可导出 |
+| `analyst` | 查看伪名化用户级计量、导出受控报表 |
+| `admin` | 在 analyst 之上，管理工厂账户（`tenant_registry` CRUD）与运营账号 |
 
-每个管理请求必须记录操作者、目的、租户过滤、指标、时间范围和导出标识。跨租户查询和用户级
-导出使用更高权限并接受单独审计。任何新角色或数据范围都需要安全评审。
+原计划中的 `platform_billing_admin`（价格表 / 账期 / 生成账单）与 `tenant_usage_viewer`
+（客户自助查看用量）首期仍只预留 / 待产品确认，见 §13。
+
+每个管理请求必须记录操作者、目的、租户过滤、指标、时间范围和导出标识（`admin_audit`）。
+跨租户查询和用户级导出使用更高权限并接受单独审计。任何新角色或数据范围都需要安全评审。
+
+### 4.3 租户主数据与 AppKey
+
+因按工厂计费，平台必须持久化每个工厂对应的客户 MES AppKey。决策：
+
+- 新增**租户主数据表 `tenant_registry`**，直接以 `app_key` 为主键（客户契约 M4「一厂一
+  Key」，AppKey 本身即租户标识；`tenant_id` 与 `app_key` 同值，见下），字段含
+  `tenant_name`、`status`（active/disabled）、`created_at`、`updated_at`。不引入独立的
+  自增/UUID 租户 ID：AppKey 全局唯一且由客户 MES 分配，已是租户标识，独立 ID 不增加信息；
+  事件流中的 `tenant_id` 即 AppKey，与本表主键直接对应，无需映射与迁移。
+- **职责划分**：usage-admin 拥有该表的 schema、迁移与全部写入（账户管理接口：列表、详情、
+  新增、编辑、停用、启用）；factory-agent **只读**，在凭证建链与刷新时从中解析 AppKey。
+- **删除即停用**：不做物理删除，历史用量与事件全部保留，保证计费可对账。
+- **停用即拒绝**：factory-agent 在发起 MES 调用前校验账户状态，`disabled` 即拒绝调用。
+- **两条存储边界**：AppKey 只存于本表（明文，见 §10）；usage 事件流继续**只携带
+  `tenant_id`（即 AppKey），绝不携带 sign/accessToken 等其他凭证**（§5 的红线不变）。按
+  AppKey 筛选统计时，服务端直接以其为租户过滤条件。
+- **factory-agent 使用 AppKey 的时机**：
+  1. 凭证建链与刷新——调客户 `/api/system/token` 需携带 AppKey
+     （`src/factory_agent/data_api/hongzhao.py` `_refresh_bundle()`）；
+  2. 每个 MES 业务请求的公共参数注入（同文件 `_build_body()`，取自内存 bundle）；
+  3. `tenant_id` 解析——`tenant_id` 直接等于 `app_key`
+     （`src/factory_agent/data_api/credentials.py`），二者同值，无独立 ID 映射。
+  只有时机 1、新租户首次接入以及停用状态校验依赖 `tenant_registry`；时机 2、3 使用内存
+  bundle 中已有的 AppKey，该表不可用不影响运行中的交互。共享表降级方案（本地缓存 + 预热 +
+  告警）列为后续优化项。
+- **表归属与迁移**：两服务共库，一张表只归一方——**本服务拥有并写入**：`tenant_registry`、
+  `admin_audit`（管理操作审计）、`platform_principal`（运营账号）；**factory-agent 拥有并
+  写入**：业务表 `agent_*` 与计量表 `usage_event`（按月分区）/ `*_fact` /
+  `mes_operation_category` / `tenant_usage_*` / `usage_export`。本服务对 factory-agent 的表
+  **只读**，factory-agent 对本服务的表**只读**；因此本服务的迁移目录只放
+  `tenant_registry`、`admin_audit`、`platform_principal`，其余表的迁移写在 factory-agent 侧，
+  同一张表不得两边都建。
+- **Alembic 版本表隔离**：两服务各自使用独立版本表——本服务 `alembic_version_usage_admin`，
+  factory-agent `alembic_version_factory_agent`（ADR-0002 已载明）。共用默认的
+  `alembic_version` 会因两组互不相关的 revision 链而互相报
+  `Can't locate revision identified by ...`。`tenant_registry` 的 schema 变更需两服务同步评审。
+
+**涉及代码（实施清单见 `.github/story/#9.md`）**：
+
+| 侧 | 文件 | 变更 |
+| :--- | :--- | :--- |
+| usage-admin | `usage-admin/migrations/versions/` | 新增迁移：建 `tenant_registry`、`admin_audit`、`platform_principal` |
+| usage-admin | `usage-admin/src/usage_admin/store.py` | 三张表的读写方法、账号查询/密码哈希 |
+| usage-admin | `usage-admin/src/usage_admin/api/ops.py` | 账户管理接口、`/usage/by-tenant`、MES 分类查询 |
+| usage-admin | `usage-admin/src/usage_admin/api/auth.py` | 注册 / 登录接口、token 签发与校验（新增） |
+| usage-admin | `usage-admin/src/usage_admin/api/server.py` | 注册新路由、Bearer token 鉴权中间件 |
+| usage-admin | `usage-admin/src/usage_admin/platform.py` | `PlatformRole` 增加 `admin`，权限判定扩展 |
+| usage-admin | `usage-admin/src/usage_admin/ops.py` | MES 分类/失败/按租户分组的查询逻辑 |
+| factory-agent | `migrations/versions/` | 新增/变更计量表：`usage_event`、三类 `*_fact`、`mes_operation_category`；移除 outbox / receipt / dead-letter 表 |
+| factory-agent | `src/factory_agent/usage/` | 删除 publisher / sink / publisher_cli（outbox 链路） |
+| factory-agent | `src/factory_agent/data_api/hongzhao.py` | 建链/刷新从 `tenant_registry` 取 AppKey 并校验停用状态；MES 调用直写计量 |
+| factory-agent | `src/factory_agent/application/usage.py` | 新增 `mes_call_completed` 事件构造（复用 `row_count_bucket()`） |
+| factory-agent | `src/factory_agent/application/session.py` | interaction / LLM 计量改为同事务直写 |
+| factory-agent | `src/factory_agent/ports/`、`src/factory_agent/persistence/` | 计量直写封装、租户注册只读 port |
+| 配置 | `configs/knowledge/apis.yaml` | 27 个 operation 增加结构化 `usage_category`（产量/工资/订单/其他） |
+
+`tenant_registry` 的 schema 变更需两服务同步评审（ADR-0002 Consequences 同步修订）。
 
 ## 5. 计量事件契约
 
@@ -145,6 +211,17 @@ MVP 不引入 Kafka。出现持续高吞吐、多消费者、跨区域或 Postgr
 禁止进入事件：问题原文、回答正文、prompt、模型原始响应、员工姓名/工号、工资/产量/订单值、
 MES URL、鉴权头、token、API key、`DataScope` ID 列表和导出文件内容。
 
+**MES 接口调用统计口径**：统计对象是客户 MES API 的调用次数，按 API 业务
+分类（产量查询 / 工资查询 / 订单进度 / 其他），不是智能体能力分类——同一次查询按能力计与按
+API 分类计结果不同（例：能力 `fr001_personal_output` 个人产量统计调用的是工资类
+`GongziMxQuery`）。约定：
+
+- 统计单位为请求次数，`page_count` 仅作辅助指标，不重复计入调用次数；
+- 成功与失败分别聚合，失败统计走独立接口，不混入成功口径；
+- 分类映射不写入事件：事件只带 `operation_id`，usage-admin 侧以 `mes_operation_category`
+  表（`operation_id` → `category`，带生效版本）在聚合时换算，分类源头为
+  `configs/knowledge/apis.yaml` 的结构化 `usage_category` 字段；调整口径无需重发历史事件。
+
 ## 6. 指标定义
 
 所有指标必须有稳定 `metric_id`、口径版本和生效时间。修改口径时创建新版本，不能静默重算
@@ -171,19 +248,25 @@ MES URL、鉴权头、token、API key、`DataScope` ID 列表和导出文件内�
 
 ## 7. 存储模型
 
-MVP 使用独立 PostgreSQL 16 数据库：
+MVP 使用独立的 PostgreSQL 16 数据库与迁移历史，部署上与应用库同实例。**一张表只归一方**
+（§4.3）：本服务只拥有 `tenant_registry`，其余表均由 factory-agent 拥有并写入，本服务只读
+查询（与 ADR-0002 的存储基线一致）：
 
-| 表 | 用途 |
-| :--- | :--- |
-| `usage_event_receipt` | 非分区幂等收件表，`event_id` 主键，记录事件时间和 payload digest |
-| `usage_event` | 按 `occurred_at` 月分区的不可变事件，以 `(event_id, occurred_at)` 定位 |
-| `interaction_fact` | 每次提问一行，保存终态、阶段耗时和调用计数 |
-| `llm_call_fact` | 每次物理尝试一行，关联 interaction 和逻辑调用 |
-| `tenant_usage_hourly` | 租户小时汇总，用于近实时看板 |
-| `tenant_usage_daily` | 租户日汇总，用于趋势、报表和未来账单输入 |
-| `metric_definition` | 指标 ID、版本、公式说明和生效时间 |
-| `model_price_version` | 模型价格及币种、生效区间；仅用于估算成本 |
-| `admin_audit` | 平台管理查询和导出审计 |
+| 表 | 归属 | 用途 |
+| :--- | :--- | :--- |
+| `tenant_registry` | **本服务**（DDL + CRUD） | 租户主数据：`app_key`（主键，即租户标识）、工厂名称、账户状态；factory-agent 只读以解析 MES 调用凭证并校验停用状态 |
+| `platform_principal` | **本服务**（DDL + CRUD） | 平台运营账号：`username`（唯一）、`password_hash`、`role`（viewer/analyst/admin）、`tenant_scope`、`status`；仅平台内部使用（D15） |
+| `usage_event_receipt` | factory-agent | 非分区幂等收件表，`event_id` 主键，记录事件时间和 payload digest |
+| `usage_event` | factory-agent | 按 `occurred_at` 月分区的不可变事件，以 `(event_id, occurred_at)` 定位 |
+| `interaction_fact` | factory-agent | 每次提问一行，保存终态、阶段耗时和调用计数 |
+| `llm_call_fact` | factory-agent | 每次物理尝试一行，关联 interaction 和逻辑调用 |
+| `mes_call_fact` | factory-agent | **每次 MES 请求一行**：`operation_id`、页数、行数分桶、耗时、成功/失败、错误类别 |
+| `mes_operation_category` | factory-agent | MES API 分类映射：`operation_id` → 产量/工资/订单/其他，带生效版本 |
+| `tenant_usage_hourly` | factory-agent | 租户小时汇总，用于近实时看板 |
+| `tenant_usage_daily` | factory-agent | 租户日汇总，用于趋势、报表和未来账单输入 |
+| `metric_definition` | factory-agent | 指标 ID、版本、公式说明和生效时间 |
+| `model_price_version` | factory-agent | 模型价格及币种、生效区间；仅用于估算成本 |
+| `admin_audit` | **本服务** | 平台管理查询、导出与账号操作审计 |
 
 Ingest 在同一事务中先插入 `usage_event_receipt`，再写对应月份分区；重复 `event_id` 且 digest
 相同视为幂等重投，digest 不同则拒绝并告警。收件表保留期不得短于允许重放的最长窗口。
@@ -195,14 +278,10 @@ Rollup 使用幂等 checkpoint 和可重放窗口处理迟到事件。汇总值�
 
 ### 8.1 内部写入 API
 
-```text
-POST /internal/v1/usage-events:batch
-```
-
-- 仅允许 `factory-agent` 服务身份通过 mTLS 或部署平台 workload identity 调用；
-- 单批有事件数和字节上限；逐事件返回 accepted/duplicate/rejected；
-- schema 不支持或字段非法时进入受限 dead-letter 元数据，不记录原始敏感 payload；
-- ingest API 不接受浏览器和工厂用户 token。
+**已移除（2026-08-29 决议，方案二）**：原 `POST /internal/v1/usage-events:batch` 与 ingest
+服务不再需要——计量由 factory-agent 在业务事务内直接写库（§3.1），usage-admin 不再提供
+任何写入接口。原 ingest 承担的事件校验与幂等改由写入前的契约校验与 `event_id` 主键幂等
+承担（Story 11）。
 
 ### 8.2 运营查询 API
 
@@ -214,11 +293,30 @@ GET  /admin/v1/usage/dimensions
 GET  /admin/v1/usage/users
 POST /admin/v1/exports
 GET  /admin/v1/exports/{export_id}
+GET  /admin/v1/exports/{export_id}/download
+```
+
+产品后台需求新增（完整清单见产品文档 §8）：
+
+```text
+# 工厂账户管理（tenant_registry，写操作仅 admin 角色，全部落 admin_audit）
+GET    /admin/v1/tenants/registry                 # 列表（AppKey 出参脱敏：前 6 位 + ***）
+GET    /admin/v1/tenants/registry/{tenant_id}     # 详情
+POST   /admin/v1/tenants/registry                 # 新增
+PATCH  /admin/v1/tenants/registry/{tenant_id}     # 编辑（名称、状态）
+DELETE /admin/v1/tenants/registry/{tenant_id}     # 停用（非物理删除）
+POST   /admin/v1/tenants/registry/{tenant_id}/enable
+
+# MES 接口调用统计与工厂明细
+GET    /admin/v1/usage/by-tenant                  # 按工厂分组的用量明细 + 分页
+GET    /admin/v1/usage/mes-categories             # 成功调用，按产量/工资/订单/其他分类
+GET    /admin/v1/usage/mes-failures               # 失败调用统计（独立口径）
+GET    /admin/v1/usage/mes-operations             # 按 operation_id 的调用明细
 ```
 
 所有查询要求明确时间范围、粒度和租户过滤，并有最大跨度、分页、行数和导出大小限制。API
 返回指标版本、数据新鲜度、时区和不完整状态。首期提供 API 与 CSV/XLSX，不在本仓库实现
-管理前端；未来前端作为独立部署的静态应用调用这些 API。
+管理前端；前端由独立团队按上述接口开发并独立部署。
 
 ## 9. 技术选型
 
@@ -226,8 +324,8 @@ GET  /admin/v1/exports/{export_id}
 | :--- | :--- | :--- |
 | 服务运行时 | Python 3.12、FastAPI、Pydantic v2、Uvicorn | 与主仓库一致，复用工程和类型检查方式 |
 | 数据访问 | Psycopg 3 + Alembic，不引入 ORM | 事件写入、分区、rollup 和幂等 SQL 需要显式可审查 |
-| 主存储 | 独立 PostgreSQL 16 | 当前指标规模未知，足以支撑事件和汇总 MVP |
-| 异步投递 | Transactional outbox + 内部批量 HTTP | 不把统计可用性耦合到问答，不提前引入消息集群 |
+| 主存储 | 独立 PostgreSQL 16（部署上与应用库同实例，见 §7） | 当前指标规模未知，足以支撑事件和汇总 MVP |
+| 计量写入 | **同库直写**（factory-agent 业务事务内直写计量表） | 两服务共库，直写省去 outbox + HTTP 间接层；计量失败以异常隔离保证不影响问答（§4.4 方案二） |
 | 汇总任务 | 服务内独立 worker 进程 + PostgreSQL advisory lock | 保持部署简单且可水平安全运行 |
 | 报表 | CSV + XlsxWriter | 便于产品拉取和人工对账 |
 | 身份 | 独立平台 OIDC/OAuth2 audience + RBAC | 与工厂租户身份域隔离 |
@@ -240,8 +338,15 @@ GET  /admin/v1/exports/{export_id}
 ## 10. 安全、隐私和保留
 
 - 计量事件在 `factory-agent` 内先按 allowlist 构造，禁止发送任意日志字典。
+- **AppKey 存储**：AppKey **明文存储于
+  `tenant_registry`**（按工厂计费与 MES 调用所必需），但：所有 API 出参一律脱敏为
+  **前 6 位 + `***`**；AppKey 绝不进入 usage 事件、日志、trace、错误消息、导出文件与测试
+  快照（与 §5 禁止清单一致）；可读该表的服务账号范围、备份快照处理需安全评审。
 - `user_subject_id = HMAC(platform_usage_key, tenant_id || stable_user_id)`；密钥由 secret store 管理
   并支持带版本轮换。不同租户不能通过该值关联同一自然人。
+- **平台运营账号安全（D15/D16）**：`platform_principal` 的密码哈希存储（argon2/bcrypt），
+  token 签名密钥来自环境变量；登录失败与账号变更写 `admin_audit`；token 有过期时间；
+  前端 `USAGE_ADMIN_API_TOKEN` 支持轮换；密码与密钥不落日志。
 - 管理 API 默认只返回租户聚合；用户级查询和导出需要更高权限。
 - 原始计量事件、汇总、管理审计和未来账单输入使用不同保留策略；具体期限需隐私、合同和财务
   负责人批准，本文不沿用 MES 查询审计的 180 天作为默认计费保留期。
@@ -251,9 +356,10 @@ GET  /admin/v1/exports/{export_id}
 
 ## 11. 可靠性和对账
 
-- `factory-agent` 业务成功不依赖计量实时送达，但 outbox 持续积压必须告警。
-- 接收端以 `event_id` 去重；interaction、逻辑 LLM 调用和物理尝试使用不同稳定 ID。
-- 每日记录 produced、accepted、duplicate、rejected、rolled-up 数量守恒检查。
+- `factory-agent` 业务成功不依赖计量实时送达，但**计量直写失败必须告警**（异常隔离，见
+  §3.1）；连续失败需有人工可发现的通道。
+- 以 `event_id` 主键幂等去重；interaction、逻辑 LLM 调用和物理尝试使用不同稳定 ID。
+- 每日记录 written、duplicate、rolled-up 数量守恒检查。
 - 按租户和日期提供事件数、事实表数、汇总提问数的对账报告。
 - 迟到事件触发滚动重算；已冻结账期只能生成调整记录，不能原地覆盖。账期冻结属于后续计费 Story。
 - 客户侧或平台侧时区只影响展示和日界线分组；事件时间统一存 UTC，租户时区需有版本化配置。
@@ -263,14 +369,14 @@ GET  /admin/v1/exports/{export_id}
 ### 阶段 A：骨架与契约
 
 - 在同仓库创建独立 workspace 包、镜像、健康检查、配置、迁移入口和包边界测试；
-- 定义 usage event v1 JSON Schema、outbox port、ingest port 和 fake；
+- 定义 usage event v1 JSON Schema 作为计量存档格式规范（不再作为跨服务传输契约）；
 - 固定上述指标词汇，但不实现价格和正式账单。
 
 ### 阶段 B：可观测计量
 
 - `factory-agent` 产生 interaction、LLM、MES 和 artifact allowlist 事件；
-- 实现 outbox publisher、幂等 ingest、事件表、事实表和小时/日汇总；
-- 验证统计故障不影响问答，且不泄漏 prompt、工资或业务 ID。
+- 实现**同事务直写**计量表（事件表、事实表）、幂等 `event_id` 去重与小时/日汇总；
+- 验证统计故障不影响问答（异常隔离），且不泄漏 prompt、工资或业务 ID。
 
 ### 阶段 C：运营 API 与报表
 
@@ -289,7 +395,9 @@ GET  /admin/v1/exports/{export_id}
 
 ## 13. 待确认事项
 
-1. 平台运营身份由哪个 OIDC 提供方签发，哪些人员可跨租户查询和导出。
+1. 平台运营账号本期由本服务自建（`platform_principal` 注册/登录，D15）；**后续是否接入公司
+   统一 OIDC/SSO** 待评估，接入时鉴权通道不变（usage-admin 只认 token/header，换身份源是
+   登录侧的事）。
 2. 客户是否可查看自己的用量；可见指标是否与平台内部成本指标不同。
 3. 最终收费单位是提问、有效提问、token、模型档位、导出、席位还是组合套餐。
 4. 免费重试、模型 fallback、失败请求、拒绝请求和取消请求是否计费。
@@ -304,9 +412,13 @@ GET  /admin/v1/exports/{export_id}
 - `usage-admin` 是生产服务，与仅开发/测试使用的 `mock-mes` 在生命周期上不同。
 - 平台运营权限与工厂员工/管理/老板权限彻底分离。
 - MVP 保持一个仓库和一个 lockfile，降低骨架阶段维护成本；服务边界允许未来拆仓。
+- 本服务成为租户主数据的唯一写入方，`tenant_registry` 是与 factory-agent 的
+  唯一共享对象（本服务写入、对方只读）；两服务在 schema 上对该表耦合，结构变更需同步评审
+  发版，存储基线与 ADR-0002 一致。
 - 正式计费仍需要新的业务规则和不可变账单模型，本 ADR 只为其提供可审计的计量基础。
 
 ## 15. 重新评审条件
 
 当真实吞吐证明 PostgreSQL 不足、需要多个实时消费者、需要客户自助用量门户、正式收费规则
-获批、平台身份系统确定，或隐私/合同要求改变用户级计量时，重新评审本决策。
+获批、平台身份系统确定，隐私/合同要求改变用户级计量，或共享的 `tenant_registry` 表引发
+可用性、安全或部署问题（如 factory-agent 因该表不可用而无法建链）时，重新评审本决策。
