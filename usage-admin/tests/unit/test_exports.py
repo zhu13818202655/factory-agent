@@ -118,3 +118,79 @@ async def test_expired_or_tampered_token_returns_none() -> None:
     token = view.download_url.split("token=")[1]
 
     assert await service.download(token + "x") is None
+
+
+@pytest.mark.asyncio
+async def test_export_supports_mes_category_metrics() -> None:
+    from usage_admin.events import MesCallFact
+
+    service, store, _ = make_service()
+    store.mes_call_facts = [
+        MesCallFact(
+            event_id="m-1",
+            tenant_id="tenant-a",
+            session_id="s",
+            interaction_id="i",
+            occurred_at=NOW,
+            operation_id="BarcodeClQuery",
+            page_count=1,
+            row_count_bucket="1-10",
+            duration_ms=100,
+            status="completed",
+            error_category=None,
+            received_at=NOW,
+        ),
+        MesCallFact(
+            event_id="m-2",
+            tenant_id="tenant-a",
+            session_id="s",
+            interaction_id="i",
+            occurred_at=NOW,
+            operation_id="GongziMxQuery",
+            page_count=1,
+            row_count_bucket="1-10",
+            duration_ms=100,
+            status="completed",
+            error_category=None,
+            received_at=NOW,
+        ),
+    ]
+
+    view = await service.create_export(
+        analyst(),
+        start=START,
+        end=END,
+        format="csv",
+        metrics=("mes_output", "mes_payroll", "mes_order", "mes_other"),
+    )
+    assert view.download_url is not None
+    token = view.download_url.split("token=")[1]
+
+    result = await service.download(token)
+    assert result is not None
+    data, _ = result
+    header = data.split(b"\n")[0].decode()
+    assert "mes_output" in header
+    assert "mes_payroll" in header
+    assert b"mes_output,mes_payroll" in data.split(b"\n")[0]
+    row = data.split(b"\n")[1].decode()
+    assert row.endswith(",1,1,0,0")
+
+
+@pytest.mark.asyncio
+async def test_export_record_tenant_filter_is_masked() -> None:
+    service, store, _ = make_service()
+
+    await service.create_export(
+        PlatformScope("ops-1", PlatformRole.ANALYST, frozenset({"secret-key-987654"})),
+        start=START,
+        end=END,
+        format="csv",
+    )
+
+    record = next(iter(store.exports.values()))
+    serialized = str(record.tenant_filter)
+    assert "secret-key-987654" not in serialized
+    filtered = record.tenant_filter.get("tenant_ids", [])
+    assert isinstance(filtered, list)
+    assert "secret-key-987654" not in filtered

@@ -17,11 +17,20 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Protocol
 
-from usage_admin.ops import OpsLimits, OpsQueryError, OpsService
+from usage_admin.masking import mask_app_key
+from usage_admin.ops import MesCategoriesView, OpsLimits, OpsQueryError, OpsService
 from usage_admin.platform import PlatformScope, PlatformScopeError
 from usage_admin.store import AuditEntry, ExportRecord, UsageStore
 
 ExportFormat = Literal["csv", "xlsx"]
+
+#: MES billing-category metrics supported by exports (D1/D5).
+_MES_EXPORT_METRICS: tuple[str, ...] = (
+    "mes_output",
+    "mes_payroll",
+    "mes_order",
+    "mes_other",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +91,12 @@ def _cell(value: object) -> object:
     if isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _mes_metric_value(mes: MesCategoriesView | None, metric: str) -> int:
+    if mes is None:
+        return 0
+    return int(mes.categories.get(metric.removeprefix("mes_"), 0))
 
 
 def sign_download(secret: str, export_id: str, expires_at: datetime) -> str:
@@ -160,12 +175,15 @@ class ExportService:
         data = render_xlsx(table) if format == "xlsx" else render_csv(table)
         await self._files.put(key, data)
         expires_at = now + timedelta(seconds=self._presign_expires_seconds)
+        masked_tenants = [
+            masked for masked in (mask_app_key(t) for t in scope.tenant_ids) if masked
+        ]
         await self._store.create_export(
             ExportRecord(
                 export_id=export_id,
                 principal_id=scope.principal_id,
                 format=format,
-                tenant_filter={"tenant_ids": sorted(scope.tenant_ids)},
+                tenant_filter={"tenant_ids": sorted(masked_tenants)},
                 metric_version=self._ops.metric_version(),
                 status="ready",
                 artifact_key=key,
@@ -239,6 +257,8 @@ class ExportService:
             )
             return ExportTable(columns=columns, rows=rows)
         summary = await self._ops.summary(scope, start, end)
+        mes_metrics = tuple(metric for metric in metrics if metric in _MES_EXPORT_METRICS)
+        mes = await self._ops.mes_categories(scope, start, end) if mes_metrics else None
         columns = (
             "users",
             "questions",
@@ -253,7 +273,7 @@ class ExportService:
             "completion_tokens",
             "cached_tokens",
             "reasoning_tokens",
-        )
+        ) + mes_metrics
         row = (
             summary.users,
             summary.questions,
@@ -268,6 +288,8 @@ class ExportService:
             summary.tokens.get("completion_tokens", 0),
             summary.tokens.get("cached_tokens", 0),
             summary.tokens.get("reasoning_tokens", 0),
+        ) + tuple(
+            _mes_metric_value(mes, metric) if mes is not None else 0 for metric in mes_metrics
         )
         return ExportTable(columns=columns, rows=(row,))
 

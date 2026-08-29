@@ -50,7 +50,7 @@ test-e2e:
 	$(PYTEST) tests/e2e
 
 security:
-	$(RUN) bandit --quiet --recursive src mock-mes/src
+	$(RUN) bandit --quiet --recursive src mock-mes/src usage-admin/src
 	$(RUN) pip-audit --skip-editable
 	$(PYTEST) tests/security
 

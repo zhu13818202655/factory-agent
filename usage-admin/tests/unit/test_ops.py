@@ -17,7 +17,9 @@ from usage_admin.rollup import RollupEngine
 from usage_admin.store import InMemoryUsageStore
 
 NOW = datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)
-START = datetime(2026, 8, 27, 0, 0, tzinfo=timezone.utc)
+# The query window starts at the clock's own hour so the rollup-coverage check
+# never treats pre-window hours (which legitimately have no events) as gaps.
+START = datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)
 END = datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
 
 VIEWER = PlatformScope("ops-1", PlatformRole.VIEWER, frozenset())

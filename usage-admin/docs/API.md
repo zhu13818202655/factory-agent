@@ -2,7 +2,7 @@
 
 - 版本：v1.0（2026-08-29，随 `.github/story/#9.md` 落地）
 - 服务：`usage-admin`，多租户用量计量与运营管理服务
-- 状态标识：✅ 已实现可用 ｜ 🚧 Story 9 规划中（未上线前不可联调）
+- 状态标识：✅ 已实现可用 ｜ ✅ 已实现（Story 9 交付；真实 MES 统计数据的端到端验证待 Story 11 计量数据产出后进行）
 - 本文档是**前端对接的唯一接口依据**；字段语义、口径与权限的完整说明见
   [`docs/product/usage-admin-dashboard-gap.md`](../docs/product/usage-admin-dashboard-gap.md)。
 
@@ -91,8 +91,8 @@ usage-admin 自建平台运营账号体系，采用 **Bearer Token 认证**（D1
 
 | 方法 | 路径 | 说明 | 状态 |
 |---|---|---|---|
-| POST | `/admin/v1/auth/register` | 注册运营账号（仅 `admin`） | 🚧 |
-| POST | `/admin/v1/auth/login` | 登录，签发 Bearer token | 🚧 |
+| POST | `/admin/v1/auth/register` | 注册运营账号（仅 `admin`） | ✅ |
+| POST | `/admin/v1/auth/login` | 登录，签发 Bearer token | ✅ |
 
 > 前端对接**不需要**调用本组接口——使用平台下发的 `USAGE_ADMIN_API_TOKEN`（见 §2.1）。
 
@@ -100,12 +100,12 @@ usage-admin 自建平台运营账号体系，采用 **Bearer Token 认证**（D1
 
 | 方法 | 路径 | 说明 | 状态 |
 |---|---|---|---|
-| GET | `/admin/v1/tenants/registry` | 账户列表（分页） | 🚧 |
-| GET | `/admin/v1/tenants/registry/{app_key}` | 单个账户详情 | 🚧 |
-| POST | `/admin/v1/tenants/registry` | 新增账户 | 🚧 |
-| PATCH | `/admin/v1/tenants/registry/{app_key}` | 编辑（名称 / 状态） | 🚧 |
-| DELETE | `/admin/v1/tenants/registry/{app_key}` | **停用**（非物理删除） | 🚧 |
-| POST | `/admin/v1/tenants/registry/{app_key}/enable` | 重新启用 | 🚧 |
+| GET | `/admin/v1/tenants/registry` | 账户列表（分页） | ✅ |
+| GET | `/admin/v1/tenants/registry/{app_key}` | 单个账户详情 | ✅ |
+| POST | `/admin/v1/tenants/registry` | 新增账户 | ✅ |
+| PATCH | `/admin/v1/tenants/registry/{app_key}` | 编辑（名称 / 状态） | ✅ |
+| DELETE | `/admin/v1/tenants/registry/{app_key}` | **停用**（非物理删除） | ✅ |
+| POST | `/admin/v1/tenants/registry/{app_key}/enable` | 重新启用 | ✅ |
 
 ### 4.2 用量统计看板（Tab：用量统计看板）
 
@@ -116,13 +116,13 @@ usage-admin 自建平台运营账号体系，采用 **Bearer Token 认证**（D1
 | GET | `/admin/v1/usage/timeseries` | 时间序列（小时 / 天） | ✅ |
 | GET | `/admin/v1/usage/dimensions` | 维度分布 | ✅ |
 | GET | `/admin/v1/usage/users` | 用户级活跃（分页） | ✅ |
-| GET | `/admin/v1/usage/by-tenant` | 按工厂分组的用量明细 + 分页（F1.13 表格） | 🚧 |
-| GET | `/admin/v1/usage/mes-categories` | MES 调用成功数，按产量 / 工资 / 订单 / 其他四类 | 🚧 |
-| GET | `/admin/v1/usage/mes-failures` | MES 调用失败数，按分类 + 错误类别 | 🚧 |
-| GET | `/admin/v1/usage/mes-operations` | 按具体 operation_id 的调用明细 | 🚧 |
-| GET | `/admin/v1/usage/models` | 按实际模型统计调用与 Token | 🚧 |
-| GET | `/admin/v1/usage/capabilities` | 按智能体能力分布 | 🚧 |
-| GET | `/admin/v1/usage/errors` | 按错误类别分布 | 🚧 |
+| GET | `/admin/v1/usage/by-tenant` | 按工厂分组的用量明细 + 分页（F1.13 表格） | ✅ |
+| GET | `/admin/v1/usage/mes-categories` | MES 调用成功数，按产量 / 工资 / 订单 / 其他四类 | ✅ |
+| GET | `/admin/v1/usage/mes-failures` | MES 调用失败数，按分类 + 错误类别 | ✅ |
+| GET | `/admin/v1/usage/mes-operations` | 按具体 operation_id 的调用明细 | ✅ |
+| GET | `/admin/v1/usage/models` | 按实际模型统计调用与 Token | ✅ |
+| GET | `/admin/v1/usage/capabilities` | 按智能体能力分布 | ✅ |
+| GET | `/admin/v1/usage/errors` | 按错误类别分布 | ✅ |
 
 ### 4.3 导出
 
@@ -375,7 +375,7 @@ GET /admin/v1/usage/users?start=...&end=...&limit=50&offset=0
 
 `user_subject_id` 为伪名化 ID（HMAC），不可反查真实员工。
 
-#### 5.2.6 MES 调用成功数，按四类（🚧，F1.8~F1.10、F1.12 饼图）
+#### 5.2.6 MES 调用成功数，按四类（✅，F1.8~F1.10、F1.12 饼图）
 
 ```
 GET /admin/v1/usage/mes-categories?start=...&end=...
@@ -400,7 +400,7 @@ GET /admin/v1/usage/mes-categories?start=...&end=...
 口径：`output` 产量查询、`payroll` 工资查询、`order` 订单进度、`other` 其他（认证 / 基础数据 /
 吊挂）。四类之和 = 成功 MES 调用总数。饼图用 `categories` 四块绘制。
 
-#### 5.2.7 MES 调用失败数（🚧，D7 独立口径）
+#### 5.2.7 MES 调用失败数（✅，D7 独立口径）
 
 ```
 GET /admin/v1/usage/mes-failures?start=...&end=...
@@ -420,7 +420,7 @@ GET /admin/v1/usage/mes-failures?start=...&end=...
 }
 ```
 
-#### 5.2.8 按工厂分组的用量明细（🚧，F1.13 表格 + F1.14 分页）
+#### 5.2.8 按工厂分组的用量明细（✅，F1.13 表格 + F1.14 分页）
 
 ```
 GET /admin/v1/usage/by-tenant?start=...&end=...&limit=20&offset=0
@@ -461,7 +461,7 @@ GET /admin/v1/usage/by-tenant?start=...&end=...&limit=20&offset=0
 
 「最后统计时间」列用 `last_usage_at`；「状态」列用 `status`（账户状态，D8）。
 
-#### 5.2.9 按 operation 明细（🚧）
+#### 5.2.9 按 operation 明细（✅）
 
 ```
 GET /admin/v1/usage/mes-operations?start=...&end=...
@@ -469,7 +469,7 @@ GET /admin/v1/usage/mes-operations?start=...&end=...
 
 响应 `200`：`{"values": {"GongziMxQuery": 28600, "PlanGridPageList": 25540, ...}, "truncated": false, ...}`
 
-#### 5.2.10 按模型统计（🚧）
+#### 5.2.10 按模型统计（✅）
 
 ```
 GET /admin/v1/usage/models?start=...&end=...
@@ -477,7 +477,7 @@ GET /admin/v1/usage/models?start=...&end=...
 
 响应 `200`：`{"values": {"deepseek-v3": {"calls": 172480, "prompt_tokens": 842000, "completion_tokens": 426420}}, ...}`
 
-#### 5.2.11 按能力分布（🚧）
+#### 5.2.11 按能力分布（✅）
 
 ```
 GET /admin/v1/usage/capabilities?start=...&end=...
@@ -485,7 +485,7 @@ GET /admin/v1/usage/capabilities?start=...&end=...
 
 响应 `200`：同 5.2.4 `dimensions=capability` 的结构，独立封装便于前端。
 
-#### 5.2.12 按错误类别（🚧）
+#### 5.2.12 按错误类别（✅）
 
 ```
 GET /admin/v1/usage/errors?start=...&end=...

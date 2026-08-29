@@ -16,6 +16,7 @@ from enum import Enum
 class PlatformRole(str, Enum):
     VIEWER = "viewer"
     ANALYST = "analyst"
+    ADMIN = "admin"
 
     @classmethod
     def parse(cls, raw: str | None) -> "PlatformRole | None":
@@ -40,7 +41,11 @@ class PlatformScope:
     tenant_ids: frozenset[str]
 
     def allows_export(self) -> bool:
-        return self.role == PlatformRole.ANALYST
+        return self.role in (PlatformRole.ANALYST, PlatformRole.ADMIN)
+
+    def allows_manage_tenants(self) -> bool:
+        """Factory-account CRUD is admin-only (D14)."""
+        return self.role == PlatformRole.ADMIN
 
     def covers_tenant(self, tenant_id: str) -> bool:
         return not self.tenant_ids or tenant_id in self.tenant_ids

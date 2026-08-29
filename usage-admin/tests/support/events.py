@@ -112,3 +112,25 @@ def llm_call_completed(
         "fallback_reason": fallback_reason,
         "error_category": error_category,
     }
+
+
+def mes_call_completed(
+    event_id: str,
+    *,
+    operation_id: str = "GongziMxQuery",
+    page_count: int = 1,
+    row_count_bucket: str = "1-10",
+    duration_ms: int = 200,
+    status: str = "completed",
+    error_category: str | None = None,
+    **kwargs: Any,
+) -> dict[str, object]:
+    return {
+        **_envelope(event_id, "mes_call_completed", **kwargs),
+        "operation_id": operation_id,
+        "page_count": page_count,
+        "row_count_bucket": row_count_bucket,
+        "duration_ms": duration_ms,
+        "status": status,
+        "error_category": error_category,
+    }

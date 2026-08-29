@@ -16,7 +16,7 @@ from typing import Any, Protocol
 import psycopg
 import psycopg.rows
 
-from usage_admin.events import InteractionFact, LlmCallFact
+from usage_admin.events import InteractionFact, LlmCallFact, MesCallFact
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +71,45 @@ class ExportRecord:
     artifact_key: str | None
     created_at: datetime
     expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TenantRegistryRecord:
+    """Tenant master data owned by this service (Story 9).
+
+    ``app_key`` is the primary key and the tenant identifier itself (D12);
+    ``status`` is ``active`` or ``disabled`` (D10/D13). AppKey is stored in
+    plaintext (D9) but every outbound response masks it.
+    """
+
+    app_key: str
+    tenant_name: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformPrincipalRecord:
+    """Internal platform operations account (D15), isolated from MES users."""
+
+    principal_id: str
+    username: str
+    password_hash: str
+    role: str
+    tenant_scope: tuple[str, ...]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MesOperationCategory:
+    """operation_id -> billing category mapping (factory-agent owned, read-only)."""
+
+    operation_id: str
+    category: str
+    version: str | None = None
 
 
 class UsageStore(Protocol):
@@ -139,6 +178,45 @@ class UsageStore(Protocol):
 
     async def list_exports(self, principal_id: str, limit: int) -> list[ExportRecord]: ...
 
+    # --- Tenant master data (owned by this service, Story 9) ---
+
+    async def list_tenant_registry(
+        self, limit: int, offset: int
+    ) -> tuple[list[TenantRegistryRecord], int]: ...
+
+    async def list_all_tenant_registry(self) -> list[TenantRegistryRecord]: ...
+
+    async def get_tenant_registry(self, app_key: str) -> TenantRegistryRecord | None: ...
+
+    async def create_tenant_registry(self, record: TenantRegistryRecord) -> bool: ...
+
+    async def update_tenant_registry(
+        self,
+        app_key: str,
+        *,
+        tenant_name: str | None,
+        status: str | None,
+        updated_at: datetime,
+    ) -> TenantRegistryRecord | None: ...
+
+    async def search_tenant_registry_names(self, fragment: str) -> list[str]: ...
+
+    # --- Platform principal accounts (owned by this service, Story 9) ---
+
+    async def create_principal(self, record: PlatformPrincipalRecord) -> bool: ...
+
+    async def get_principal(self, principal_id: str) -> PlatformPrincipalRecord | None: ...
+
+    async def get_principal_by_username(self, username: str) -> PlatformPrincipalRecord | None: ...
+
+    # --- MES metering facts (factory-agent owned; read-only here, Story 9/11) ---
+
+    async def list_mes_call_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[MesCallFact]: ...
+
+    async def list_mes_operation_categories(self) -> list[MesOperationCategory]: ...
+
 
 @dataclass
 class InMemoryUsageStore:
@@ -148,10 +226,20 @@ class InMemoryUsageStore:
     raw_events: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     interaction_facts: list[InteractionFact] = field(default_factory=list[InteractionFact])
     llm_call_facts: list[LlmCallFact] = field(default_factory=list[LlmCallFact])
+    mes_call_facts: list[MesCallFact] = field(default_factory=list[MesCallFact])
+    mes_operation_categories: list[MesOperationCategory] = field(
+        default_factory=list[MesOperationCategory]
+    )
     dead_letters: list[DeadLetterEntry] = field(default_factory=list[DeadLetterEntry])
     rollup_rows: list[RollupRow] = field(default_factory=list[RollupRow])
     audits: list[AuditEntry] = field(default_factory=list[AuditEntry])
     exports: dict[str, ExportRecord] = field(default_factory=dict[str, ExportRecord])
+    tenant_registry: dict[str, TenantRegistryRecord] = field(
+        default_factory=dict[str, TenantRegistryRecord]
+    )
+    principals: dict[str, PlatformPrincipalRecord] = field(
+        default_factory=dict[str, PlatformPrincipalRecord]
+    )
 
     async def receipt_digest(self, event_id: str) -> str | None:
         receipt = self.receipts.get(event_id)
@@ -220,6 +308,9 @@ class InMemoryUsageStore:
             if start <= fact.occurred_at < end:
                 tenants.add(fact.tenant_id)
         for fact in self.llm_call_facts:
+            if start <= fact.occurred_at < end:
+                tenants.add(fact.tenant_id)
+        for fact in self.mes_call_facts:
             if start <= fact.occurred_at < end:
                 tenants.add(fact.tenant_id)
         return sorted(tenants)
@@ -323,6 +414,80 @@ class InMemoryUsageStore:
         return [export for export in self.exports.values() if export.principal_id == principal_id][
             :limit
         ]
+
+    async def list_mes_call_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[MesCallFact]:
+        return [
+            fact
+            for fact in self.mes_call_facts
+            if fact.tenant_id in tenant_ids and start <= fact.occurred_at < end
+        ]
+
+    async def list_mes_operation_categories(self) -> list[MesOperationCategory]:
+        return list(self.mes_operation_categories)
+
+    async def list_tenant_registry(
+        self, limit: int, offset: int
+    ) -> tuple[list[TenantRegistryRecord], int]:
+        ordered = sorted(self.tenant_registry.values(), key=lambda record: record.created_at)
+        return ordered[offset : offset + limit], len(ordered)
+
+    async def list_all_tenant_registry(self) -> list[TenantRegistryRecord]:
+        return list(self.tenant_registry.values())
+
+    async def get_tenant_registry(self, app_key: str) -> TenantRegistryRecord | None:
+        return self.tenant_registry.get(app_key)
+
+    async def create_tenant_registry(self, record: TenantRegistryRecord) -> bool:
+        if record.app_key in self.tenant_registry:
+            return False
+        self.tenant_registry[record.app_key] = record
+        return True
+
+    async def update_tenant_registry(
+        self,
+        app_key: str,
+        *,
+        tenant_name: str | None,
+        status: str | None,
+        updated_at: datetime,
+    ) -> TenantRegistryRecord | None:
+        existing = self.tenant_registry.get(app_key)
+        if existing is None:
+            return None
+        updated = TenantRegistryRecord(
+            app_key=existing.app_key,
+            tenant_name=tenant_name if tenant_name is not None else existing.tenant_name,
+            status=status if status is not None else existing.status,
+            created_at=existing.created_at,
+            updated_at=updated_at,
+        )
+        self.tenant_registry[app_key] = updated
+        return updated
+
+    async def search_tenant_registry_names(self, fragment: str) -> list[str]:
+        needle = fragment.lower()
+        return sorted(
+            record.app_key
+            for record in self.tenant_registry.values()
+            if needle in record.tenant_name.lower()
+        )
+
+    async def create_principal(self, record: PlatformPrincipalRecord) -> bool:
+        if any(principal.username == record.username for principal in self.principals.values()):
+            return False
+        self.principals[record.principal_id] = record
+        return True
+
+    async def get_principal(self, principal_id: str) -> PlatformPrincipalRecord | None:
+        return self.principals.get(principal_id)
+
+    async def get_principal_by_username(self, username: str) -> PlatformPrincipalRecord | None:
+        for principal in self.principals.values():
+            if principal.username == username:
+                return principal
+        return None
 
 
 async def _connect(database_url: str) -> psycopg.AsyncConnection[Any]:
@@ -595,18 +760,25 @@ class PostgresUsageStore:
         return rows
 
     async def list_tenants(self, start: datetime, end: datetime) -> list[str]:
-        async with await _connect(self._database_url) as connection:
-            rows = await connection.execute(
-                """
-                SELECT DISTINCT tenant_id FROM interaction_fact
-                WHERE occurred_at >= %s AND occurred_at < %s
-                UNION
-                SELECT DISTINCT tenant_id FROM llm_call_fact
-                WHERE occurred_at >= %s AND occurred_at < %s
-                """,
-                (start, end, start, end),
-            )
-            fetched = await rows.fetchall()
+        try:
+            async with await _connect(self._database_url) as connection:
+                rows = await connection.execute(
+                    """
+                    SELECT DISTINCT tenant_id FROM interaction_fact
+                    WHERE occurred_at >= %s AND occurred_at < %s
+                    UNION
+                    SELECT DISTINCT tenant_id FROM llm_call_fact
+                    WHERE occurred_at >= %s AND occurred_at < %s
+                    UNION
+                    SELECT DISTINCT tenant_id FROM mes_call_fact
+                    WHERE occurred_at >= %s AND occurred_at < %s
+                    """,
+                    (start, end, start, end, start, end),
+                )
+                fetched = await rows.fetchall()
+        except psycopg.errors.UndefinedTable:
+            # mes_call_fact lands in Story 11; until then MES tenants are empty.
+            return []
         return sorted(str(row["tenant_id"]) for row in fetched)
 
     async def query_duration_percentiles(
@@ -626,7 +798,7 @@ class PostgresUsageStore:
                     FROM interaction_fact
                     WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
                       AND {column} IS NOT NULL
-                    """,  # type: ignore[arg-type]  # trusted fixed column names
+                    """,  # nosec B608 - column names come from the fixed _DURATION_COLUMN map  # type: ignore[arg-type]  # trusted fixed column names
                     (list(tenant_ids), start, end),
                 )
                 row = await rows.fetchone()
@@ -801,6 +973,184 @@ class PostgresUsageStore:
             fetched = await rows.fetchall()
         return [_export_from_row(row) for row in fetched]
 
+    async def list_mes_call_facts(
+        self, tenant_ids: frozenset[str], start: datetime, end: datetime
+    ) -> list[MesCallFact]:
+        if not tenant_ids:
+            return []
+        try:
+            async with await _connect(self._database_url) as connection:
+                rows = await connection.execute(
+                    """
+                    SELECT * FROM mes_call_fact
+                    WHERE tenant_id = ANY(%s) AND occurred_at >= %s AND occurred_at < %s
+                    """,
+                    (list(tenant_ids), start, end),
+                )
+                fetched = await rows.fetchall()
+        except psycopg.errors.UndefinedTable:
+            # mes_call_fact is created and written by factory-agent (Story 11);
+            # before that lands the query is empty, never an error.
+            return []
+        return [_mes_call_fact_from_row(row) for row in fetched]
+
+    async def list_mes_operation_categories(self) -> list[MesOperationCategory]:
+        try:
+            async with await _connect(self._database_url) as connection:
+                rows = await connection.execute(
+                    """
+                    SELECT operation_id, category, version FROM mes_operation_category
+                    ORDER BY operation_id
+                    """
+                )
+                fetched = await rows.fetchall()
+        except psycopg.errors.UndefinedTable:
+            return []
+        return [
+            MesOperationCategory(
+                operation_id=str(row["operation_id"]),
+                category=str(row["category"]),
+                version=_opt_str(row.get("version")),
+            )
+            for row in fetched
+        ]
+
+    async def list_tenant_registry(
+        self, limit: int, offset: int
+    ) -> tuple[list[TenantRegistryRecord], int]:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                SELECT * FROM tenant_registry ORDER BY created_at ASC LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
+            )
+            fetched = await rows.fetchall()
+            total_row = await connection.execute("SELECT COUNT(*) AS total FROM tenant_registry")
+            total_row = await total_row.fetchone()
+        records = [_tenant_registry_from_row(row) for row in fetched]
+        return records, int(total_row["total"]) if total_row else 0
+
+    async def list_all_tenant_registry(self) -> list[TenantRegistryRecord]:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute("SELECT * FROM tenant_registry ORDER BY app_key ASC")
+            fetched = await rows.fetchall()
+        return [_tenant_registry_from_row(row) for row in fetched]
+
+    async def get_tenant_registry(self, app_key: str) -> TenantRegistryRecord | None:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                "SELECT * FROM tenant_registry WHERE app_key = %s", (app_key,)
+            )
+            row = await rows.fetchone()
+        if row is None:
+            return None
+        return _tenant_registry_from_row(row)
+
+    async def create_tenant_registry(self, record: TenantRegistryRecord) -> bool:
+        async with await _connect(self._database_url) as connection:
+            try:
+                await connection.execute(
+                    """
+                    INSERT INTO tenant_registry
+                        (app_key, tenant_name, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        record.app_key,
+                        record.tenant_name,
+                        record.status,
+                        record.created_at,
+                        record.updated_at,
+                    ),
+                )
+            except psycopg.errors.UniqueViolation:
+                return False
+        return True
+
+    async def update_tenant_registry(
+        self,
+        app_key: str,
+        *,
+        tenant_name: str | None,
+        status: str | None,
+        updated_at: datetime,
+    ) -> TenantRegistryRecord | None:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                UPDATE tenant_registry
+                SET tenant_name = COALESCE(%s, tenant_name),
+                    status = COALESCE(%s, status),
+                    updated_at = %s
+                WHERE app_key = %s
+                RETURNING *
+                """,
+                (tenant_name, status, updated_at, app_key),
+            )
+            row = await rows.fetchone()
+        if row is None:
+            return None
+        return _tenant_registry_from_row(row)
+
+    async def search_tenant_registry_names(self, fragment: str) -> list[str]:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                """
+                SELECT app_key FROM tenant_registry
+                WHERE tenant_name ILIKE %s
+                ORDER BY app_key ASC
+                """,
+                (f"%{fragment}%",),
+            )
+            fetched = await rows.fetchall()
+        return [str(row["app_key"]) for row in fetched]
+
+    async def create_principal(self, record: PlatformPrincipalRecord) -> bool:
+        async with await _connect(self._database_url) as connection:
+            try:
+                await connection.execute(
+                    """
+                    INSERT INTO platform_principal
+                        (principal_id, username, password_hash, role, tenant_scope, status,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        record.principal_id,
+                        record.username,
+                        record.password_hash,
+                        record.role,
+                        json.dumps(list(record.tenant_scope)),
+                        record.status,
+                        record.created_at,
+                        record.updated_at,
+                    ),
+                )
+            except psycopg.errors.UniqueViolation:
+                return False
+        return True
+
+    async def get_principal(self, principal_id: str) -> PlatformPrincipalRecord | None:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                "SELECT * FROM platform_principal WHERE principal_id = %s", (principal_id,)
+            )
+            row = await rows.fetchone()
+        if row is None:
+            return None
+        return _principal_from_row(row)
+
+    async def get_principal_by_username(self, username: str) -> PlatformPrincipalRecord | None:
+        async with await _connect(self._database_url) as connection:
+            rows = await connection.execute(
+                "SELECT * FROM platform_principal WHERE username = %s", (username,)
+            )
+            row = await rows.fetchone()
+        if row is None:
+            return None
+        return _principal_from_row(row)
+
 
 #: Duration metric name -> fact/column attribute (e2e lives in ``duration_ms``).
 _DURATION_COLUMN: dict[str, str] = {
@@ -879,6 +1229,49 @@ def _export_from_row(row: dict[str, Any]) -> ExportRecord:
     )
 
 
+def _tenant_registry_from_row(row: dict[str, Any]) -> TenantRegistryRecord:
+    return TenantRegistryRecord(
+        app_key=str(row["app_key"]),
+        tenant_name=str(row["tenant_name"]),
+        status=str(row["status"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _principal_from_row(row: dict[str, Any]) -> PlatformPrincipalRecord:
+    tenant_scope = row["tenant_scope"]
+    if isinstance(tenant_scope, str):
+        tenant_scope = json.loads(tenant_scope)
+    return PlatformPrincipalRecord(
+        principal_id=str(row["principal_id"]),
+        username=str(row["username"]),
+        password_hash=str(row["password_hash"]),
+        role=str(row["role"]),
+        tenant_scope=tuple(str(item) for item in tenant_scope),
+        status=str(row["status"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _mes_call_fact_from_row(row: dict[str, Any]) -> MesCallFact:
+    return MesCallFact(
+        event_id=str(row["event_id"]),
+        tenant_id=str(row["tenant_id"]),
+        session_id=str(row["session_id"]),
+        interaction_id=str(row["interaction_id"]),
+        occurred_at=row["occurred_at"],
+        operation_id=str(row["operation_id"]),
+        page_count=int(row["page_count"]),
+        row_count_bucket=_opt_str(row.get("row_count_bucket")),
+        duration_ms=int(row["duration_ms"]),
+        status=str(row["status"]),
+        error_category=_opt_str(row.get("error_category")),
+        received_at=row["received_at"],
+    )
+
+
 def _opt_str(value: object | None) -> str | None:
     return str(value) if value is not None else None
 
@@ -914,9 +1307,12 @@ __all__ = [
     "DeadLetterEntry",
     "ExportRecord",
     "InMemoryUsageStore",
+    "MesOperationCategory",
+    "PlatformPrincipalRecord",
     "PostgresUsageStore",
     "Receipt",
     "RollupRow",
+    "TenantRegistryRecord",
     "UsageStore",
     "hour_bucket",
     "percentile",

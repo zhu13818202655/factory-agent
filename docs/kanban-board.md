@@ -19,6 +19,26 @@
 
 ## 已完成
 
+### Story 9：usage-admin 用量看板与租户主数据
+
+  - due: 2026-08-29
+  - priority: high
+  - workload: Normal
+  - defaultExpanded: false
+    ```md
+    已完成：`tenant_registry` / `platform_principal` 建表（独立版本表
+    `alembic_version_usage_admin`）；工厂账户管理六接口（写仅 admin、全部落审计、停用不删除、
+    AppKey 出参脱敏前 6 位 + ***）；平台账号注册/登录与 Bearer token 双通道鉴权
+    （`USAGE_ADMIN_API_TOKEN` 供前端）；用量查询 `/usage/mes-categories`、
+    `/usage/mes-failures`、`/usage/by-tenant`、`/usage/mes-operations`、`/usage/models`、
+    `/usage/capabilities`、`/usage/errors`；导出支持 MES 分类指标；前端对接文档
+    `usage-admin/docs/API.md` 状态更新。单元/契约测试 786 项通过，Ruff/Pyright/Bandit 通过。
+
+    已知限制：MES 分类统计读取的 `mes_call_fact` / `mes_operation_category` 由 Story 11
+    建表写入，本 Story 以默认分类映射工作，真实数据端到端验证在 Story 11 后联调。
+    待人工评审（State: Resolved）。
+    ```
+
 ### 根据用户最新信息整理接口文档
 
   - due: 2026-08-25

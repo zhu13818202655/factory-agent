@@ -10,7 +10,8 @@
 | `adr/` | 为什么采用某项难以逆转的技术或边界决策 | [`0001-repository-and-service-boundaries.md`](adr/0001-repository-and-service-boundaries.md)、[`0002-runtime-storage-and-migration-baseline.md`](adr/0002-runtime-storage-and-migration-baseline.md)、[`0003-usage-metering-and-admin-service.md`](adr/0003-usage-metering-and-admin-service.md) |
 | `reference/` | 客户原始材料和整合文档 | [`弘兆MES接口整体说明-V2.md`](reference/弘兆MES接口整体说明-V2.md)（**已确认事实的来源，M/K 编号**）、[`AI问答对外接口.md`](reference/AI问答对外接口.md)（客户原始接口文档）、[`工厂智能体需求与接口整合文档.md`](reference/工厂智能体需求与接口整合文档.md)（历史功能点，仅供追溯） |
 
-实现按 [`.github/story/`](../.github/story/) 中 `#1` 到 `#9` 的顺序执行，日常状态见
+实现按 [`.github/story/`](../.github/story/) 中 `#1` 到 `#12` 的顺序执行（Story 9 为插入项：
+usage-admin 用量看板与租户主数据；原 Story 9/10 顺延为 Story 10/12），日常状态见
 [`kanban-board.md`](kanban-board.md)。Story 是实施清单，产品与 API 文档是需求和契约依据；
 看板只展示状态，不复制验收内容。
 

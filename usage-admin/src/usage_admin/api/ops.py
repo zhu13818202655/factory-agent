@@ -8,16 +8,24 @@ from typing import Literal, cast
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from usage_admin.api.security import resolve_request_scope
 from usage_admin.container import AdminContainer
 from usage_admin.exports import ExportService, ExportView
-from usage_admin.ops import OpsQueryError, OpsService
+from usage_admin.masking import mask_app_key
+from usage_admin.ops import (
+    ByTenantItem,
+    ByTenantPage,
+    ErrorsView,
+    MesCategoriesView,
+    MesFailuresView,
+    MesOperationsView,
+    ModelsView,
+    OpsQueryError,
+    OpsService,
+)
 from usage_admin.platform import (
-    PRINCIPAL_HEADER,
-    ROLE_HEADER,
-    TENANT_HEADER,
     PlatformScope,
     PlatformScopeError,
-    resolve_platform_scope,
 )
 
 admin_router = APIRouter(prefix="/admin/v1", tags=["admin"])
@@ -37,17 +45,20 @@ def _parse_datetime(raw: str | None, name: str) -> datetime:
 
 def _scope(request: Request) -> PlatformScope:
     try:
-        return resolve_platform_scope(
-            request.headers.get(PRINCIPAL_HEADER),
-            request.headers.get(ROLE_HEADER),
-            request.headers.get(TENANT_HEADER),
-        )
+        return resolve_request_scope(request, _container(request).auth)
     except PlatformScopeError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _container(request: Request) -> AdminContainer:
     return cast(AdminContainer, request.app.state.container)
+
+
+def _masked_tenant_ids(tenant_ids: tuple[str, ...]) -> list[str]:
+    """AppKey values never leave this service unmasked (D9)."""
+    return [
+        masked for masked in (mask_app_key(tenant) for tenant in tenant_ids) if masked is not None
+    ]
 
 
 def _ops(request: Request) -> OpsService:
@@ -127,6 +138,89 @@ class UsersPageView(BaseModel):
     timezone: str
 
 
+class MesCategoriesViewOut(BaseModel):
+    tenant_ids: list[str]
+    start: datetime
+    end: datetime
+    categories: dict[str, int]
+    total: int
+    metric_version: str
+    timezone: str
+    incomplete: bool
+
+
+class MesFailuresViewOut(BaseModel):
+    tenant_ids: list[str]
+    start: datetime
+    end: datetime
+    categories: dict[str, int]
+    by_error: dict[str, int]
+    total: int
+    metric_version: str
+    timezone: str
+
+
+class MesOperationsViewOut(BaseModel):
+    tenant_ids: list[str]
+    start: datetime
+    end: datetime
+    values: dict[str, float]
+    truncated: bool
+    metric_version: str
+    timezone: str
+
+
+class ModelStatsOut(BaseModel):
+    calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int
+    reasoning_tokens: int
+
+
+class ModelsViewOut(BaseModel):
+    tenant_ids: list[str]
+    start: datetime
+    end: datetime
+    values: dict[str, ModelStatsOut]
+    metric_version: str
+    timezone: str
+
+
+class ErrorsViewOut(BaseModel):
+    tenant_ids: list[str]
+    start: datetime
+    end: datetime
+    values: dict[str, float]
+    truncated: bool
+    metric_version: str
+    timezone: str
+
+
+class ByTenantItemView(BaseModel):
+    app_key: str
+    tenant_name: str | None
+    status: str | None
+    token_total: int
+    question_count: int
+    mes_output: int
+    mes_payroll: int
+    mes_order: int
+    mes_other: int
+    last_usage_at: datetime | None
+
+
+class ByTenantPageView(BaseModel):
+    tenant_ids: list[str]
+    start: datetime
+    end: datetime
+    items: list[ByTenantItemView]
+    total: int
+    next_cursor: int | None = None
+    metric_version: str
+    timezone: str
+
+
 class ExportCreateRequest(BaseModel):
     start: datetime
     end: datetime
@@ -173,7 +267,7 @@ async def usage_summary(
     except OpsQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return SummaryView(
-        tenant_ids=list(view.tenant_ids),
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
         start=view.start,
         end=view.end,
         users=view.users,
@@ -219,7 +313,7 @@ async def usage_timeseries(
     except OpsQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return TimeseriesView(
-        tenant_ids=list(view.tenant_ids),
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
         start=view.start,
         end=view.end,
         granularity=view.granularity,
@@ -247,7 +341,7 @@ async def usage_dimensions(
     except OpsQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return DimensionsView(
-        tenant_ids=list(view.tenant_ids),
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
         start=view.start,
         end=view.end,
         dimension=view.dimension,
@@ -275,7 +369,7 @@ async def usage_users(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return UsersPageView(
-        tenant_ids=list(view.tenant_ids),
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
         start=view.start,
         end=view.end,
         items=[
@@ -285,6 +379,203 @@ async def usage_users(
             )
             for item in view.items
         ],
+        total=view.total,
+        next_cursor=view.next_cursor,
+        metric_version=view.metric_version,
+        timezone=view.timezone,
+    )
+
+
+@admin_router.get("/usage/mes-categories", response_model=MesCategoriesViewOut)
+async def usage_mes_categories(
+    request: Request,
+    start: str = Query(description="ISO datetime"),
+    end: str = Query(description="ISO datetime"),
+) -> MesCategoriesViewOut:
+    scope = _scope(request)
+    parsed_start = _parse_datetime(start, "start")
+    parsed_end = _parse_datetime(end, "end")
+    try:
+        view: MesCategoriesView = await _ops(request).mes_categories(
+            scope, parsed_start, parsed_end
+        )
+    except OpsQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return MesCategoriesViewOut(
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
+        start=view.start,
+        end=view.end,
+        categories=view.categories,
+        total=view.total,
+        metric_version=view.metric_version,
+        timezone=view.timezone,
+        incomplete=view.incomplete,
+    )
+
+
+@admin_router.get("/usage/mes-failures", response_model=MesFailuresViewOut)
+async def usage_mes_failures(
+    request: Request,
+    start: str = Query(description="ISO datetime"),
+    end: str = Query(description="ISO datetime"),
+) -> MesFailuresViewOut:
+    scope = _scope(request)
+    parsed_start = _parse_datetime(start, "start")
+    parsed_end = _parse_datetime(end, "end")
+    try:
+        view: MesFailuresView = await _ops(request).mes_failures(scope, parsed_start, parsed_end)
+    except OpsQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return MesFailuresViewOut(
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
+        start=view.start,
+        end=view.end,
+        categories=view.categories,
+        by_error=view.by_error,
+        total=view.total,
+        metric_version=view.metric_version,
+        timezone=view.timezone,
+    )
+
+
+@admin_router.get("/usage/mes-operations", response_model=MesOperationsViewOut)
+async def usage_mes_operations(
+    request: Request,
+    start: str = Query(description="ISO datetime"),
+    end: str = Query(description="ISO datetime"),
+) -> MesOperationsViewOut:
+    scope = _scope(request)
+    parsed_start = _parse_datetime(start, "start")
+    parsed_end = _parse_datetime(end, "end")
+    try:
+        view: MesOperationsView = await _ops(request).mes_operations(
+            scope, parsed_start, parsed_end
+        )
+    except OpsQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return MesOperationsViewOut(
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
+        start=view.start,
+        end=view.end,
+        values=view.values,
+        truncated=view.truncated,
+        metric_version=view.metric_version,
+        timezone=view.timezone,
+    )
+
+
+@admin_router.get("/usage/models", response_model=ModelsViewOut)
+async def usage_models(
+    request: Request,
+    start: str = Query(description="ISO datetime"),
+    end: str = Query(description="ISO datetime"),
+) -> ModelsViewOut:
+    scope = _scope(request)
+    parsed_start = _parse_datetime(start, "start")
+    parsed_end = _parse_datetime(end, "end")
+    try:
+        view: ModelsView = await _ops(request).models(scope, parsed_start, parsed_end)
+    except OpsQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ModelsViewOut(
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
+        start=view.start,
+        end=view.end,
+        values={
+            model: ModelStatsOut(
+                calls=stats["calls"],
+                prompt_tokens=stats["prompt_tokens"],
+                completion_tokens=stats["completion_tokens"],
+                cached_tokens=stats["cached_tokens"],
+                reasoning_tokens=stats["reasoning_tokens"],
+            )
+            for model, stats in view.values.items()
+        },
+        metric_version=view.metric_version,
+        timezone=view.timezone,
+    )
+
+
+@admin_router.get("/usage/capabilities", response_model=DimensionsView)
+async def usage_capabilities(
+    request: Request,
+    start: str = Query(description="ISO datetime"),
+    end: str = Query(description="ISO datetime"),
+) -> DimensionsView:
+    scope = _scope(request)
+    parsed_start = _parse_datetime(start, "start")
+    parsed_end = _parse_datetime(end, "end")
+    try:
+        view = await _ops(request).capabilities(scope, parsed_start, parsed_end)
+    except OpsQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return DimensionsView(
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
+        start=view.start,
+        end=view.end,
+        dimension=view.dimension,
+        values=view.values,
+        truncated=view.truncated,
+        metric_version=view.metric_version,
+        timezone=view.timezone,
+    )
+
+
+@admin_router.get("/usage/errors", response_model=ErrorsViewOut)
+async def usage_errors(
+    request: Request,
+    start: str = Query(description="ISO datetime"),
+    end: str = Query(description="ISO datetime"),
+) -> ErrorsViewOut:
+    scope = _scope(request)
+    parsed_start = _parse_datetime(start, "start")
+    parsed_end = _parse_datetime(end, "end")
+    try:
+        view: ErrorsView = await _ops(request).errors(scope, parsed_start, parsed_end)
+    except OpsQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ErrorsViewOut(
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
+        start=view.start,
+        end=view.end,
+        values=view.values,
+        truncated=view.truncated,
+        metric_version=view.metric_version,
+        timezone=view.timezone,
+    )
+
+
+@admin_router.get("/usage/by-tenant", response_model=ByTenantPageView)
+async def usage_by_tenant(
+    request: Request,
+    start: str = Query(description="ISO datetime"),
+    end: str = Query(description="ISO datetime"),
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    name: str | None = Query(default=None, description="fuzzy factory-name filter (F1.2)"),
+    app_key: str | None = Query(default=None, description="exact AppKey filter (F1.3)"),
+) -> ByTenantPageView:
+    scope = _scope(request)
+    parsed_start = _parse_datetime(start, "start")
+    parsed_end = _parse_datetime(end, "end")
+    try:
+        view: ByTenantPage = await _ops(request).by_tenant(
+            scope,
+            parsed_start,
+            parsed_end,
+            limit=limit,
+            offset=offset,
+            name=name,
+            app_key=app_key,
+        )
+    except (OpsQueryError, PlatformScopeError) as exc:
+        status = 403 if isinstance(exc, PlatformScopeError) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return ByTenantPageView(
+        tenant_ids=_masked_tenant_ids(view.tenant_ids),
+        start=view.start,
+        end=view.end,
+        items=[_by_tenant_item(item) for item in view.items],
         total=view.total,
         next_cursor=view.next_cursor,
         metric_version=view.metric_version,
@@ -351,4 +642,20 @@ def _to_view(view: ExportView) -> ExportViewOut:
         download_url=view.download_url,
         expires_at=view.expires_at,
         created_at=view.created_at,
+    )
+
+
+def _by_tenant_item(item: ByTenantItem) -> ByTenantItemView:
+    masked = mask_app_key(item.app_key)
+    return ByTenantItemView(
+        app_key=masked if masked is not None else "",
+        tenant_name=item.tenant_name,
+        status=item.status,
+        token_total=item.token_total,
+        question_count=item.question_count,
+        mes_output=item.mes_output,
+        mes_payroll=item.mes_payroll,
+        mes_order=item.mes_order,
+        mes_other=item.mes_other,
+        last_usage_at=item.last_usage_at,
     )

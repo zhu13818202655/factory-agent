@@ -226,6 +226,29 @@ class LlmCallFact:
     received_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class MesCallFact:
+    """One customer MES request per row (read-only for this service).
+
+    ``operation_id`` carries no URL or business parameter values; the billing
+    category is resolved at query time from ``mes_operation_category`` (R1:
+    API classification, never capability classification).
+    """
+
+    event_id: str
+    tenant_id: str
+    session_id: str
+    interaction_id: str
+    occurred_at: datetime
+    operation_id: str
+    page_count: int
+    row_count_bucket: str | None
+    duration_ms: int
+    status: str
+    error_category: str | None
+    received_at: datetime
+
+
 def _field(payload: dict[str, object], name: str) -> str:
     value = payload[name]
     return value if isinstance(value, str) else ""
@@ -293,9 +316,27 @@ def to_llm_call_fact(payload: dict[str, object], *, received_at: datetime) -> Ll
     )
 
 
+def to_mes_call_fact(payload: dict[str, object], *, received_at: datetime) -> MesCallFact:
+    return MesCallFact(
+        event_id=_field(payload, "event_id"),
+        tenant_id=_field(payload, "tenant_id"),
+        session_id=_field(payload, "session_id"),
+        interaction_id=_field(payload, "interaction_id"),
+        occurred_at=parse_occurred_at(payload),
+        operation_id=_field(payload, "operation_id"),
+        page_count=_int_field(payload, "page_count"),
+        row_count_bucket=_opt_field(payload, "row_count_bucket"),
+        duration_ms=_int_field(payload, "duration_ms"),
+        status=_field(payload, "status"),
+        error_category=_opt_field(payload, "error_category"),
+        received_at=received_at,
+    )
+
+
 __all__ = [
     "InteractionFact",
     "LlmCallFact",
+    "MesCallFact",
     "SUPPORTED_EVENT_TYPES",
     "allowed_fields",
     "canonical_digest",
@@ -303,5 +344,6 @@ __all__ = [
     "required_fields",
     "to_interaction_fact",
     "to_llm_call_fact",
+    "to_mes_call_fact",
     "validate_event",
 ]

@@ -14,6 +14,7 @@ from usage_admin.platform import (
 def test_parse_roles() -> None:
     assert PlatformRole.parse("viewer") == PlatformRole.VIEWER
     assert PlatformRole.parse("analyst") == PlatformRole.ANALYST
+    assert PlatformRole.parse("admin") == PlatformRole.ADMIN
     assert PlatformRole.parse("boss") is None
     assert PlatformRole.parse(None) is None
 
@@ -57,3 +58,13 @@ def test_only_analyst_may_export() -> None:
     analyst = PlatformScope("ops-2", PlatformRole.ANALYST, frozenset())
     assert not viewer.allows_export()
     assert analyst.allows_export()
+
+
+def test_admin_may_export_and_manage_tenants() -> None:
+    admin = PlatformScope("ops-1", PlatformRole.ADMIN, frozenset())
+    analyst = PlatformScope("ops-2", PlatformRole.ANALYST, frozenset())
+    viewer = PlatformScope("ops-3", PlatformRole.VIEWER, frozenset())
+    assert admin.allows_export()
+    assert admin.allows_manage_tenants()
+    assert not analyst.allows_manage_tenants()
+    assert not viewer.allows_manage_tenants()

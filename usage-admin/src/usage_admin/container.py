@@ -9,11 +9,13 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from usage_admin.alerts import LoggingAlertSink
+from usage_admin.auth import AuthService
 from usage_admin.config import UsageAdminSettings
 from usage_admin.exports import ExportFileStore, ExportService
 from usage_admin.ingest import IngestLimits, IngestService
 from usage_admin.ops import OpsLimits, OpsService
 from usage_admin.store import InMemoryUsageStore, PostgresUsageStore, UsageStore
+from usage_admin.tenants import TenantRegistryService
 
 
 class SystemClock:
@@ -50,6 +52,8 @@ class AdminContainer:
     files: ExportFileStore
     clock: Callable[[], datetime]
     new_id: Callable[[], str]
+    auth: AuthService
+    tenants: TenantRegistryService
 
 
 def build_container(
@@ -102,6 +106,24 @@ def build_container(
         download_base_url=settings.download_base_url,
         presign_expires_seconds=settings.export_presign_expires_seconds,
     )
+    token_signing_secret = (
+        settings.token_signing_secret.get_secret_value()
+        if settings.token_signing_secret is not None
+        else secrets.token_hex(16)
+    )
+    auth = AuthService(
+        active_store,
+        clock=active_clock,
+        new_id=active_new_id,
+        signing_secret=token_signing_secret,
+        api_token=settings.api_token.get_secret_value() if settings.api_token is not None else None,
+        token_ttl_seconds=settings.token_ttl_seconds,
+    )
+    tenants = TenantRegistryService(
+        active_store,
+        clock=active_clock,
+        new_id=active_new_id,
+    )
     return AdminContainer(
         settings=settings,
         store=active_store,
@@ -111,6 +133,8 @@ def build_container(
         files=active_files,
         clock=active_clock,
         new_id=active_new_id,
+        auth=auth,
+        tenants=tenants,
     )
 
 

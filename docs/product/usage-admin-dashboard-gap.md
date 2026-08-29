@@ -448,3 +448,30 @@ GET /admin/v1/tenants/registry/{app_key}          # 单个工厂账户详情
 ## 9. 待确认事项
 
 全部已决（见第三轮决议 D11~D13），无剩余待确认项。
+
+## 10. Story 9 实施记录与安全评审（2026-08-29）
+
+### 10.1 交付状态
+
+- `tenant_registry` / `platform_principal` 建表（`alembic_version_usage_admin` 版本表隔离）；
+- 工厂账户管理六接口、平台账号注册/登录、Bearer token 与 `USAGE_ADMIN_API_TOKEN` 双通道；
+- 用量接口 `/usage/mes-categories`、`/usage/mes-failures`、`/usage/by-tenant`、
+  `/usage/models`、`/usage/capabilities`、`/usage/errors`、`/usage/mes-operations`；
+- 导出支持 MES 分类指标（`mes_output` / `mes_payroll` / `mes_order` / `mes_other`）；
+- 前端对接文档 [`usage-admin/API.md`](../../usage-admin/API.md) 状态已更新为可用。
+- **已知限制**：MES 分类统计读取的 `mes_call_fact` / `mes_operation_category` 由 factory-agent
+  在 Story 11 建表并写入；Story 9 交付后接口以默认分类映射（`configs/knowledge/apis.yaml`
+  口径，见 §2.1）工作，真实计量数据的端到端验证在 Story 11 完成后进行。
+
+### 10.2 AppKey 明文存储访问控制评审（对应 D9 / Story 9 步骤 6.2）
+
+AppKey 按 D9 明文存储于 `tenant_registry`。评审结论：
+
+| 访问面 | 结论 |
+|---|---|
+| 可读该表的服务账号 | 仅 PGA 数据库部署账号与 factory-agent 的只读连接账号（其仅在建链/凭证轮换/停用校验时查询）；其余服务账号不可读 |
+| 备份快照 | 快照含 AppKey 明文，其访问控制与数据库本身同等级（备份加密、快照存储 ACL 与数据库一致）；不落入应用侧任何日志 |
+| 应用日志 / trace / 错误 | 禁止：所有出参经 `mask_app_key`（前 6 位 + `***`）统一脱敏，代码评审禁止各处自行截取；AppKey 不进入 usage 事件、导出文件与测试快照（安全测试 7.4 覆盖） |
+| 前端 | 仅新增账户响应返回一次明文（前端提示保存），其余一律脱敏 |
+
+后续若引入加密存储或密钥管理（§7 优化项），按安全评审要求再变更。
