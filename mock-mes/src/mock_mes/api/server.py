@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -75,6 +76,15 @@ def create_app(settings: MockMesSettings | None = None) -> FastAPI:
     app = FastAPI(title="mock-mes", version=__version__, lifespan=lifespan)
     app.state.db = db
     app.state.store = store
+    # Dev/test convenience: browser-side test tools (scripts/test_ui.html) call
+    # the API cross-origin with a JSON body + Bearer header, which triggers a
+    # CORS preflight. Mock service only -- never a real auth boundary.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.add_middleware(FaultControlMiddleware)
     app.add_exception_handler(MesError, mes_error_handler)
     app.include_router(health_router)

@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>mock-mes 接口测试台</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1d212b; --line: #2a2f3c;
+    --text: #e4e7ee; --dim: #8b93a7; --accent: #4f8cff; --ok: #34c98e; --err: #ff6b6b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .pill { font-size: 12px; color: var(--dim); }
+  header input { width: 220px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; outline: none; font-family: var(--mono); font-size: 12.5px; }
+  header input:focus { border-color: var(--accent); }
+  .layout { display: grid; grid-template-columns: 340px 1fr; min-height: calc(100vh - 53px); }
+  .side { background: var(--panel); border-right: 1px solid var(--line); padding: 16px; overflow-y: auto; max-height: calc(100vh - 53px); }
+  .main { padding: 16px 20px; overflow-y: auto; max-height: calc(100vh - 53px); }
+  h2 { font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 8px; }
+  h2:first-child { margin-top: 0; }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+  select, input, textarea, button { font: inherit; }
+  select, textarea { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; outline: none; }
+  textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; min-height: 120px; white-space: pre; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { background: #3a4050; color: var(--dim); cursor: not-allowed; }
+  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line); font-weight: 400; }
+  .row { display: flex; gap: 8px; align-items: end; }
+  .row > * { flex: 1; }
+  .token-box { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 10px; font-family: var(--mono); font-size: 12px; color: var(--dim); margin-top: 10px; word-break: break-all; }
+  .token-box b { color: var(--ok); }
+  .token-box.none { color: var(--err); }
+  .ep-list { list-style: none; margin: 0; padding: 0; }
+  .ep-list li { padding: 6px 9px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+  .ep-list li:hover { background: var(--panel2); }
+  .ep-list li.active { background: var(--panel2); outline: 1px solid var(--accent); }
+  .ep-list li .name { white-space: nowrap; }
+  .ep-list li .path { color: var(--dim); font-size: 11px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
+  .ep-list li .st { flex-shrink: 0; font-size: 11px; font-family: var(--mono); }
+  .st.ok { color: var(--ok); } .st.err { color: var(--err); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .req-line { font-family: var(--mono); font-size: 13px; margin-bottom: 10px; color: var(--dim); word-break: break-all; }
+  .req-line b { color: var(--text); }
+  pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; max-height: 480px; font-family: var(--mono); font-size: 12.5px; margin: 0; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 10px; font-size: 12.5px; font-family: var(--mono); }
+  .kv .k { color: var(--dim); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge.ok { background: rgba(52,201,142,.15); color: var(--ok); }
+  .badge.err { background: rgba(255,107,107,.15); color: var(--err); }
+  .hist { list-style: none; margin: 0; padding: 0; }
+  .hist li { padding: 5px 9px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--dim); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist li:hover { background: var(--panel2); color: var(--text); }
+  .hint { font-size: 12px; color: var(--dim); margin-top: 6px; }
+  .group-title { font-size: 11px; color: var(--dim); margin: 10px 0 4px; letter-spacing: .05em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>mock-mes 接口测试台</h1>
+  <input id="base-url" title="服务基址" value="http://127.0.0.1:8010" />
+  <span class="pill" id="identity-pill"></span>
+</header>
+<div class="layout">
+  <aside class="side">
+    <h2>① 鉴权（/api/system/token）</h2>
+    <label>身份 uid（决定 app_key 与数据范围）</label>
+    <div class="row">
+      <select id="uid">
+        <option value="01009">01009 · 老板（A厂）</option>
+        <option value="01008">01008 · 厂长/管理（A厂）</option>
+        <option value="01012">01012 · 组长（A厂）</option>
+        <option value="01001">01001 · 普通员工（A厂）</option>
+        <option value="02001">02001 · 普通员工（B厂）</option>
+      </select>
+      <button id="btn-token" style="flex:0 0 auto">获取 Token</button>
+    </div>
+    <div class="token-box none" id="token-box">尚未获取 Token</div>
+    <div class="hint">切换身份后会自动重新获取（app_key 随之变化）。后续接口请求自动复用这里的 app_key/timestamp/sign。</div>
+
+    <h2>② 接口</h2>
+    <div id="ep-groups"></div>
+    <h2>自定义</h2>
+    <input id="custom-path" placeholder="/api/NetYf/... 自定义路径，POST"
+           style="width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 9px;outline:none" />
+  </aside>
+
+  <main class="main">
+    <div class="card">
+      <div class="req-line" id="req-line">选择左侧接口</div>
+      <label>请求参数（JSON；{"uid"} 占位符替换为当前身份，鉴权三件套自动附加）</label>
+      <textarea id="params" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button id="btn-send" disabled>③ 发送请求</button>
+        <button class="ghost" id="btn-raw" disabled>查看最终请求体</button>
+      </div>
+    </div>
+    <div class="card" id="resp-card" style="display:none">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px">
+        <span id="resp-badge" class="badge"></span>
+        <span class="kv" id="resp-kv" style="flex:1"></span>
+      </div>
+      <pre id="resp-body"></pre>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">历史记录</h2>
+      <ul class="hist" id="hist"></ul>
+    </div>
+  </main>
+</div>
+<script>
+const WINDOW = { dates: "2026-07-01", datee: "2026-08-31" };
+const GROUPS = [
+  { title: "基础资料 Baseinfo", eps: [
+    { path: "/api/NetYf/Baseinfo/UserInfoQuery", name: "用户信息", params: { page:1, size:50, USERNAME:"Admin" } },
+    { path: "/api/NetYf/Baseinfo/MoveMenuQuery", name: "移动菜单", params: { page:1, size:50 } },
+    { path: "/api/NetYf/Baseinfo/HuohaoQuery", name: "货号列表", params: { page:1, size:50 } },
+    { path: "/api/NetYf/Baseinfo/HuohaoFormQuery", name: "货号表单", params: { page:1, size:50, huohao:"HH001" } },
+    { path: "/api/NetYf/Baseinfo/ScTypeQuery", name: "色号类型", params: { page:1, size:50 } },
+    { path: "/api/NetYf/Baseinfo/RfidWorktypeQuery", name: "工序定义", params: { page:1, size:50 } },
+    { path: "/api/NetYf/Baseinfo/HuohaoWorktypeQuery", name: "货号工序", params: { page:1, size:50, huohao:"HH001" } },
+    { path: "/api/NetYf/Baseinfo/EmployeeQuery", name: "员工列表", params: { page:1, size:50 } },
+    { path: "/api/NetYf/Baseinfo/DeptQuery", name: "部门列表", params: { page:1, size:50 } },
+  ]},
+  { title: "计划 Plan", eps: [
+    { path: "/api/NetYf/Plan/GridPageList", name: "生产计划", params: { page:1, size:50, ...WINDOW } },
+  ]},
+  { title: "制单 Sclzd", eps: [
+    { path: "/api/NetYf/Sclzd/GridPageList", name: "制单列表", params: { page:1, size:50, ...WINDOW } },
+    { path: "/api/NetYf/Sclzd/SclzdWorktypeQuery", name: "制单工序", params: { page:1, size:50, dh:"ZD-2607-001" } },
+    { path: "/api/NetYf/Sclzd/SclzdBarcodeQuery", name: "制单扫码", params: { page:1, size:50, dh:"ZD-2607-001", detailId:"1001", ...WINDOW } },
+    { path: "/api/NetYf/Sclzd/BarcodeClQuery", name: "扫码产量明细", params: { page:1, size:50, userid:"1001", ...WINDOW } },
+    { path: "/api/NetYf/Sclzd/HuohaoWtCLQuery", name: "款号工序产量", params: { page:1, size:50, scheme:"货号工序", ...WINDOW } },
+    { path: "/api/NetYf/Sclzd/WorktypeProgressQuery", name: "工序进度", params: { page:1, size:50, userid:"1001", uid:"" } },
+    { path: "/api/NetYf/Sclzd/YskQuery", name: "已扫产量", params: { page:1, size:50, ...WINDOW } },
+    { path: "/api/NetYf/Sclzd/WskQuery", name: "未扫余量", params: { page:1, size:50, ...WINDOW } },
+    { path: "/api/NetYf/Sclzd/GongziMxQuery", name: "工资明细", params: { page:1, size:50, Uid:"{uid}", Type:"0,1,2", scheme:"", ...WINDOW } },
+    { path: "/api/NetYf/Sclzd/GongziJeOrderQuery", name: "工资排名", params: { page:1, size:50, Uid:"{uid}", ...WINDOW } },
+  ]},
+  { title: "手工账 PinFeng", eps: [
+    { path: "/api/NetYf/PinFeng/GridPageList", name: "手工账", params: { page:1, size:50, ...WINDOW } },
+  ]},
+  { title: "吊挂 Dg", eps: [
+    { path: "/api/NetYf/Dg/GridPageList", name: "吊挂线", params: { page:1, size:50 } },
+    { path: "/api/NetYf/Dg/DgZuGridPageList", name: "吊挂组", params: { page:1, size:50 } },
+    { path: "/api/NetYf/Dg/DgClQuery", name: "吊挂产量", params: { page:1, size:50, uid:"01001", ...WINDOW } },
+  ]},
+  { title: "打印 print（movepassword 鉴权）", eps: [
+    { path: "/api/print/query-sign", name: "打印签名", params: { uname:"模拟员工甲", t:"2026-08-21 08:00:00" }, print: true },
+    { path: "/api/print/test-permissions", name: "打印权限", params: {}, print: true, needSign: true },
+  ]},
+];
+const ALL = GROUPS.flatMap(g => g.eps.map(e => ({ ...e, group: g.title })));
+
+const $ = id => document.getElementById(id);
+const state = { uid: "01009", bundle: null, ep: null };
+
+const base = () => $("base-url").value.trim().replace(/\/+$/, "");
+const u = path => base() + path;
+const appKeyOf = uid => uid.startsWith("02") ? "APPKEY-B" : "APPKEY-A";
+function subst(params) {
+  return Object.fromEntries(Object.entries(params).map(([k, v]) =>
+    [k, typeof v === "string" ? v.replace(/\{uid\}/g, state.uid) : v]));
+}
+function renderIdentity() {
+  $("identity-pill").textContent = `身份 ${state.uid} · ${appKeyOf(state.uid)}`;
+}
+
+// --- ① token ---------------------------------------------------------------
+async function fetchToken() {
+  state.uid = $("uid").value;
+  renderIdentity();
+  const btn = $("btn-token");
+  btn.disabled = true; btn.textContent = "获取中…";
+  try {
+    const r = await fetch(u("/api/system/token"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_key: appKeyOf(state.uid) }),
+    });
+    const body = await r.json();
+    if (body.code !== 1) throw new Error(body.message || "code=" + body.code);
+    state.bundle = { app_key: body.result.appkey, timestamp: body.result.timestamp, sign: body.result.sign };
+    $("token-box").className = "token-box";
+    $("token-box").innerHTML =
+      `<b>鉴权 OK</b><br>app_key=${state.bundle.app_key}<br>timestamp=${state.bundle.timestamp}<br>sign=${state.bundle.sign}`;
+    $("btn-send").disabled = !(state.ep || $("custom-path").value.trim());
+    $("btn-raw").disabled = $("btn-send").disabled;
+  } catch (e) {
+    state.bundle = null;
+    $("token-box").className = "token-box none";
+    $("token-box").textContent = "获取失败：" + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "获取 Token";
+  }
+}
+
+// --- ② endpoint list -------------------------------------------------------
+function renderGroups() {
+  const root = $("ep-groups");
+  root.innerHTML = "";
+  GROUPS.forEach(g => {
+    const t = document.createElement("div");
+    t.className = "group-title"; t.textContent = g.title;
+    root.appendChild(t);
+    const ul = document.createElement("ul");
+    ul.className = "ep-list";
+    g.eps.forEach(ep => {
+      const li = document.createElement("li");
+      li.dataset.path = ep.path;
+      li.innerHTML = `<span class="name"></span><span class="path"></span><span class="st"></span>`;
+      li.querySelector(".name").textContent = ep.name;
+      li.querySelector(".path").textContent = ep.path.replace("/api/", "");
+      li.onclick = () => selectEndpoint(ep.path, li);
+      ul.appendChild(li);
+    });
+    root.appendChild(ul);
+  });
+}
+
+function selectEndpoint(path, li) {
+  state.ep = ALL.find(e => e.path === path) || null;
+  document.querySelectorAll(".ep-list li").forEach(x => x.classList.remove("active"));
+  if (li) li.classList.add("active");
+  $("custom-path").value = "";
+  $("params").value = JSON.stringify(state.ep.params, null, 2);
+  $("req-line").innerHTML = `POST <b>${path}</b> · ${state.ep.name}`;
+  $("btn-send").disabled = !state.bundle;
+  $("btn-raw").disabled = !state.bundle;
+}
+
+// --- ③ request -------------------------------------------------------------
+function currentTarget() {
+  const custom = $("custom-path").value.trim();
+  const path = custom || state.ep?.path;
+  const ep = custom ? ALL.find(e => e.path === custom) || { params: {}, print: custom.startsWith("/api/print/") } : state.ep;
+  return { path, ep };
+}
+
+async function buildBody() {
+  const { path, ep } = currentTarget();
+  const params = subst(JSON.parse($("params").value || "{}"));
+  if (!ep.print) return { body: { ...state.bundle, ...params }, headers: { Authorization: `Bearer MOCK-TOKEN-${state.uid}` } };
+  const timestamp = Math.floor(Date.now() / 1000);
+  if (!ep.needSign) return { body: { app_key: state.bundle.app_key, timestamp, uid: state.uid, ...params }, headers: {} };
+  const r = await fetch(u("/api/print/query-sign"), {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ app_key: state.bundle.app_key, timestamp, uid: state.uid }),
+  });
+  const signBody = await r.json();
+  if (signBody.code !== 1) throw new Error("query-sign 失败: " + signBody.message);
+  return { body: { app_key: state.bundle.app_key, timestamp, sign: signBody.result, uid: state.uid, ...params }, headers: {} };
+}
+
+async function send() {
+  const { path } = currentTarget();
+  if (!path) return alert("请先选择接口或填写自定义路径");
+  if (!state.bundle) { alert("请先获取 Token"); return; }
+  try { JSON.parse($("params").value || "{}"); }
+  catch { return alert("参数不是合法 JSON"); }
+  const btn = $("btn-send");
+  btn.disabled = true; btn.textContent = "请求中…";
+  try {
+    const { body, headers } = await buildBody();
+    const t0 = performance.now();
+    const r = await fetch(u(path), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+    const ms = Math.round(performance.now() - t0);
+    const resp = await r.json().catch(() => ({}));
+    showResponse(path, r.status, ms, resp, body);
+    addHistory(path, body, r.status);
+  } catch (e) {
+    showResponse(path, 0, 0, { code: 0, message: String(e) }, {});
+  } finally {
+    btn.disabled = false; btn.textContent = "③ 发送请求";
+  }
+}
+
+function showResponse(path, status, ms, resp) {
+  $("resp-card").style.display = "";
+  const ok = resp.code === 1;
+  const badge = $("resp-badge");
+  badge.className = "badge " + (ok ? "ok" : "err");
+  badge.textContent = ok ? "code=1 成功" : `code=${resp.code ?? "?"} 失败`;
+  const result = resp.result;
+  const total = result && typeof result === "object" && !Array.isArray(result)
+    ? (result.total ?? result.hh_total ?? "-") : Array.isArray(result) ? result.length : "-";
+  $("resp-kv").innerHTML =
+    `<span class="k">HTTP</span><span>${status}</span>` +
+    `<span class="k">耗时</span><span>${ms} ms</span>` +
+    `<span class="k">total</span><span>${total}</span>` +
+    `<span class="k">message</span><span>${resp.message ?? ""}</span>`;
+  $("resp-body").textContent = JSON.stringify(trimResult(result), null, 2);
+  const li = document.querySelector(`.ep-list li[data-path="${CSS.escape(path)}"] .st`);
+  if (li) { li.className = "st " + (ok ? "ok" : "err"); li.textContent = ok ? "✓" : "✗"; }
+}
+
+function trimResult(result, maxRows = 5) {
+  if (Array.isArray(result)) return { list: result.slice(0, maxRows), _note: `共 ${result.length} 项，仅展示前 ${maxRows} 项` };
+  if (result && typeof result === "object" && Array.isArray(result.list)) {
+    return { ...result, list: result.list.slice(0, maxRows), _note: `total=${result.total}，列表仅展示前 ${maxRows} 项` };
+  }
+  return result;
+}
+
+function addHistory(path, body, status) {
+  const ul = $("hist");
+  const li = document.createElement("li");
+  li.textContent = `${new Date().toLocaleTimeString()}  ${path}  → ${status}`;
+  li.onclick = () => {
+    const ep = ALL.find(e => e.path === path);
+    if (ep) selectEndpoint(path, document.querySelector(`.ep-list li[data-path="${CSS.escape(path)}"]`));
+    else { $("custom-path").value = path; $("params").value = "{}"; $("req-line").innerHTML = `POST <b>${path}</b> · 自定义`; }
+    $("params").value = JSON.stringify(
+      Object.fromEntries(Object.entries(body).filter(([k]) => !["app_key", "timestamp", "sign"].includes(k))), null, 2);
+  };
+  ul.prepend(li);
+  while (ul.children.length > 20) ul.lastChild.remove();
+}
+
+// --- wire up ---------------------------------------------------------------
+$("uid").onchange = () => { if (state.bundle) fetchToken(); else { state.uid = $("uid").value; renderIdentity(); } };
+$("btn-token").onclick = fetchToken;
+$("btn-send").onclick = send;
+$("btn-raw").onclick = async () => {
+  const { body } = await buildBody();
+  $("resp-card").style.display = "";
+  $("resp-badge").className = "badge ok"; $("resp-badge").textContent = "最终请求体";
+  $("resp-kv").innerHTML = "";
+  $("resp-body").textContent = JSON.stringify(body, null, 2);
+};
+$("custom-path").oninput = () => {
+  if ($("custom-path").value.trim()) {
+    document.querySelectorAll(".ep-list li").forEach(x => x.classList.remove("active"));
+    state.ep = null;
+    $("params").value = "{}";
+    $("req-line").innerHTML = `POST <b>${$("custom-path").value.trim()}</b> · 自定义`;
+    $("btn-send").disabled = !state.bundle;
+    $("btn-raw").disabled = !state.bundle;
+  }
+};
+renderGroups();
+renderIdentity();
+</script>
+</body>
+</html>
