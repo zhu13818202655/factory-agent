@@ -62,7 +62,7 @@ _COLUMN_MAP: dict[str, tuple[str, ...]] = {
 
 #: Price per worktype (确定性计件单价, Story 6 M9/M18).
 _PRICE: dict[str, str] = {"WT01": "1.2500", "WT02": "0.8000", "WT03": "1.0000"}
-_WTNAME: dict[str, str] = {"WT01": "平车", "WT02": "手工钉扣", "WT03": "吊挂平车"}
+_WTNAME: dict[str, str] = {"WT01": "裁剪", "WT02": "钉扣", "WT03": "验布"}
 _CHIMA = ("M", "L", "S", "XL", "XXL")
 
 #: Master tables are upserted on every day and are not part of a day's batch.
@@ -292,7 +292,7 @@ def rolling_rows(settings: MockMesSettings, day: date, prior_ssl: dict[str, Deci
                             "color": color,
                             "chima": base["chima"],
                             "worktype": wt,
-                            "wtname": "吊挂平车",
+                            "wtname": "验布",
                             "uid": uid,
                             "uname": uname,
                             "dguid": f"D{uid}",
@@ -336,7 +336,7 @@ def rolling_rows(settings: MockMesSettings, day: date, prior_ssl: dict[str, Deci
                     "huohaoname": breed,
                     "ddh": f"JH-{day:%y%m%d}",
                     "worktype": "WT02",
-                    "wtname": "手工钉扣",
+                    "wtname": "钉扣",
                     "dw": "件",
                     "js": str(quantity),
                     "sl": str(quantity),
@@ -451,7 +451,7 @@ def _rolling_plan(
         )
     )
     for sort, (wt, wt_name) in enumerate(
-        [("WT01", "平车"), ("WT02", "手工钉扣"), ("WT03", "吊挂平车")], start=1
+        [("WT01", "裁剪"), ("WT02", "钉扣"), ("WT03", "验布")], start=1
     ):
         plan.inserts.append(
             RowInsert(

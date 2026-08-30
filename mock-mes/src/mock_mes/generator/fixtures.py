@@ -395,6 +395,9 @@ def master_rows(settings: MockMesSettings) -> list[RowInsert]:
             "sfcprk": False,
         },
     ]
+    #: 工序（worktype）= 做什么活；车种（vehicle_type）= 用什么设备做。
+    #: 工序名采用客户文档真实示例（AI问答对外接口.md：裁剪/验布等）；
+    #: 车种按工序差异化（客户示例：裁剪工序的 vehicle_type 为「平车」）。
     rfid_worktypes: list[dict[str, object]] = [
         {
             "bh": f"WT{index:02d}",
@@ -402,23 +405,23 @@ def master_rows(settings: MockMesSettings) -> list[RowInsert]:
             "name_pk": name_pk,
             "gxtype": 0,
             "isdelete": False,
-            "section": "缝制",
+            "section": section,
             "jc": name[:1],
             "sc_type": f"SYS-WT{index:02d}",
-            "worktype_group": "缝制组",
+            "worktype_group": worktype_group,
             "yfgs": 2,
             "default_price": price,
             "gongzi_js_type": 1,
             "wt_sort": index * 10,
             "xz_price": str(_d(price) * 2),
             "default_working_hours": "0.50",
-            "vehicle_type": "平车",
+            "vehicle_type": vehicle_type,
         }
-        for index, (name, name_pk, price) in enumerate(
+        for index, (name, name_pk, price, section, worktype_group, vehicle_type) in enumerate(
             [
-                ("平车", "PC", "1.2500"),
-                ("手工钉扣", "SGDK", "0.8000"),
-                ("吊挂平车", "DGPC", "1.0000"),
+                ("裁剪", "CJ", "1.2500", "前道", "前道组", "平车"),
+                ("钉扣", "DK", "0.8000", "缝制", "缝制组", "手工"),
+                ("验布", "YB", "1.0000", "后道", "后道组", "验布机"),
             ],
             start=1,
         )
@@ -441,7 +444,7 @@ def master_rows(settings: MockMesSettings) -> list[RowInsert]:
         }
         for style in huohao
         for sort, (wt, wt_name) in enumerate(
-            [("WT01", "平车"), ("WT02", "手工钉扣"), ("WT03", "吊挂平车")], start=1
+            [("WT01", "裁剪"), ("WT02", "钉扣"), ("WT03", "验布")], start=1
         )
     ]
 
@@ -500,7 +503,7 @@ def master_rows(settings: MockMesSettings) -> list[RowInsert]:
 # Anchored business rows (Story 5/6/7 fixtures, fixed to their dates).
 # ---------------------------------------------------------------------------
 
-_WTNAME = {"WT01": "平车", "WT02": "手工钉扣", "WT03": "吊挂平车"}
+_WTNAME = {"WT01": "裁剪", "WT02": "钉扣", "WT03": "验布"}
 
 _PLANS: list[dict[str, object]] = [
     {
@@ -728,7 +731,7 @@ def _anchored_plan(index: int, plan_id: str) -> list[RowInsert]:
         }
         rows.append(RowInsert("mock_sclzd", payload=sclzd, company=str(plan["company"])))
         for sort, (wt, wt_name) in enumerate(
-            [("WT01", "平车"), ("WT02", "手工钉扣"), ("WT03", "吊挂平车")], start=1
+            [("WT01", "裁剪"), ("WT02", "钉扣"), ("WT03", "验布")], start=1
         ):
             rows.append(
                 RowInsert(
@@ -829,7 +832,7 @@ def _anchored_scan(index: int) -> list[RowInsert]:
                     "color": "黑色",
                     "chima": "M",
                     "worktype": wt,
-                    "wtname": "吊挂平车",
+                    "wtname": "验布",
                     "uid": uid,
                     "uname": uname,
                     "dguid": f"D{uid}",
@@ -867,7 +870,7 @@ def _anchored_manual() -> list[RowInsert]:
         "huohaoname": "模拟款A",
         "ddh": "JH-2608-001",
         "worktype": "WT02",
-        "wtname": "手工钉扣",
+        "wtname": "钉扣",
         "dw": "件",
         "js": "3",
         "sl": "3",
