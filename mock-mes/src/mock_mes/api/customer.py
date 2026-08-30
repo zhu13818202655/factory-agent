@@ -1,15 +1,12 @@
-"""Mock MES customer-shaped endpoints: all 27 interfaces (Story 5).
+"""Mock MES customer-shaped endpoints: all 27 interfaces (Story 5, PG-backed).
 
 Implements the authentication chain, the ``{code, message, result, timestamp}``
-envelope, ``footer`` totals, row-level filtering simulation (M3/M19), and
-``code=0`` error scenarios. Row filtering is a deterministic mapping from the
-Bearer identity to visible company/dept/uid sets — never a real permission
-engine.
-
-Filtering tiers (M19):
-- company isolation via the AppKey behind the token;
-- dept filtering for workshop-scoped identities;
-- ``move_admin_role="00"`` identities see only their own rows.
+envelope, ``footer`` totals, row-level filtering (M3/M19) and ``code=0`` error
+scenarios. Since Story 10 every endpoint reads from PostgreSQL through
+``MockMesStore``: row-level filtering (company → dept → ``move_admin_role="00"``
+own-data), pagination and SQL COUNT/SUM happen in SQL; the three wage sources
+are normalised in Python after SQL filtering. There is no in-memory dataset and
+no fallback.
 """
 
 from __future__ import annotations
@@ -25,7 +22,8 @@ from typing import Any, cast
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from mock_mes.seed import APP_KEY_TO_COMPANY, IDENTITIES, Dataset, Record
+from mock_mes.identities import APP_KEY_TO_COMPANY, IDENTITIES, Record
+from mock_mes.store import MockMesStore
 
 router = APIRouter(tags=["customer"])
 
@@ -43,8 +41,8 @@ class MesError(Exception):
         self.message = message
 
 
-def dataset_from(request: Request) -> Dataset:
-    return cast(Dataset, request.app.state.dataset)
+def store_from(request: Request) -> MockMesStore:
+    return cast(MockMesStore, request.app.state.store)
 
 
 def _envelope(code: int, message: str, result: Any) -> dict[str, object]:
@@ -133,44 +131,14 @@ def require_same_tenant(identity: Record, app_key: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Row-level filtering simulation (M3/M19).
+# Pagination / footer assembly (data already SQL-filtered by the store).
 # ---------------------------------------------------------------------------
 
 
-def visible_rows(rows: list[Record], identity: Record) -> list[Record]:
-    """Filter rows by company → dept → own-data tiers of the Bearer identity."""
-    company = str(identity["company"])
-    dept = identity.get("dept")
-    own_only = identity.get("move_admin_role") == "00"
-    uid = identity["user"]
-
-    selected: list[Record] = []
-    for row in rows:
-        if row.get("company") not in (None, company):
-            continue
-        if dept is not None and row.get("dept") not in (None, dept):
-            continue
-        if own_only and row.get("uid") not in (None, uid):
-            continue
-        selected.append(row)
-    return selected
-
-
-def paginate(
-    rows: list[Record],
-    body: dict[str, Any],
-    *,
-    footer_builder: Any | None = None,
-    query_footer: bool = False,
-) -> dict[str, object]:
+def page_size(body: dict[str, Any]) -> tuple[int, int]:
     page = max(int(body.get("page", 1)), 1)
     size = max(int(body.get("size", 50)), 1)
-    start = (page - 1) * size
-    items = rows[start : start + size]
-    result: dict[str, object] = {"list": items, "total": len(rows)}
-    if query_footer and footer_builder is not None:
-        result["footer"] = footer_builder(rows)
-    return result
+    return page, size
 
 
 def date_window(body: dict[str, Any]) -> tuple[date, date]:
@@ -179,21 +147,13 @@ def date_window(body: dict[str, Any]) -> tuple[date, date]:
     return start, end
 
 
-def in_date_window(record: Record, field: str, start: date, end: date) -> bool:
-    raw = record.get(field)
-    if raw is None:
-        return True
-    day = datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
-    return start <= day <= end
+def _d(value: object) -> Decimal:
+    return Decimal(str(value))
 
 
 def sum_of(rows: list[Record], field: str) -> str:
     total = sum((_d(row.get(field, "0")) for row in rows), Decimal())
     return str(total)
-
-
-def _d(value: object) -> Decimal:
-    return Decimal(str(value))
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +246,7 @@ async def user_info_query(request: Request) -> JSONResponse:
     username = body.get("USERNAME")
     if not username:
         raise MesError(200, "加密信息解析失败,请检查参数是否正确")
-    rows = [row for row in dataset_from(request).user_info if row["username"] == username]
+    rows = await store_from(request).user_info(str(username))
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -295,7 +255,7 @@ async def move_menu_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     check_common_params(body)
     identity = identity_from(request)
-    rows = visible_rows(dataset_from(request).move_menu, identity)
+    rows = await store_from(request).list_rows("mock_move_menu", identity)
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -303,12 +263,12 @@ async def move_menu_query(request: Request) -> JSONResponse:
 async def huohao_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     check_common_params(body)
-    data = dataset_from(request)
+    data = await store_from(request).huohao_all()
     return JSONResponse(
         content=ok(
             {
-                "huohaoList": data.huohao,
-                "hh_total": len(data.huohao),
+                "huohaoList": data,
+                "hh_total": len(data),
                 "huohaoTypeList": [
                     {
                         "id": "t1",
@@ -332,8 +292,7 @@ async def huohao_form_query(request: Request) -> JSONResponse:
     huohao = body.get("huohao")
     if not huohao:
         raise MesError(200, "加密信息解析失败,请检查参数是否正确")
-    data = dataset_from(request)
-    matched = [row for row in data.huohao if row["bh"] == huohao]
+    matched = await store_from(request).huohao_by_bh(str(huohao))
     return JSONResponse(
         content=ok(
             {
@@ -364,7 +323,7 @@ async def huohao_form_query(request: Request) -> JSONResponse:
 async def sc_type_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     check_common_params(body)
-    rows = dataset_from(request).sc_types
+    rows = await store_from(request).sc_types()
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -372,7 +331,7 @@ async def sc_type_query(request: Request) -> JSONResponse:
 async def rfid_worktype_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     check_common_params(body)
-    rows = dataset_from(request).rfid_worktypes
+    rows = await store_from(request).rfid_worktypes()
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -383,7 +342,7 @@ async def huohao_worktype_query(request: Request) -> JSONResponse:
     huohao = body.get("huohao")
     if not huohao:
         raise MesError(200, "加密信息解析失败,请检查参数是否正确")
-    rows = [row for row in dataset_from(request).huohao_worktypes if row["huohao"] == huohao]
+    rows = await store_from(request).huohao_worktypes(str(huohao))
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -393,10 +352,12 @@ async def employee_query(request: Request) -> JSONResponse:
     app_key, _ = check_common_params(body)
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
-    rows = visible_rows(dataset_from(request).employees, identity)
+    store = store_from(request)
     uid = body.get("uid")
     if uid:
-        rows = [row for row in rows if row["uid"] == uid]
+        rows = await store.list_rows("mock_employee", identity, extra=[("uid", "=", str(uid))])
+    else:
+        rows = await store.list_rows("mock_employee", identity)
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -406,7 +367,7 @@ async def dept_query(request: Request) -> JSONResponse:
     app_key, _ = check_common_params(body)
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
-    rows = visible_rows(dataset_from(request).depts, identity)
+    rows = await store_from(request).list_rows("mock_dept", identity)
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -422,12 +383,11 @@ async def plan_grid_page_list(request: Request) -> JSONResponse:
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).plans, identity)
-        if in_date_window(row, "zhdate", start, end)
-    ]
-    return JSONResponse(content=ok(paginate(rows, body)))
+    page, size = page_size(body)
+    result = await store_from(request).page(
+        "mock_plan", identity, date_field="zhdate", start=start, end=end, page_num=page, size=size
+    )
+    return JSONResponse(content=ok({"list": result.items, "total": result.total}))
 
 
 @router.post("/api/NetYf/Sclzd/GridPageList")
@@ -437,12 +397,11 @@ async def sclzd_grid_page_list(request: Request) -> JSONResponse:
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).sclzd, identity)
-        if in_date_window(row, "zhdate", start, end)
-    ]
-    return JSONResponse(content=ok(paginate(rows, body)))
+    page, size = page_size(body)
+    result = await store_from(request).page(
+        "mock_sclzd", identity, date_field="zhdate", start=start, end=end, page_num=page, size=size
+    )
+    return JSONResponse(content=ok({"list": result.items, "total": result.total}))
 
 
 @router.post("/api/NetYf/Sclzd/SclzdWorktypeQuery")
@@ -454,11 +413,7 @@ async def sclzd_worktype_query(request: Request) -> JSONResponse:
     dh = body.get("dh")
     if not dh:
         raise MesError(200, "加密信息解析失败,请检查参数是否正确")
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).sclzd_worktypes, identity)
-        if row["dh"] == dh
-    ]
+    rows = await store_from(request).sclzd_worktypes_by_dh(identity, str(dh))
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -472,11 +427,12 @@ async def sclzd_barcode_query(request: Request) -> JSONResponse:
     detail_id = body.get("detailId")
     if not dh or detail_id is None:
         raise MesError(200, "加密信息解析失败,请检查参数是否正确")
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).barcodes, identity)
-        if row["dh"] == dh and str(row["detailId"]) == str(detail_id)
-    ]
+    rows = await store_from(request).list_rows(
+        "mock_barcode",
+        identity,
+        extra=[("dh", "=", str(dh)), ("detail_id", "=", str(detail_id))],
+        order_by="id",
+    )
     zb = [row for row in rows if row.get("sfzb")]
     normal = [row for row in rows if not row.get("sfzb")]
     return JSONResponse(
@@ -503,12 +459,11 @@ async def barcode_cl_query(request: Request) -> JSONResponse:
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).barcode_cl, identity)
-        if in_date_window(row, "rq", start, end)
-    ]
-    return JSONResponse(content=ok(paginate(rows, body)))
+    page, size = page_size(body)
+    result = await store_from(request).page(
+        "mock_barcode_cl", identity, date_field="rq", start=start, end=end, page_num=page, size=size
+    )
+    return JSONResponse(content=ok({"list": result.items, "total": result.total}))
 
 
 @router.post("/api/NetYf/Sclzd/HuohaoWtCLQuery")
@@ -521,11 +476,10 @@ async def huohao_wt_cl_query(request: Request) -> JSONResponse:
     scheme = body.get("scheme")
     if scheme not in ("货号工序", "工序"):
         raise MesError(200, "加密信息解析失败,请检查参数是否正确")
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).barcode_cl, identity)
-        if in_date_window(row, "rq", start, end)
-    ]
+    store = store_from(request)
+    rows = await store.list_rows(
+        "mock_barcode_cl", identity, date_field="rq", start=start, end=end, order_by="rq, id"
+    )
 
     def footer(source: list[Record]) -> dict[str, str]:
         return {"sl_total": sum_of(source, "sssl")}
@@ -538,11 +492,12 @@ async def huohao_wt_cl_query(request: Request) -> JSONResponse:
         )
         entry["sssl"] = str(_d(entry["sssl"]) + _d(row["sssl"]))
     items = sorted(grouped.values(), key=lambda item: (str(item["huohao"]), str(item["worktype"])))
-    return JSONResponse(
-        content=ok(
-            paginate(items, body, footer_builder=footer, query_footer=bool(body.get("queryFooter")))
-        )
-    )
+    page, size = page_size(body)
+    sliced = items[(page - 1) * size : page * size]
+    result: dict[str, object] = {"list": sliced, "total": len(items)}
+    if body.get("queryFooter"):
+        result["footer"] = footer(items)
+    return JSONResponse(content=ok(result))
 
 
 @router.post("/api/NetYf/PinFeng/GridPageList")
@@ -552,12 +507,17 @@ async def pin_feng_grid_page_list(request: Request) -> JSONResponse:
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).pin_feng, identity)
-        if in_date_window(row, "zhdate", start, end)
-    ]
-    return JSONResponse(content=ok(paginate(rows, body)))
+    page, size = page_size(body)
+    result = await store_from(request).page(
+        "mock_pin_feng",
+        identity,
+        date_field="zhdate",
+        start=start,
+        end=end,
+        page_num=page,
+        size=size,
+    )
+    return JSONResponse(content=ok({"list": result.items, "total": result.total}))
 
 
 @router.post("/api/NetYf/Sclzd/WorktypeProgressQuery")
@@ -569,23 +529,20 @@ async def worktype_progress_query(request: Request) -> JSONResponse:
     userid = body.get("userid")
     if userid is None:
         raise MesError(200, "加密信息解析失败,请检查参数是否正确")
-    data = dataset_from(request)
-    detail = next((row for row in data.sclzd if str(row["id"]) == str(userid)), None)
+    store = store_from(request)
+    detail = await store.sclzd_by_id(identity, str(userid))
     if detail is None:
         return JSONResponse(content=ok({"list": [], "total": 0}))
+    worktype_rows = await store.sclzd_worktypes_by_dh(identity, str(detail["dh"]))
     items: list[Record] = []
-    for worktype_row in sorted(
-        (row for row in data.sclzd_worktypes if row["dh"] == detail["dh"]),
-        key=lambda row: int(cast(int, row["sort"])),
-    ):
-        scan = next(
-            (
-                row
-                for row in visible_rows(data.barcodes, identity)
-                if str(row["detailId"]) == str(userid) and row["worktype"] == worktype_row["wt"]
-            ),
-            None,
+    for worktype_row in sorted(worktype_rows, key=lambda row: int(cast(int, row["sort"]))):
+        scanned = await store.list_rows(
+            "mock_barcode",
+            identity,
+            extra=[("detail_id", "=", str(userid)), ("worktype", "=", str(worktype_row["wt"]))],
+            limit=1,
         )
+        scan = scanned[0] if scanned else None
         items.append(
             {
                 "userid": str(userid),
@@ -606,7 +563,9 @@ async def worktype_progress_query(request: Request) -> JSONResponse:
                 "wsort": worktype_row["sort"],
             }
         )
-    return JSONResponse(content=ok(paginate(items, body)))
+    page, size = page_size(body)
+    sliced = items[(page - 1) * size : page * size]
+    return JSONResponse(content=ok({"list": sliced, "total": len(items)}))
 
 
 @router.post("/api/NetYf/Sclzd/YskQuery")
@@ -616,24 +575,43 @@ async def ysk_query(request: Request) -> JSONResponse:
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).ysk, identity)
-        if in_date_window(row, "rq", start, end)
-    ]
+    page, size = page_size(body)
+    store = store_from(request)
+    extra: list[tuple[str, str, object]] = []
     target_uid = body.get("Uid")
     if target_uid:
-        rows = [row for row in rows if str(row["uid"]) == str(target_uid)]
-
-    def footer(source: list[Record]) -> dict[str, str]:
-        return {
-            "bs_total": str(len({row["baohao"] for row in source})) if source else "0",
-            "sl_total": sum_of(source, "sl"),
-            "je_total": sum_of(source, "je"),
-        }
-
+        extra.append(("uid", "=", str(target_uid)))
+    result = await store.page(
+        "mock_ysk",
+        identity,
+        extra=extra,
+        date_field="rq",
+        start=start,
+        end=end,
+        page_num=page,
+        size=size,
+        order_by="rq, id",
+    )
+    sl_total = await store.sum_rows(
+        "mock_ysk", identity, ("sl", "je"), extra=extra, date_field="rq", start=start, end=end
+    )
+    bs_total = await store.distinct_count(
+        "mock_ysk", identity, "baohao", extra=extra, date_field="rq", start=start, end=end
+    )
     # YskQuery has no queryFooter parameter but always returns a footer.
-    return JSONResponse(content=ok(paginate(rows, body, footer_builder=footer, query_footer=True)))
+    return JSONResponse(
+        content=ok(
+            {
+                "list": result.items,
+                "total": result.total,
+                "footer": {
+                    "bs_total": bs_total,
+                    "sl_total": sl_total["sl"],
+                    "je_total": sl_total["je"],
+                },
+            }
+        )
+    )
 
 
 @router.post("/api/NetYf/Sclzd/WskQuery")
@@ -642,110 +620,25 @@ async def wsk_query(request: Request) -> JSONResponse:
     app_key, _ = check_common_params(body)
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
-    rows = visible_rows(dataset_from(request).wsk, identity)
-
-    def footer(source: list[Record]) -> dict[str, str]:
-        return {
-            "bs_total": str(len({row["baohao"] for row in source})) if source else "0",
-            "sl_total": sum_of(source, "sl"),
-        }
-
-    return JSONResponse(content=ok(paginate(rows, body, footer_builder=footer, query_footer=True)))
+    page, size = page_size(body)
+    store = store_from(request)
+    result = await store.page("mock_wsk", identity, page_num=page, size=size, order_by="id")
+    sl_total = await store.sum_rows("mock_wsk", identity, ("sl",))
+    bs_total = await store.distinct_count("mock_wsk", identity, "baohao")
+    return JSONResponse(
+        content=ok(
+            {
+                "list": result.items,
+                "total": result.total,
+                "footer": {"bs_total": bs_total, "sl_total": sl_total["sl"]},
+            }
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
 # 工资与排名（2）
 # ---------------------------------------------------------------------------
-
-
-def _gongzi_rows(data: Dataset, identity: Record, types: set[str]) -> list[Record]:
-    """Three-source merge (M18): Type 0 扫码 / 1 吊挂 / 2 手工账."""
-    merged: list[Record] = []
-    if "0" in types:
-        for row in visible_rows(data.barcode_cl, identity):
-            merged.append(
-                {
-                    "id": row["id"],
-                    "type": "扫码产量",
-                    "rq": row["rq"],
-                    "inputtime": row["inputtime"],
-                    "uid": row["uid"],
-                    "uname": row["uname"],
-                    "dept": row["dept"],
-                    "chuanghao": row["chuanghao"],
-                    "baohao": row["baohao"],
-                    "huohao": row["huohao"],
-                    "color": row["color"],
-                    "chima": row["chima"],
-                    "worktype": row["worktype"],
-                    "ischeck": 1,
-                    "check_time": row["rq"],
-                    "fhsl": row["fhsl"],
-                    "sl": row["sssl"],
-                    "price": row["price"],
-                    "je": row["je"],
-                    "inputtime_raw": row["inputtime"],
-                    "check_time_raw": row["rq"],
-                    "_day": row["rq"],
-                }
-            )
-    if "1" in types:
-        for row in visible_rows(data.dg_cl, identity):
-            merged.append(
-                {
-                    "id": row["id"],
-                    "type": "吊挂产量",
-                    "rq": row["rq"],
-                    "inputtime": row["rq"],
-                    "uid": row["uid"],
-                    "uname": row["uname"],
-                    "dept": row["dept"],
-                    "chuanghao": row["chuanghao"],
-                    "baohao": "包1",
-                    "huohao": row["huohao"],
-                    "color": row["color"],
-                    "chima": row["chima"],
-                    "worktype": row["worktype"],
-                    "ischeck": 0,
-                    "check_time": "",
-                    "fhsl": row["sl"],
-                    "sl": row["sl"],
-                    "price": row["price"],
-                    "je": row["je"],
-                    "inputtime_raw": row["rq"],
-                    "check_time_raw": "",
-                    "_day": row["rq"],
-                }
-            )
-    if "2" in types:
-        for row in visible_rows(data.pin_feng, identity):
-            merged.append(
-                {
-                    "id": row["id"],
-                    "type": "手工账产量",
-                    "rq": row["zhdate"],
-                    "inputtime": row["zhdate"],
-                    "uid": row["uid"],
-                    "uname": row["uname"],
-                    "dept": row["dept"],
-                    "chuanghao": row["chuanghao"],
-                    "baohao": "包1",
-                    "huohao": row["huohao"],
-                    "color": row["color"],
-                    "chima": row["chima"],
-                    "worktype": row["worktype"],
-                    "ischeck": 1,
-                    "check_time": row["zhdate"],
-                    "fhsl": row["js"],
-                    "sl": row["sl"],
-                    "price": row["price"],
-                    "je": row["je"],
-                    "inputtime_raw": row["zhdate"],
-                    "check_time_raw": row["zhdate"],
-                    "_day": row["zhdate"],
-                }
-            )
-    return merged
 
 
 @router.post("/api/NetYf/Sclzd/GongziMxQuery")
@@ -762,12 +655,8 @@ async def gongzi_mx_query(request: Request) -> JSONResponse:
     if not types <= {"0", "1", "2"}:
         raise MesError(200, "加密信息解析失败,请检查参数是否正确")
     scheme = str(body.get("scheme", ""))
-    data = dataset_from(request)
-    rows = [
-        row
-        for row in _gongzi_rows(data, identity, types)
-        if start <= datetime.strptime(str(row["_day"])[:10], "%Y-%m-%d").date() <= end
-    ]
+    store = store_from(request)
+    rows = await store.wage_rows(identity, types, start, end)
     # Story 7: honor the Uid filter for manager/boss identities (M19 row-level
     # filtering simulates the customer contract where Uid is a required param).
     target_uid = body.get("Uid")
@@ -816,21 +705,21 @@ async def gongzi_mx_query(request: Request) -> JSONResponse:
             entry["sl"] = str(_d(entry["sl"]) + _d(row["sl"]))
             entry["je"] = str(_d(entry["je"]) + _d(row["je"]))
         items = sorted(grouped.values(), key=lambda item: str(item["uid"]))
-        return JSONResponse(
-            content=ok(
-                paginate(
-                    items, body, footer_builder=footer, query_footer=bool(body.get("queryFooter"))
-                )
-            )
-        )
+        page, size = page_size(body)
+        sliced = items[(page - 1) * size : page * size]
+        result: dict[str, object] = {"list": sliced, "total": len(items)}
+        if body.get("queryFooter"):
+            result["footer"] = footer(items)
+        return JSONResponse(content=ok(result))
 
-    for row in rows:
+    page, size = page_size(body)
+    sliced = rows[(page - 1) * size : page * size]
+    for row in sliced:
         row.pop("_day", None)
-    return JSONResponse(
-        content=ok(
-            paginate(rows, body, footer_builder=footer, query_footer=bool(body.get("queryFooter")))
-        )
-    )
+    result = {"list": sliced, "total": len(rows)}
+    if body.get("queryFooter"):
+        result["footer"] = footer(rows)
+    return JSONResponse(content=ok(result))
 
 
 @router.post("/api/NetYf/Sclzd/GongziJeOrderQuery")
@@ -840,12 +729,8 @@ async def gongzi_je_order_query(request: Request) -> JSONResponse:
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
-    data = dataset_from(request)
-    rows = [
-        row
-        for row in _gongzi_rows(data, identity, {"0", "1", "2"})
-        if start <= datetime.strptime(str(row["_day"])[:10], "%Y-%m-%d").date() <= end
-    ]
+    store = store_from(request)
+    rows = await store.wage_rows(identity, {"0", "1", "2"}, start, end)
     grouped: dict[str, Record] = {}
     for row in rows:
         uid = str(row["uid"])
@@ -856,15 +741,13 @@ async def gongzi_je_order_query(request: Request) -> JSONResponse:
         entry["je"] = str(_d(entry["je"]) + _d(row["je"]))
         entry["bs"] = str(int(str(entry["bs"])) + 1)
 
-    def footer(source: list[Record]) -> dict[str, str]:
-        return {"je_total": sum_of(source, "je")}
-
     items = sorted(grouped.values(), key=lambda item: _d(item["je"]), reverse=True)
-    return JSONResponse(
-        content=ok(
-            paginate(items, body, footer_builder=footer, query_footer=bool(body.get("queryFooter")))
-        )
-    )
+    page, size = page_size(body)
+    sliced = items[(page - 1) * size : page * size]
+    result: dict[str, object] = {"list": sliced, "total": len(items)}
+    if body.get("queryFooter"):
+        result["footer"] = {"je_total": sum_of(items, "je")}
+    return JSONResponse(content=ok(result))
 
 
 # ---------------------------------------------------------------------------
@@ -878,8 +761,9 @@ async def dg_grid_page_list(request: Request) -> JSONResponse:
     app_key, _ = check_common_params(body)
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
-    rows = visible_rows(dataset_from(request).dg, identity)
-    return JSONResponse(content=ok(paginate(rows, body)))
+    page, size = page_size(body)
+    result = await store_from(request).page("mock_dg", identity, page_num=page, size=size)
+    return JSONResponse(content=ok({"list": result.items, "total": result.total}))
 
 
 @router.post("/api/NetYf/Dg/DgZuGridPageList")
@@ -888,8 +772,9 @@ async def dg_zu_grid_page_list(request: Request) -> JSONResponse:
     app_key, _ = check_common_params(body)
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
-    rows = visible_rows(dataset_from(request).dg_zu, identity)
-    return JSONResponse(content=ok(paginate(rows, body)))
+    page, size = page_size(body)
+    result = await store_from(request).page("mock_dg_zu", identity, page_num=page, size=size)
+    return JSONResponse(content=ok({"list": result.items, "total": result.total}))
 
 
 @router.post("/api/NetYf/Dg/DgClQuery")
@@ -899,12 +784,11 @@ async def dg_cl_query(request: Request) -> JSONResponse:
     identity = identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
-    rows = [
-        row
-        for row in visible_rows(dataset_from(request).dg_cl, identity)
-        if in_date_window(row, "rq", start, end)
-    ]
-    return JSONResponse(content=ok(paginate(rows, body)))
+    page, size = page_size(body)
+    result = await store_from(request).page(
+        "mock_dg_cl", identity, date_field="rq", start=start, end=end, page_num=page, size=size
+    )
+    return JSONResponse(content=ok({"list": result.items, "total": result.total}))
 
 
 # ---------------------------------------------------------------------------

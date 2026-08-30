@@ -70,11 +70,14 @@ class KernelSettings:
     """Conservative first-release bounds for the wage vertical slice."""
 
     page_size: int = 200
-    #: Story 3 call budget for fan-out API steps (FR-009 batch progress). When
-    #: a fan-out would exceed it, remaining work is skipped and surfaced as a
-    #: structured ``call_budget_exhausted`` incomplete state with the covered
-    #: order count; a number is never fabricated for the uncovered remainder.
-    max_api_calls: int = 40
+    #: Call budget for fan-out API steps (FR-009 batch progress). A fan-out
+    #: sends one request per distinct bound value (e.g. one worktype-progress
+    #: call per production order); when the data window grows to factory scale
+    #: (~120 orders in a two-month window, Story 10) the budget must cover it,
+    #: otherwise uncovered orders are surfaced as ``call_budget_exhausted`` and
+    #: their progress ratio becomes the structured ``unavailable`` state — a
+    #: number is never fabricated for the uncovered remainder.
+    max_api_calls: int = 500
 
 
 class KernelCapabilityRunner:

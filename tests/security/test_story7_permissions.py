@@ -16,12 +16,11 @@ from __future__ import annotations
 import zipfile
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from mock_mes.api.customer import sign_of
-from mock_mes.api.server import create_app
 
 from factory_agent.application.card import build_card
 from factory_agent.application.filters import FilterNarrower, FilterRejectionError, NarrowedFilters
@@ -39,7 +38,11 @@ from factory_agent.domain import (
     UserId,
 )
 from factory_agent.execution.executor import ScopedExecutor
-from factory_agent.execution.kernel import KernelCapabilityRunner, render_table_from_run_result
+from factory_agent.execution.kernel import (
+    KernelCapabilityRunner,
+    KernelSettings,
+    render_table_from_run_result,
+)
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import UNAVAILABLE_VALUE, default_metric_registry
 from factory_agent.export.xlsx import render_xlsx
@@ -104,8 +107,8 @@ def test_other_employee_wage_request_is_rejected_with_zero_calls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fr008_card_and_xlsx_never_leak_credentials() -> None:
-    app = create_app()
+async def test_fr008_card_and_xlsx_never_leak_credentials(mock_mes_app: Any) -> None:
+    app = mock_mes_app
     client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
     catalog = load_catalog()
     adapter = HongzhaoMesAdapter("http://test", _bundle("01009"), catalog, client=client)
@@ -114,6 +117,7 @@ async def test_fr008_card_and_xlsx_never_leak_credentials() -> None:
         executor,
         load_recipes(catalog.operation_ids),
         default_metric_registry(),
+        settings=KernelSettings(page_size=2000, max_api_calls=300),
         clock=lambda: NOW,
     )
     try:
@@ -141,13 +145,13 @@ async def test_fr008_card_and_xlsx_never_leak_credentials() -> None:
     assert CANARY_TOKEN not in serialized
     assert "01009" not in serialized  # caller's uid is not a ranking row field
     assert CANARY_APP_KEY not in _xlsx_text(excel)
-    # The card/summary only cite numbers already in the table.
-    assert "25.4" in summary or "3.75" in summary
+    # The card/summary only cite numbers already in the table (Story 10 totals).
+    assert "264029.2" in summary
 
 
 @pytest.mark.asyncio
-async def test_unavailable_columns_render_consistently_as_no_data_source() -> None:
-    app = create_app()
+async def test_unavailable_columns_render_consistently_as_no_data_source(mock_mes_app: Any) -> None:
+    app = mock_mes_app
     client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
     catalog = load_catalog()
     adapter = HongzhaoMesAdapter("http://test", _bundle("01009"), catalog, client=client)
@@ -156,6 +160,7 @@ async def test_unavailable_columns_render_consistently_as_no_data_source() -> No
         executor,
         load_recipes(catalog.operation_ids),
         default_metric_registry(),
+        settings=KernelSettings(page_size=2000, max_api_calls=300),
         clock=lambda: NOW,
     )
     try:

@@ -13,6 +13,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY mock-mes/pyproject.toml mock-mes/README.md ./mock-mes/
 COPY usage-admin/pyproject.toml usage-admin/README.md ./usage-admin/
 COPY mock-mes/src ./mock-mes/src
+COPY mock-mes/alembic.ini mock-mes/migrations ./mock-mes/
 
 RUN uv sync --frozen --no-dev --package mock-mes --no-editable
 
@@ -35,4 +36,6 @@ EXPOSE 8010
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/live', timeout=2)"]
 
-CMD ["uvicorn", "mock_mes.api.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8010"]
+# Story 10: schema first (Alembic), then the read-only API. Startup code never
+# creates tables; the generator is a separate process.
+CMD ["sh", "-c", "mock-mes-migrate upgrade head && uvicorn mock_mes.api.server:create_app --factory --host 0.0.0.0 --port 8010"]

@@ -13,7 +13,6 @@ from typing import Any, cast
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from mock_mes.api.server import create_app
 
 from factory_agent.application.filters import NarrowedFilters
 from factory_agent.data_api.catalog import load_catalog
@@ -46,9 +45,8 @@ async def _bundle(client: AsyncClient) -> MesCredentialBundle:
 
 
 @pytest.mark.asyncio
-async def test_minimal_recipe_against_real_mock_mes() -> None:
-    app = create_app()
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+async def test_minimal_recipe_against_real_mock_mes(mock_mes_app: Any) -> None:
+    client = AsyncClient(transport=ASGITransport(app=mock_mes_app), base_url="http://test")
     adapter = HongzhaoMesAdapter(
         "http://test", await _bundle(client), load_catalog(), client=client
     )
@@ -116,11 +114,10 @@ async def test_minimal_recipe_against_real_mock_mes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mock_mes_filters_by_bearer_identity() -> None:
+async def test_mock_mes_filters_by_bearer_identity(mock_mes_app: Any) -> None:
     """Company isolation: a foreign AppKey presented with the company-A token
     must be rejected at the envelope level (never returns data)."""
-    app = create_app()
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client = AsyncClient(transport=ASGITransport(app=mock_mes_app), base_url="http://test")
     adapter = HongzhaoMesAdapter(
         "http://test", await _bundle(client), load_catalog(), client=client
     )
@@ -144,7 +141,8 @@ async def test_mock_mes_filters_by_bearer_identity() -> None:
     assert rows
     assert all(str(row.get("uid")) == "01001" for row in rows)
     assert all(str(row.get("uid")) != "02001" for row in rows)
-    assert result_mapping.get("total") == len(rows)
+    # Pagination: at factory scale the worker has more rows than one page.
+    assert result_mapping.get("total", 0) >= len(rows)
 
     await adapter.aclose()
     await client.aclose()

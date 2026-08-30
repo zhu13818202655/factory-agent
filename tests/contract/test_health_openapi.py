@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
-from mock_mes.api.server import create_app as create_mock_app
 
 from factory_agent.api.server import create_app as create_factory_app
 
@@ -18,5 +17,8 @@ def test_factory_agent_publishes_liveness_contract() -> None:
     assert_liveness_contract(create_factory_app())
 
 
-def test_mock_mes_publishes_liveness_contract() -> None:
-    assert_liveness_contract(create_mock_app())
+def test_mock_mes_publishes_liveness_contract(contract_database_url: str) -> None:
+    # Story 10: the mock is PG-backed; the health contract still applies.
+    from mock_mes.testing import make_test_app
+
+    assert_liveness_contract(make_test_app(contract_database_url))

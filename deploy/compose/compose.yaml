@@ -49,7 +49,10 @@ services:
     environment:
       MOCK_MES_HOST: 0.0.0.0
       MOCK_MES_PORT: 8010
-      MOCK_MES_DATABASE_URL: ${MOCK_MES_DATABASE_URL:-postgresql://mock_mes:mock_mes_dev@postgres:5432/mock_mes}
+      # Pinned to the compose-network DSN. The repository-root .env carries the
+      # host-side URLs (127.0.0.1:3432); letting it substitute here would make
+      # the container reach its own host, not the postgres service.
+      MOCK_MES_DATABASE_URL: postgresql://mock_mes:mock_mes_dev@postgres:5432/mock_mes
       MOCK_MES_SCENARIO: small
       MOCK_MES_SEED: 20260821
       MOCK_MES_VIRTUAL_NOW: "2026-08-21T08:00:00Z"
@@ -62,6 +65,9 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD

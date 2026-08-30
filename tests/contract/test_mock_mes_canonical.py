@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from jsonschema import Draft202012Validator, FormatChecker
-from mock_mes.api.server import create_app
 
 from tests.contract.test_canonical_mes_openapi import (
     load_openapi,
@@ -14,11 +15,11 @@ from tests.contract.test_canonical_mes_openapi import (
 
 
 @pytest.mark.asyncio
-async def test_mock_token_matches_customer_contract() -> None:
+async def test_mock_token_matches_customer_contract(contract_app: Any) -> None:
     document = load_openapi()
     operation = operations(document)["SystemToken"]
     async with AsyncClient(
-        transport=ASGITransport(app=create_app()), base_url="http://test"
+        transport=ASGITransport(app=contract_app), base_url="http://test"
     ) as client:
         response = await client.post("/api/system/token", json={"app_key": "APPKEY-A"})
 
@@ -29,11 +30,11 @@ async def test_mock_token_matches_customer_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mock_customer_endpoint_returns_envelope_and_list_result() -> None:
+async def test_mock_customer_endpoint_returns_envelope_and_list_result(contract_app: Any) -> None:
     document = load_openapi()
     operation = operations(document)["YskQuery"]
     async with AsyncClient(
-        transport=ASGITransport(app=create_app()), base_url="http://test"
+        transport=ASGITransport(app=contract_app), base_url="http://test"
     ) as client:
         token = (await client.post("/api/system/token", json={"app_key": "APPKEY-A"})).json()[
             "result"

@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from mock_mes.api.customer import sign_of
-from mock_mes.api.server import create_app
 
 from factory_agent.application.filters import NarrowedFilters
 from factory_agent.data_api.catalog import load_catalog
@@ -56,9 +56,8 @@ def _range() -> TimeRange:
 
 
 @pytest.mark.asyncio
-async def test_fr002_and_fr003_slice_against_mock_mes() -> None:
-    app = create_app()
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+async def test_fr002_and_fr003_slice_against_mock_mes(mock_mes_app: Any) -> None:
+    client = AsyncClient(transport=ASGITransport(app=mock_mes_app), base_url="http://test")
     catalog = load_catalog()
     adapter = HongzhaoMesAdapter("http://test", _worker_bundle(), catalog, client=client)
     executor = ScopedExecutor(adapter=adapter, catalog=catalog)
@@ -82,11 +81,13 @@ async def test_fr002_and_fr003_slice_against_mock_mes() -> None:
     )
 
     assert detail.column_names == ("rq", "worktype", "sl", "price", "je")
-    assert len(detail.rows) == 5
-    assert detail.totals["je"] == Decimal("21.65")
-    assert detail.totals["sl"] == Decimal("20")
+    # Story 10: the window is a real 500-person factory; 01001 has ~100 wage
+    # rows in two months (mirrors the regenerated golden).
+    assert len(detail.rows) == 94
+    assert detail.totals["je"] == Decimal("573.60")
+    assert detail.totals["sl"] == Decimal("559")
     assert summary.totals["gross_total"] == detail.totals["je"]
-    assert summary.totals["piece_count"] == Decimal("20")
+    assert summary.totals["piece_count"] == Decimal("559")
     assert summary.incomplete is False
     assert detail.incomplete is False
 

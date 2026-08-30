@@ -15,7 +15,6 @@ from typing import Any
 import httpx
 import pytest
 from mock_mes.api.customer import sign_of
-from mock_mes.api.server import create_app
 
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
@@ -30,7 +29,7 @@ from factory_agent.domain import (
     UserId,
 )
 from factory_agent.execution.executor import ScopedExecutor
-from factory_agent.execution.kernel import KernelCapabilityRunner
+from factory_agent.execution.kernel import KernelCapabilityRunner, KernelSettings
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import default_metric_registry
 from factory_agent.ports.session import CapabilityRunRequest
@@ -42,8 +41,8 @@ RANGE = TimeRange(start=datetime(2026, 7, 1, tzinfo=UTC), end=datetime(2026, 8, 
 class FaultInjectingTransport(httpx.AsyncBaseTransport):
     """Injects ``X-Mock-Fault`` and extra fault headers on every request."""
 
-    def __init__(self, fault: str, **headers: str) -> None:
-        self._inner = httpx.ASGITransport(app=create_app())
+    def __init__(self, fault: str, app: Any, **headers: str) -> None:
+        self._inner = httpx.ASGITransport(app=app)
         self._fault = fault
         self._headers = headers
 
@@ -68,10 +67,10 @@ def _bundle(user: str) -> MesCredentialBundle:
 
 
 def _runner(
-    fault: str, **headers: str
+    app: Any, fault: str, **headers: str
 ) -> tuple[KernelCapabilityRunner, HongzhaoMesAdapter, httpx.AsyncClient]:
     client = httpx.AsyncClient(
-        transport=FaultInjectingTransport(fault, **headers), base_url="http://test"
+        transport=FaultInjectingTransport(fault, app, **headers), base_url="http://test"
     )
     catalog = load_catalog()
     adapter = HongzhaoMesAdapter("http://test", _bundle("01009"), catalog, client=client)
@@ -80,6 +79,7 @@ def _runner(
         executor,
         load_recipes(catalog.operation_ids),
         default_metric_registry(),
+        settings=KernelSettings(page_size=2000, max_api_calls=300),
         clock=lambda: NOW,
     )
     return runner, adapter, client
@@ -104,8 +104,10 @@ async def _run(runner: KernelCapabilityRunner, cid: str) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_transport_429_fault_surfaces_as_structured_error_not_a_number() -> None:
-    runner, adapter, client = _runner("429")
+async def test_transport_429_fault_surfaces_as_structured_error_not_a_number(
+    mock_mes_app: Any,
+) -> None:
+    runner, adapter, client = _runner(mock_mes_app, "429")
     try:
         with pytest.raises(MesError):
             await _run(runner, "fr002_personal_wage_summary")
@@ -115,8 +117,8 @@ async def test_transport_429_fault_surfaces_as_structured_error_not_a_number() -
 
 
 @pytest.mark.asyncio
-async def test_transport_5xx_fault_surfaces_as_structured_error() -> None:
-    runner, adapter, client = _runner("5xx")
+async def test_transport_5xx_fault_surfaces_as_structured_error(mock_mes_app: Any) -> None:
+    runner, adapter, client = _runner(mock_mes_app, "5xx")
     try:
         with pytest.raises(MesError):
             await _run(runner, "fr002_personal_wage_summary")
@@ -126,8 +128,10 @@ async def test_transport_5xx_fault_surfaces_as_structured_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_footer_mismatch_is_reported_as_reconciliation_failed() -> None:
-    runner, adapter, client = _runner("footer_mismatch", **{"X-Mock-Footer-Field": "je_total"})
+async def test_footer_mismatch_is_reported_as_reconciliation_failed(mock_mes_app: Any) -> None:
+    runner, adapter, client = _runner(
+        mock_mes_app, "footer_mismatch", **{"X-Mock-Footer-Field": "je_total"}
+    )
     try:
         result = await _run(runner, "fr002_personal_wage_summary")
     finally:
@@ -141,8 +145,8 @@ async def test_footer_mismatch_is_reported_as_reconciliation_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pagination_total_drift_is_reported_as_incomplete() -> None:
-    runner, adapter, client = _runner("wrong_total")
+async def test_pagination_total_drift_is_reported_as_incomplete(mock_mes_app: Any) -> None:
+    runner, adapter, client = _runner(mock_mes_app, "wrong_total")
     try:
         result = await _run(runner, "fr002_personal_wage_summary")
     finally:
