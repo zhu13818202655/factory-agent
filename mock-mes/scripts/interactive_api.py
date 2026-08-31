@@ -31,6 +31,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from typing import Any, cast
 
 BASE_URL = os.environ.get("MOCK_MES_URL", "http://127.0.0.1:8010").rstrip("/")
 
@@ -120,12 +121,33 @@ def post_json(path: str, payload: dict[str, object], headers: dict[str, str] | N
         raise ConnectionError(f"无法连接 {BASE_URL}，请先启动服务：uv run --package mock-mes mock-mes") from exc
 
 
+def as_json_dict(value: object) -> dict[str, Any] | None:
+    """Return ``value`` as a JSON object (str keys), or None if it isn't one.
+
+    Needed because ``isinstance(x, dict)`` narrows to ``dict[Unknown, Unknown]``
+    under strict type checking, which then pollutes everything downstream.
+    """
+    if isinstance(value, dict):
+        return cast("dict[str, Any]", value)
+    return None
+
+
+def as_json_list(value: object) -> list[Any] | None:
+    """Return ``value`` as a JSON array, or None if it isn't one."""
+    if isinstance(value, list):
+        return cast("list[Any]", value)
+    return None
+
+
 def authenticate(app_key: str) -> dict[str, object]:
     """Step 1: exchange app_key for the app_key/timestamp/sign bundle."""
     status, body = post_json("/api/system/token", {"app_key": app_key})
-    if not isinstance(body, dict) or body.get("code") != 1:
+    data = as_json_dict(body)
+    if data is None or data.get("code") != 1:
         raise SystemExit(f"获取 token 失败（HTTP {status}）：{json.dumps(body, ensure_ascii=False)}")
-    result = body["result"]
+    result = as_json_dict(data.get("result"))
+    if result is None:
+        raise SystemExit(f"获取 token 失败（HTTP {status}）：result 缺失或非对象")
     print(f"鉴权 OK：appkey={result['appkey']}  timestamp={result['timestamp']}  sign={result['sign']}")
     #: The token endpoint returns ``appkey`` but requests must send ``app_key``.
     return {
@@ -138,8 +160,9 @@ def authenticate(app_key: str) -> dict[str, object]:
 def print_sign(app_key: str, timestamp: int, uid: str) -> str:
     """Fetch the movepassword-style sign via /api/print/query-sign."""
     _, body = post_json("/api/print/query-sign", {"app_key": app_key, "timestamp": timestamp, "uid": uid})
-    if isinstance(body, dict) and body.get("code") == 1:
-        return str(body["result"])
+    data = as_json_dict(body)
+    if data is not None and data.get("code") == 1:
+        return str(data["result"])
     raise RuntimeError(f"query-sign 失败：{json.dumps(body, ensure_ascii=False)}")
 
 
@@ -150,27 +173,31 @@ def print_sign(app_key: str, timestamp: int, uid: str) -> str:
 
 def summarize(path: str, label: str, status: int, body: object, max_rows: int = 3) -> bool:
     """Print one endpoint result; return True when the envelope says success."""
-    if not isinstance(body, dict):
+    data = as_json_dict(body)
+    if data is None:
         print(f"  !! {label} {path} -> HTTP {status} 非法响应：{body!r}")
         return False
-    ok = body.get("code") == 1
-    result = body.get("result")
+    ok = data.get("code") == 1
+    result: object = data.get("result")
     if not ok:
-        print(f"  !! {label} {path} -> HTTP {status} code={body.get('code')} {body.get('message')}")
+        print(f"  !! {label} {path} -> HTTP {status} code={data.get('code')} {data.get('message')}")
         return False
 
     line = f"  OK {label} {path} -> HTTP {status}"
-    rows: list[dict] = []
-    if isinstance(result, dict):
-        total = result.get("total", result.get("hh_total"))
+    rows: list[Any] = []
+    result_obj = as_json_dict(result)
+    result_list = as_json_list(result)
+    if result_obj is not None:
+        total = result_obj.get("total", result_obj.get("hh_total"))
         if total is not None:
             line += f"  total={total}"
-        rows = result.get("list") if isinstance(result.get("list"), list) else []
+        listed = as_json_list(result_obj.get("list"))
+        rows = listed if listed is not None else []
         if not rows and total is None:
-            line += f"  result={json.dumps(result, ensure_ascii=False)[:300]}"
-    elif isinstance(result, list):
-        rows = result
-        line += f"  {len(result)} 项"
+            line += f"  result={json.dumps(result_obj, ensure_ascii=False)[:300]}"
+    elif result_list is not None:
+        rows = result_list
+        line += f"  {len(result_list)} 项"
     else:
         line += f"  result={json.dumps(result, ensure_ascii=False)[:300]}"
     print(line)
@@ -203,8 +230,8 @@ def parse_override(raw: str) -> dict[str, object]:
     if not raw:
         return {}
     if raw.startswith("{"):
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
+        parsed = as_json_dict(json.loads(raw))
+        if parsed is None:
             raise ValueError("JSON 覆盖参数必须是对象")
         return parsed
     override: dict[str, object] = {}
@@ -217,7 +244,7 @@ def parse_override(raw: str) -> dict[str, object]:
 
 def build_body(index: int, bundle: dict[str, object], uid: str) -> dict[str, object]:
     """Assemble the request body for endpoint ``index`` under identity ``uid``."""
-    path, params, _label = ALL_ENDPOINTS[index]
+    _path, params, _label = ALL_ENDPOINTS[index]
     substituted = {
         k: (str(v).replace("{uid}", uid) if isinstance(v, str) else v) for k, v in params.items()
     }
