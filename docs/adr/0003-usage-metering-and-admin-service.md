@@ -25,8 +25,8 @@
 
 ## 2. 决策
 
-新增独立的 `usage-admin` 服务，暂时作为本仓库的 uv workspace 子项目，组织方式类似
-`mock-mes`，但它是未来生产拓扑的一部分：
+新增独立的 `usage-admin` 服务，作为本仓库的 uv workspace 子项目，组织方式类似
+`mock-mes`，且是生产拓扑的一部分：
 
 ```text
 factory-agent/
@@ -48,8 +48,7 @@ factory-agent/
 5. 服务将来可独立仓库、独立发布或替换分析存储，而不改变 MES 业务执行边界。
 
 两个应用禁止互相 import。计量数据由 factory-agent **同库直写**（业务提交后的独立事务 +
-失败隔离，§3.1，方案二，
-2026-08-29 决议），usage-admin 只读查询，两者之间不存在 HTTP 计量契约。`usage-admin` 永远
+失败隔离，见 §3.1），usage-admin 只读查询，两者之间不存在 HTTP 计量契约。`usage-admin` 永远
 不调用客户 MES，不读取 `ResultTable`、工资明细、问题原文或回答正文。
 
 ## 3. 系统架构
@@ -58,10 +57,11 @@ factory-agent/
 flowchart LR
     User[工厂用户] --> Agent[factory-agent]
     Agent --> MES[Customer MES]
-    Agent --> LLM[LiteLLM Proxy]
+    Agent --> LLM[Model Gateway]
     Agent --> AppDB[(Application PostgreSQL)]
     AppDB --> UsageDB[(Usage 计量表<br/>usage_event / *fact / rollup)]
     Rollup[Rollup 汇总] --> UsageDB
+    Agent -. 无 HTTP 计量契约 .-> UsageDB
     Admin[平台运营人员] --> AdminAPI[usage-admin query API]
     AdminAPI --> UsageDB
     AdminAPI --> Export[CSV/XLSX report]
@@ -71,14 +71,14 @@ flowchart LR
 
 两服务共用一个 PostgreSQL。`factory-agent` 的业务数据（会话、消息等）先提交，随后在
 **独立事务**中直接写计量表
-（`usage_event`、三类 `*_fact`），不再经 outbox + HTTP 间接层（2026-08-29 决议，方案二）。
+（`usage_event`、三类 `*_fact`），不存在 outbox 或 HTTP 计量间接层。
 该设计保证：
 
 - 计量写入失败只告警、不回滚业务——「计量故障不影响问答」由独立事务天然保证，无事件积压 /
   投递失败运维面；`usage_event` 与其 `*_fact` 在同一计量事务内原子写入，无半截账；
 - 以 `event_id` 主键 + `ON CONFLICT DO NOTHING` 幂等去重；
 - **计量写入失败不影响问答**：写入封装在持久化层，异常被捕获转为告警，不影响已提交的
-  业务数据（原 outbox 提供的解耦保护由独立事务 + 异常隔离显式承担）；
+  业务数据；
 - interaction 完成、失败或取消后都能形成可核对的最终记录。
 
 MVP 不引入 Kafka。出现持续高吞吐、多消费者、跨区域或单库直写成为瓶颈的测量证据后，再评估
@@ -107,14 +107,14 @@ Kafka/Redpanda 或独立分析库；届时重新引入传输层，存档 payload
 ### 4.2 平台运营权限与账号体系
 
 平台运营是独立身份域，通过 `PlatformScope` 表达获准访问的租户集合与角色，不复用公司或
-工厂角色。账号体系为**本服务自建**（2026-08-29 决议 D15，本期不引入 OIDC）：
+工厂角色。账号体系为**本服务自建**（D15：本期不引入 OIDC，后续接入公司统一身份源见 §13）：
 
 - 新增 `platform_principal` 表（`username`、`password_hash`、`role`、`tenant_scope`、
   `status`），提供注册 / 登录接口，登录签发 Bearer token；
 - 鉴权双通道：`Authorization: Bearer <token>`（**优先**）与「可信网关注入三 header」
-  （开发 / 测试直连通道）；前端使用平台下发的 `USAGE_ADMIN_API_TOKEN`（决议 D16），
+  （开发 / 测试直连通道）；前端使用平台下发的 `USAGE_ADMIN_API_TOKEN`（D16），
   不实现前端注册登录；
-- 角色三档（决议 D14）：
+- 角色三档（D14）：
 
 | 平台角色 | 权限 |
 | :--- | :--- |
@@ -122,8 +122,8 @@ Kafka/Redpanda 或独立分析库；届时重新引入传输层，存档 payload
 | `analyst` | 查看伪名化用户级计量、导出受控报表 |
 | `admin` | 在 analyst 之上，管理工厂账户（`tenant_registry` CRUD）与运营账号 |
 
-原计划中的 `platform_billing_admin`（价格表 / 账期 / 生成账单）与 `tenant_usage_viewer`
-（客户自助查看用量）首期仍只预留 / 待产品确认，见 §13。
+`platform_billing_admin`（价格表 / 账期 / 生成账单）与 `tenant_usage_viewer`
+（客户自助查看用量）不在本期范围，待产品确认，见 §13。
 
 每个管理请求必须记录操作者、目的、租户过滤、指标、时间范围和导出标识（`admin_audit`）。
 跨租户查询和用户级导出使用更高权限并接受单独审计。任何新角色或数据范围都需要安全评审。
@@ -161,36 +161,14 @@ Kafka/Redpanda 或独立分析库；届时重新引入传输层，存档 payload
   `tenant_registry`、`admin_audit`、`platform_principal`、`usage_export`，其余表的迁移写在
   factory-agent 侧，同一张表不得两边都建。
 - **Alembic 版本表隔离**：两服务各自使用独立版本表——本服务 `alembic_version_usage_admin`，
-  factory-agent 使用默认 `alembic_version`（Story 11 已回退其一次性独立版本表）。共用默认
-  的 `alembic_version` 会因两组互不相关的 revision 链而互相报
-  `Can't locate revision identified by ...`。`tenant_registry` 的 schema 变更需两服务同步评审。
-
-**涉及代码（实施清单见 `.github/story/#9.md`）**：
-
-| 侧 | 文件 | 变更 |
-| :--- | :--- | :--- |
-| usage-admin | `usage-admin/migrations/versions/` | 新增迁移：建 `tenant_registry`、`platform_principal`、`admin_audit`、`usage_export` |
-| usage-admin | `usage-admin/src/usage_admin/store.py` | 自有表读写 + 计量表只读查询 |
-| usage-admin | `usage-admin/src/usage_admin/api/ops.py` | 账户管理接口、`/usage/by-tenant`、MES 分类查询 |
-| usage-admin | `usage-admin/src/usage_admin/api/auth.py` | 注册 / 登录接口、token 签发与校验（新增） |
-| usage-admin | `usage-admin/src/usage_admin/api/server.py` | 注册新路由、Bearer token 鉴权中间件 |
-| usage-admin | `usage-admin/src/usage_admin/platform.py` | `PlatformRole` 增加 `admin`，权限判定扩展 |
-| usage-admin | `usage-admin/src/usage_admin/ops.py` | MES 分类/失败/按租户分组的查询逻辑 |
-| factory-agent | `migrations/versions/` | 新增/变更计量表：`usage_event`、三类 `*_fact`、`mes_operation_category`；移除 outbox / receipt / dead-letter 表 |
-| factory-agent | `src/factory_agent/usage/` | 删除 publisher / sink / publisher_cli（outbox 链路） |
-| factory-agent | `src/factory_agent/data_api/hongzhao.py` | 建链/刷新从 `tenant_registry` 取 AppKey 并校验停用状态；MES 调用直写计量 |
-| factory-agent | `src/factory_agent/application/usage.py` | 新增 `mes_call_completed` 事件构造（复用 `row_count_bucket()`） |
-| factory-agent | `src/factory_agent/application/session.py` | interaction / LLM 计量改为业务提交后独立事务直写 |
-| factory-agent | `src/factory_agent/ports/`、`src/factory_agent/persistence/` | 计量直写封装、租户注册只读 port |
-| 配置 | `configs/knowledge/apis.yaml` | 27 个 operation 增加结构化 `usage_category`（产量/工资/订单/其他） |
-
-`tenant_registry` 的 schema 变更需两服务同步评审（ADR-0002 Consequences 同步修订）。
+  factory-agent 使用默认 `alembic_version`。共用同一个版本表会因两组互不相关的 revision 链而
+  互相报 `Can't locate revision identified by ...`。`tenant_registry` 的 schema 变更需两服务
+  同步评审。
 
 ## 5. 计量事件契约
 
-跨服务传输契约 `contracts/usage-events/v1` 已删除（Story 11 整改）；下表是 `usage_event`
-**存档 payload** 的公共信封字段，由 factory-agent 本地维护（`application/usage.py` 的
-`SCHEMA_VERSION`），写入前校验：
+两服务之间不存在计量传输契约；下表是 `usage_event` **存档 payload** 的公共信封字段，由
+factory-agent 本地维护（`application/usage.py` 的 `SCHEMA_VERSION`），写入前校验：
 
 | 字段 | 说明 |
 | :--- | :--- |
@@ -257,10 +235,12 @@ API 分类计结果不同（例：能力 `fr001_personal_output` 个人产量统
 
 ## 7. 存储模型
 
-MVP 使用 PostgreSQL 16（与应用同一数据库实例，各服务独立迁移历史与版本表）。**一张表只归
-一方**（§4.3）：本服务拥有 `tenant_registry`、`platform_principal`、`admin_audit`、
-`usage_export`，其余表均由 factory-agent 拥有并写入，本服务只读查询（与 ADR-0002 的存储
-基线一致）：
+factory-agent 与本服务共享**同一个逻辑数据库**（开发拓扑库名 `factory_agent`；与 ADR-0002 存储
+基线一致）：各自用独立用户（`factory_agent` / `usage_admin`）连接并跑迁移，版本表互不相同
+（`alembic_version` / `alembic_version_usage_admin`），可在同一库内以任意顺序执行；mock-mes
+使用独立数据库。**一张表只归一方**（§4.3）：本服务拥有 `tenant_registry`、
+`platform_principal`、`admin_audit`、`usage_export`，其余表均由 factory-agent 拥有并写入，
+本服务只读查询：
 
 | 表 | 归属 | 用途 |
 | :--- | :--- | :--- |
@@ -279,18 +259,16 @@ MVP 使用 PostgreSQL 16（与应用同一数据库实例，各服务独立迁�
 | `model_price_version` | factory-agent | 模型价格及币种、生效区间；仅用于估算成本（规划中） |
 
 factory-agent 在业务提交后的独立事务中先写 `usage_event`（对应月份分区，`ON CONFLICT DO NOTHING`），再写
-`*_fact`；重复 `event_id` 直接幂等去重，无收件表。rollup 使用幂等 checkpoint 和可重放窗口
+`*_fact`；重复 `event_id` 直接幂等去重。rollup 使用幂等 checkpoint 和可重放窗口
 处理迟到事件。汇总值可重建，原始事件是计量事实来源。当事件规模或多维分析经测量超过
-PostgreSQL 能力时，可将 ClickHouse 作为分析副本；首期不因预估规模提前增加双存储复杂度。
+PostgreSQL 能力时，可将 ClickHouse 作为分析副本；不因预估规模提前增加双存储复杂度。
 
 ## 8. API 边界
 
 ### 8.1 内部写入 API
 
-**已移除（2026-08-29 决议，方案二）**：原 `POST /internal/v1/usage-events:batch` 与 ingest
-服务不再需要——计量由 factory-agent 在业务提交后的独立事务中直接写库（§3.1），usage-admin 不再提供
-任何写入接口。原 ingest 承担的事件校验与幂等改由写入前的本地 payload 格式校验与
-`event_id` 主键幂等承担（Story 11）。
+usage-admin **不提供任何计量写入接口**。计量由 factory-agent 在业务提交后的独立事务中
+直接写库（§3.1）；事件校验与幂等由写入前的本地 payload 格式校验与 `event_id` 主键承担。
 
 ### 8.2 运营查询 API
 
@@ -305,7 +283,7 @@ GET  /admin/v1/exports/{export_id}
 GET  /admin/v1/exports/{export_id}/download
 ```
 
-产品后台需求新增（完整清单见产品文档 §8）：
+产品后台需求新增（完整清单见本文档 §8.2）：
 
 ```text
 # 工厂账户管理（tenant_registry，写操作仅 admin 角色，全部落 admin_audit）
@@ -334,10 +312,10 @@ GET    /admin/v1/usage/mes-operations             # 按 operation_id 的调用�
 | 服务运行时 | Python 3.12、FastAPI、Pydantic v2、Uvicorn | 与主仓库一致，复用工程和类型检查方式 |
 | 数据访问 | Psycopg 3 + Alembic，不引入 ORM | 事件写入、分区、rollup 和幂等 SQL 需要显式可审查 |
 | 主存储 | PostgreSQL 16（与应用共享同一数据库，各服务独立迁移历史与版本表，见 §7） | 当前指标规模未知，足以支撑事件和汇总 MVP |
-| 计量写入 | **同库直写**（factory-agent 业务提交后独立事务直写计量表） | 两服务共库，直写省去 outbox + HTTP 间接层；计量失败以异常隔离保证不影响问答（§4.4 方案二） |
+| 计量写入 | **同库直写**（factory-agent 业务提交后独立事务直写计量表） | 两服务共库，直写无需传输层；计量失败以异常隔离保证不影响问答（见 §3.1） |
 | 汇总任务 | factory-agent 内独立 worker 进程 + PostgreSQL advisory lock | rollup 归拥有 `tenant_usage_*` 表的 factory-agent，usage-admin 只读 |
 | 报表 | CSV + XlsxWriter | 便于产品拉取和人工对账 |
-| 身份 | 独立平台 OIDC/OAuth2 audience + RBAC | 与工厂租户身份域隔离 |
+| 身份 | 本服务自建平台账号（`platform_principal`，token 优先；D15），公司 OIDC/SSO 接入待评估（§13） | 与工厂租户身份域隔离 |
 | 可观测性 | OpenTelemetry、结构化 JSON 日志 | 与主应用关联 trace，但不复制敏感数据 |
 | 可选演进 | Kafka/Redpanda、ClickHouse、对象存储 | 仅在吞吐、消费者或报表规模有测量证据后引入 |
 
@@ -370,37 +348,21 @@ GET    /admin/v1/usage/mes-operations             # 按 operation_id 的调用�
 - 以 `event_id` 主键幂等去重；interaction、逻辑 LLM 调用和物理尝试使用不同稳定 ID。
 - 每日记录 written、duplicate、rolled-up 数量守恒检查。
 - 按租户和日期提供事件数、事实表数、汇总提问数的对账报告。
-- 迟到事件触发滚动重算；已冻结账期只能生成调整记录，不能原地覆盖。账期冻结属于后续计费 Story。
+- 迟到事件触发滚动重算；已冻结账期只能生成调整记录，不能原地覆盖。账期冻结属于后续计费阶段。
 - 客户侧或平台侧时区只影响展示和日界线分组；事件时间统一存 UTC，租户时区需有版本化配置。
 
-## 12. 交付阶段
+## 12. 实施状态
 
-### 阶段 A：骨架与契约
+已完成：
 
-- 在同仓库创建独立 workspace 包、镜像、健康检查、配置、迁移入口和包边界测试；
-- 存档 payload 格式由 factory-agent 本地维护（跨服务传输契约 `contracts/usage-events` 已删除）；
-- 固定上述指标词汇，但不实现价格和正式账单。
+- 独立 workspace 服务骨架：包、镜像、健康检查、配置、迁移入口与包边界测试；指标词汇已固定，不实现价格与正式账单。
+- `factory-agent` 产生 interaction、LLM、MES 与 artifact 的 allowlist 事件，在业务提交后的独立事务中同库直写计量表（事件表与事实表同一计量事务原子写入、`event_id` 幂等去重、小时/日汇总）；验证统计故障不影响问答且不泄漏 prompt、工资或业务 ID。
+- 平台 RBAC、租户列表、summary、timeseries、dimension、用户活跃、导出与 MES 分类统计 API；CSV/XLSX、指标版本、数据新鲜度；对账、迟到事件、重放与管理审计测试。
 
-### 阶段 B：可观测计量
+未实施（依赖产品确认与测量证据）：
 
-- `factory-agent` 产生 interaction、LLM、MES 和 artifact allowlist 事件；
-- 实现**同库独立事务直写**计量表（事件表、事实表在同一计量事务内原子写入）、幂等 `event_id` 去重与小时/日汇总；
-- 验证统计故障不影响问答（异常隔离），且不泄漏 prompt、工资或业务 ID。
-
-### 阶段 C：运营 API 与报表
-
-- 实现平台 RBAC、租户列表、summary、timeseries、dimension、用户活跃和导出 API；
-- 提供 CSV/XLSX、指标版本和数据新鲜度；
-- 建立对账、迟到事件、重放和管理审计测试。
-
-### 阶段 D：商业化
-
-- 产品确认收费单位、免费额度、套餐、账期、价格版本和客户可见范围；
-- 经财务、合同、隐私和安全评审后再增加不可变账单 ledger；
-- 用真实负载决定是否引入 Kafka/Redpanda、ClickHouse 和对象存储。
-
-阶段 A 可并入当前全局骨架工作；阶段 B 依赖 interaction 与 LLM 调用生命周期稳定；阶段 C
-可在核心 L1 能力形成后并行；阶段 D 不应被当前客户 API 缺失阻塞，也不能在商业规则确认前实现。
+- 正式计费：收费单位、免费额度、套餐、账期、价格版本与客户可见范围（§13）；不可变账单 ledger 需经财务、合同、隐私与安全评审；不因当前客户 API 缺失而阻塞，也不在商业规则确认前实现。
+- Kafka/Redpanda、ClickHouse 与对象存储：仅在真实负载或报表规模产生测量证据后引入。
 
 ## 13. 待确认事项
 

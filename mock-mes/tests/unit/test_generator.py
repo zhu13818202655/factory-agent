@@ -1,4 +1,4 @@
-"""Deterministic generator tests (Story 10, no database required).
+"""Deterministic generator tests (no database required).
 
 ``compute_day_rows`` is a pure function of ``(settings, day, prior_ssl)``; these
 tests lock determinism, the business invariants, the work calendar, the
@@ -76,7 +76,7 @@ def test_scan_worktypes_stay_within_known_set() -> None:
 
 
 def test_anchored_fixtures_present_on_their_dates() -> None:
-    """Story-5/6/7 fixtures stay byte-identical on their anchor dates."""
+    """Anchored fixtures stay byte-identical on their anchor dates."""
     plan_1 = compute_day_rows(SETTINGS, ANCHOR_PLAN_1)
     assert any(
         r.table == "mock_plan" and r.payload["dh"] == "PLAN-2607-001" for r in plan_1.inserts

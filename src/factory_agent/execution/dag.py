@@ -18,7 +18,7 @@ from factory_agent.domain.errors import InternalError, MesError, UpstreamInvalid
 
 @dataclass(frozen=True, slots=True)
 class ExecutionBudget:
-    """Conservative first-release budgets; tuned after Story 8 measurements."""
+    """Conservative first-release budgets, to be tuned against load measurements."""
 
     max_api_calls: int = 20
     max_pages: int = 100

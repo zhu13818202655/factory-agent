@@ -1,6 +1,6 @@
 """Metering privacy: credentials never leak into events, logs, or snapshots.
 
-Story 11 6.5: AppKey / ``sign`` / ``accessToken`` must not appear in
+AppKey / ``sign`` / ``accessToken`` must not appear in
 ``usage_event`` payloads, structured logs, error messages, or test snapshots of
 the metering chain. This suite runs the real event constructors and the MES
 adapter recorder with credential canaries and asserts absence.

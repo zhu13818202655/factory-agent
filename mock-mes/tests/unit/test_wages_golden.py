@@ -1,17 +1,17 @@
-"""Wages golden fixture (Story 6, PG-backed since Story 10).
+"""Wages golden fixture over the PG-backed data source.
 
 Locks, for the fixed employee ``01001`` over the fixed window, the three-source
 detail rows (Type 0 扫码 / 1 吊挂 / 2 手工账) with the confirmed formula
-``je = sl x price`` (M9/M18) holding on every row, the footer totals, and the
+``je = sl x price`` holding on every row, the footer totals, and the
 summary (scheme=hz) agreeing with the detail.
 
-The golden was regenerated for Story 10: the data window now starts at the
-previous year and the generator adds deterministic rolling rows, so the window
-contains more of employee 01001's rows than the original Story-6 fixture. The
-anchored rows themselves are unchanged; the change is recorded in Story 10.
+The golden covers the fixed PG window: it starts at the previous year and the
+generator adds deterministic rolling rows, so it contains more of employee
+01001's rows than the original fixture. The anchored rows themselves are
+unchanged.
 
 Any change to the generator must update this golden file and record the reason
-in the Story, otherwise the invariant test fails.
+with the change, otherwise the invariant test fails.
 """
 
 from __future__ import annotations

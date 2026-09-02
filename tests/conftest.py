@@ -1,4 +1,4 @@
-"""Shared fixtures for repository tests (Story 10).
+"""Shared fixtures for repository tests.
 
 The mock-mes app is PG-backed; tests that need it require
 ``MOCK_MES_TEST_DATABASE_URL`` and skip when it is not set. The schema and the

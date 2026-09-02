@@ -1,4 +1,4 @@
-"""Story 2: redaction, audit baseline, request context, and logging tests."""
+"""Redaction, audit baseline, request context, and logging tests."""
 
 from __future__ import annotations
 

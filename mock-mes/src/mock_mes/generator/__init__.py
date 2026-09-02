@@ -1,1 +1,1 @@
-"""Production-like deterministic data generator (Story 10)."""
+"""Production-like deterministic data generator."""

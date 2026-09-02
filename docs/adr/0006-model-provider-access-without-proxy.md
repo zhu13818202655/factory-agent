@@ -3,20 +3,13 @@
 - 状态：Accepted
 - 日期：2026-08-25
 - 所有者：项目维护者
-- 关联：ADR-0004（取代其 "LLM Config Boundary" 一节）、Story 4
+- 关联：ADR-0004（LLM 供应商配置边界以本文档为准）
 
 ## 1. 背景
 
-ADR-0004 规定应用只与一个 LiteLLM Proxy 通信，供应商 URL、密钥、重试与 fallback 链全部
-属于 Proxy 配置。Story 4 按该边界实现了 `llm/gateway.py`：一个指向单一 Proxy 地址的瘦
-OpenAI-compatible 客户端，自身不重试、不认识任何供应商。
-
-但本项目实际不部署 LiteLLM Proxy：`deploy/compose/compose.yaml` 与 `deploy/k8s/` 中都没有
-该服务。这产生两个后果：
-
-1. `FACTORY_AGENT_LITELLM_BASE_URL` 指向一个并不存在的组件；
-2. **当前系统没有任何 fallback 能力**。ADR-0004 把 fallback 归给 Proxy，而 Proxy 不存在，
-   因此"供应商故障时切换到备用模型"这件事实际上无人负责。
+本项目不部署 LiteLLM Proxy（`deploy/compose/compose.yaml` 与 `deploy/k8s/` 中都没有该服务），
+但应用需要一个承担可靠性（fallback / 重试 / 冷却）的模型路由层：直连单个供应商无法在多
+供应商配置或供应商故障时切换。
 
 同时确认：本项目只接入 OpenAI-compatible 协议的供应商（DeepSeek 等自身即为该协议），
 不需要 Bedrock、Vertex 等异构 SDK 形态。
@@ -34,8 +27,8 @@ OpenAI-compatible 客户端，自身不重试、不认识任何供应商。
    退避；失败部署进入冷却。应用自身仍然不写重试循环。
 4. **逻辑别名不变**。`factory-fast`、`factory-reasoning`、`factory-summary` 仍是应用侧唯一
    可见的模型标识，业务代码不认识具体供应商。
-5. **Proxy 并未被排除**。Router 的一个部署项可以指向 LiteLLM Proxy，此时行为与 ADR-0004
-   完全一致。因此本决策是 ADR-0004 的超集，而不是与之互斥的替代方案。
+5. **兼容既有 Proxy 形态**。Router 的一个部署项可以指向 LiteLLM Proxy；若未来引入
+   Proxy，仅需把 `models.yaml` 收敛为单个指向 Proxy 的部署项，无需改动业务代码。
 
 ## 3. 不变的约束
 
@@ -51,21 +44,21 @@ OpenAI-compatible 客户端，自身不重试、不认识任何供应商。
 
 ## 4. 后果
 
-- 正面：系统首次真正具备 fallback；退避、冷却、健康跟踪等易错逻辑由成熟实现承担；
+- 正面：系统具备真正 fallback；退避、冷却、健康跟踪等易错逻辑由成熟实现承担；
   逻辑别名与业务代码不受供应商变更影响。
-- 代价：生产依赖新增 29 个包（84 → 113），其中 `boto3`/`botocore`/`s3transfer` 与
-  `huggingface-hub`/`tokenizers` 对本项目无用，属于 `litellm` 的固有传递依赖。
+- 代价：`litellm` 引入较多传递依赖（其中 `boto3`/`botocore`/`s3transfer` 与
+  `huggingface-hub`/`tokenizers` 对本项目无用）。
 - 代价：`litellm` 未从顶层导出 `Router`，且 `acompletion` 的类型为 `**kwargs: Unknown`，
   Pyright strict 下需要从 `litellm.router` 导入并使用定点 ignore。该成本被限制在
   `llm/router_gateway.py` 单个模块内。
-- 风险：应用进程内持有供应商密钥，泄漏面从 Proxy 转移到应用。由 `SecretStr`、脱敏日志
+- 风险：应用进程内持有供应商密钥，泄漏面相对集中。由 `SecretStr`、脱敏日志
   与 canary 测试控制。
 - 推翻条件：项目决定部署 LiteLLM Proxy 且不再需要应用侧路由。届时把 `models.yaml`
   收敛为单个指向 Proxy 的部署项即可，无需改动业务代码。
 
 ## 5. 关联影响
 
-- ADR-0004 的 "LLM Config Boundary" 一节被本 ADR 取代；该节其余日志与追踪决策不受影响。
-- `FACTORY_AGENT_LITELLM_BASE_URL` 与 `FACTORY_AGENT_LITELLM_API_KEY` 被
+- ADR-0004 的 "LLM Config Boundary" 内容已按本文档更新，供应商配置边界以本文档为准；
+  其日志与追踪决策不受影响。
+- `FACTORY_AGENT_LITELLM_BASE_URL` 与 `FACTORY_AGENT_LITELLM_API_KEY` 由
   `configs/knowledge/models.yaml` 与 `FACTORY_AGENT_LLM_KEY_*` 取代。
-- Story 4 的"应用只配置 LiteLLM Proxy 地址"验收条件按本 ADR 改写。

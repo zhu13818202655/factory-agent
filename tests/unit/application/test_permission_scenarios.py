@@ -1,4 +1,4 @@
-"""Story 5 end-to-end permission scenarios: allow and deny paths.
+"""End-to-end permission scenarios: allow and deny paths.
 
 Every denial scenario asserts zero business MES calls and no sensitive leaks.
 Roles are display-only (M11); capability availability depends on tenant binding

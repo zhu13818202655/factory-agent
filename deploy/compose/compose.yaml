@@ -87,7 +87,7 @@ services:
       USAGE_ADMIN_ENVIRONMENT: development
       USAGE_ADMIN_HOST: 0.0.0.0
       USAGE_ADMIN_PORT: 8020
-      USAGE_ADMIN_DATABASE_URL: ${USAGE_ADMIN_DATABASE_URL:-postgresql://usage_admin:usage_admin_dev@postgres:5432/usage_admin}
+      USAGE_ADMIN_DATABASE_URL: ${USAGE_ADMIN_DATABASE_URL:-postgresql://usage_admin:usage_admin_dev@postgres:5432/factory_agent}
     ports:
       - "${USAGE_ADMIN_PORT:-8020}:8020"
     read_only: true

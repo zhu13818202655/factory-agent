@@ -1,4 +1,4 @@
-"""mock-mes-migrate CLI (Story 10): Alembic schema management.
+"""mock-mes-migrate CLI: Alembic schema management.
 
 mock-mes keeps its own Alembic version table (``alembic_version_mock_mes``) so
 it can share a PostgreSQL server with factory-agent and usage-admin without

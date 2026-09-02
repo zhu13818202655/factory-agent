@@ -1,4 +1,4 @@
-"""AppKey masking unit tests (D9, Story 9 step 1.4)."""
+"""AppKey masking unit tests (D9)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Kernel capability runner vertical-slice tests (Story 6).
+"""Kernel capability runner vertical-slice tests.
 
 Uses a fake step executor returning the wages golden rows to prove that FR-002
 (summary) and FR-003 (detail) share the ``GongziMxQuery`` path, that the local

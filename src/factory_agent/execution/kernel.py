@@ -1,4 +1,4 @@
-"""Production capability runner: the Story 6 kernel that closes the slice.
+"""Production capability runner executing reviewed L1 recipes.
 
 Maps a ``CapabilityRunRequest`` (capability_id + narrowed filters + time range)
 onto a reviewed recipe: it executes every API step through the scoped executor,
@@ -73,7 +73,7 @@ class KernelSettings:
     #: Call budget for fan-out API steps (FR-009 batch progress). A fan-out
     #: sends one request per distinct bound value (e.g. one worktype-progress
     #: call per production order); when the data window grows to factory scale
-    #: (~120 orders in a two-month window, Story 10) the budget must cover it,
+    #: (~120 orders in a two-month window) the budget must cover it,
     #: otherwise uncovered orders are surfaced as ``call_budget_exhausted`` and
     #: their progress ratio becomes the structured ``unavailable`` state — a
     #: number is never fabricated for the uncovered remainder.
@@ -630,7 +630,7 @@ def _zero_for(column: str, recipe: CapabilityRecipe) -> object:
 def _dependency_empty(step: Any, fetches: dict[str, ResourceFetchResult]) -> bool:
     """Every api dependency fetched zero rows → the local step outputs zeros.
 
-    Multi-step recipes (Story 7) keep computing when only one optional source
+    Multi-step recipes keep computing when only one optional source
     (e.g. WskQuery) is empty; a fully void result still degrades to a zero
     aggregate instead of a fabricated number.
     """

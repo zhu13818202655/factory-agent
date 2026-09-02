@@ -1,8 +1,8 @@
 """MES adapter metering: success/failure recording and the D13 pre-call guard.
 
-Story 11 2.6 requires every MES HTTP attempt to be recorded at the single
-``_send`` exit (success and failure); 4.2 / 6.7 require a disabled tenant to be
-rejected before any external request. The recorder is a protocol, so this suite
+Every MES HTTP attempt is recorded at the single ``_send`` exit (success and
+failure); a disabled tenant must be rejected before any external request.
+The recorder is a protocol, so this suite
 injects a recording fake and asserts adapter behaviour without a database.
 """
 
@@ -145,7 +145,7 @@ async def test_recorder_raising_never_breaks_the_mes_call() -> None:
         client=JsonBodyTransport(_envelope(result={"list": [], "total": 0})).client(),
     )
 
-    # The MES call succeeds even though recording failed (Story 11 1.6 / 2.6).
+    # The MES call succeeds even though recording failed.
     await adapter.execute(_request())
     await adapter.aclose()
 

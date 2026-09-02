@@ -1,4 +1,4 @@
-"""Story 5: capability-availability matrix tests (roles are display-only).
+"""Capability-availability matrix tests (roles are display-only).
 
 Roles never gate capabilities (M11/A.1). Every registered capability is
 available to any authenticated caller; data visibility is enforced by MES-side

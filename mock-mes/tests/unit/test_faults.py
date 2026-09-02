@@ -1,4 +1,4 @@
-"""Fault injection tests adapted to the customer envelope (PG-backed, Story 10)."""
+"""Fault injection tests adapted to the customer envelope (PG-backed)."""
 
 from __future__ import annotations
 

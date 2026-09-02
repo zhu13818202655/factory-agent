@@ -1,11 +1,11 @@
 """Use cases resolving trusted identity, tenant context, and data scopes.
 
-Story 5 rework: the A1/A2/A3 membership-closure chain is replaced by the
-customer credential bundle (M1/M4/M15). ``tenant_id`` is the plaintext
-``app_key`` and ``employee_id`` is the token ``user``; one factory has one
-AppKey, so membership is naturally unique (M4) — there is no multi-hit branch.
-Roles are display-only (M11): capability availability is decided by whether
-MES returns data plus the capability registry, never by a role matrix.
+Membership comes from the customer credential bundle, not from a membership
+closure chain. ``tenant_id`` is the plaintext ``app_key`` and ``employee_id``
+is the token ``user``; one factory has one AppKey, so membership is naturally
+unique — there is no multi-hit branch. Roles are display-only: capability
+availability is decided by whether MES returns data plus the capability
+registry, never by a role matrix.
 """
 
 from __future__ import annotations

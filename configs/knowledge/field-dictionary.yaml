@@ -1,5 +1,6 @@
-# 客户 MES 字段字典与产量分语境口径表（YAML 供加载器校验）。
-# Markdown 评审版：docs/api/field-dictionary.md。两份必须一致。
+# 客户 MES 字段字典与产量分语境口径表。
+# 来源口径：docs/product/AI问答对外接口-整理.md 与 docs/product/需求及方案整理.md（客户确认结论）。
+# 本 YAML 为唯一载体（评审 Markdown 已不再维护双份）。
 version: 1
 common_fields:
   uid: 员工工号
@@ -121,7 +122,7 @@ confirmed_metrics:
     source: M18/1.5 分语境表
   output.participant_count:
     formula: 窗口内有产出的去重 uid 数
-    source: 我方定义（Story 7 口径登记）
+    source: 我方定义（口径登记）
   workshop.output_total:
     formula: 按 dept 分组汇总产量
     source: M16/单层车间 M5

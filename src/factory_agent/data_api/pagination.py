@@ -1,10 +1,9 @@
 """Bounded pager: sequential pagination with provable completeness.
 
-Story 5 semantics (M13): the pager walks ``page``/``size`` until the
-accumulated row count reaches ``result.total``, verifying total consistency,
-detecting duplicate and missing pages, and enforcing page/row budgets. Any
-anomaly aborts with a structured ``incomplete`` status instead of silently
-truncating results.
+The pager walks ``page``/``size`` until the accumulated row count reaches
+``result.total``, verifying total consistency, detecting duplicate and missing
+pages, and enforcing page/row budgets. Any anomaly aborts with a structured
+``incomplete`` status instead of silently truncating results.
 """
 
 from __future__ import annotations
@@ -22,11 +21,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class PagerBudget:
-    """Conservative first-release budgets; placeholder until Story 12 review.
+    """Conservative first-release budgets.
 
     The customer declares no pagination upper bound; ``page_size`` default and
     ``max_pages`` are configuration placeholders to be re-verified during
-    joint debugging (Story 12).
+    joint debugging with the customer.
     """
 
     max_pages: int = 20

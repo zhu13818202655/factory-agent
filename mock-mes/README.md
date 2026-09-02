@@ -20,10 +20,10 @@ Bearer token and common `app_key`, `timestamp`, and `sign` body fields.
 
 ## Data base
 
-Since Story 10 the data base is PostgreSQL — the **only** data source. There is
+The data base is PostgreSQL — the **only** data source. There is
 no in-memory dataset and no memory fallback; a missing `MOCK_MES_DATABASE_URL`
 is a loud startup error. The API process is read-only; the generator process
-writes. All 20 `mock_*` tables store the full Story-5 record in a `payload`
+writes. All 20 `mock_*` tables store the full customer-shaped record in a `payload`
 JSONB column plus mirrored columns for SQL row-level filtering and SQL
 aggregation.
 
@@ -59,7 +59,7 @@ uv run --package mock-mes mock-mes-generate --start 2026-08-01 --end 2026-08-31
 - **Batch ledger**: `mock_generate_batch` records `run_id`, day, seed, row
   count, the JSON-normalised data hash and status, so runs are auditable,
   replayable and comparable against the interface golden.
-- The anchored Story-5/6/7 fixtures stay byte-identical on their historic
+- The anchored fixtures stay byte-identical on their historic
   dates; rolling rows add production-like variety (work calendar, shifts,
   delayed orders, defects, cross-workshop flows, one-worker-many-orders,
   scanned/unscanned mixes).
@@ -90,6 +90,6 @@ Credentials come only from the environment.
 All IDs, names, role codes, quantities, piece rates, payroll values, and relationships are
 deterministic development fixtures. Unconfirmed business formulas are not represented as facts.
 
-Customer field mappings and unconfirmed metric semantics are recorded in
-[`docs/api/field-dictionary.md`](../docs/api/field-dictionary.md) and the questionnaire.
-Unconfirmed values must be surfaced as `unavailable`.
+Customer field mappings and metric semantics follow the customer interface contract in
+`docs/product/AI问答对外接口-整理.md` and the confirmed answers in
+`docs/product/需求及方案整理.md`. Unconfirmed values must be surfaced as `unavailable`.

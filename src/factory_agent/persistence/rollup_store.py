@@ -1,9 +1,9 @@
 """SQLAlchemy rollup store: fact reads and idempotent rollup upserts.
 
 Owns reads from the three fact tables and writes to ``tenant_usage_hourly`` /
-``tenant_usage_daily`` (Story 11 3.1). ``mes_operation_category`` is read to
+``tenant_usage_daily``. ``mes_operation_category`` is read to
 classify MES calls at aggregation time; the classification is never stored in
-the events themselves (Story 11 current assumptions).
+the events themselves.
 """
 
 from __future__ import annotations

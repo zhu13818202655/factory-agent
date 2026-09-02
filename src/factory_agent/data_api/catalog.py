@@ -4,7 +4,7 @@ Catalog entries are loaded from ``configs/knowledge/apis.yaml`` and validated
 against a strict schema. Unreviewed or malformed entries can never reach the
 runtime registry.
 
-Story 5 semantics:
+Registry semantics:
 - ``parameter_sources`` gains the ``credential`` category: those parameters may
   only originate from ``MesCredentialBundle`` (app_key/timestamp/sign), never
   from filters or model output.

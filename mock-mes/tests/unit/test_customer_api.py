@@ -1,4 +1,4 @@
-"""Mock MES customer-shaped API tests (PG-backed, Story 10): auth, envelope,
+"""Mock MES customer-shaped API tests (PG-backed): auth, envelope,
 filtering, pagination and the wages golden over the generated data base."""
 
 from __future__ import annotations

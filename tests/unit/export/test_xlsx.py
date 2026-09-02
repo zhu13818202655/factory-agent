@@ -1,4 +1,4 @@
-"""XLSX renderer tests (Story 6): valid workbook, formula neutralisation, totals."""
+"""XLSX renderer tests: valid workbook, formula neutralisation, totals."""
 
 from __future__ import annotations
 

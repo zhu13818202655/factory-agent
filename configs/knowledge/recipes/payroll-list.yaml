@@ -1,4 +1,4 @@
-# Reviewed L1 payroll list/statistics recipes (Story 7). File changes are
+# Reviewed L1 payroll list/statistics recipes. File changes are
 # semantics changes and require human review.
 #
 # FR-008 员工工资清单与排名: GongziJeOrderQuery 已按 je 倒序返回（含 dept），

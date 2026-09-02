@@ -1,17 +1,17 @@
-"""usage-admin 数据库定稿基线（开发期单版本，Story 1-11 最终 schema）。
+"""usage-admin 数据库定稿基线（开发期单版本，最终 schema）。
 
 开发期（未上线）迁移历史于 2026-09-02 合并为单一版本：原
 ``20260827_0001_usage``（admin_audit）-> ``20260829_0002_tenant_registry``
 （tenant_registry / platform_principal）-> ``20260901_0003_usage_export``
 （usage_export）三条迭代合并为本文件。本文件是 ``versions/`` 下**唯一**的
-迁移，本服务拥有并写入这四张表（Story 9 / 产品文档 §4.4 表归属）。
+迁移，本服务拥有并写入这四张表（ADR-0003 §7 表归属）。
 
 factory-agent 拥有并写入其业务表（``agent_*``）与全部计量表
 （``usage_event`` / ``*_fact`` / ``mes_operation_category`` /
 ``tenant_usage_*``），建在 factory-agent 的单版本迁移
 ``20260824_0001_session`` 中，本服务对其**只读**，绝不建表、不改 schema。
 计量写入由 factory-agent 在业务提交后的独立事务中执行（失败隔离），本服务
-不再提供任何 ingest 写入接口。
+不提供计量写入接口。
 
 后续交付客户后如需迭代开发，再按日期追加新版本（001、002、003 …），不再
 改写本文件。
@@ -88,7 +88,7 @@ def upgrade() -> None:
     )
 
     # Export jobs (POST /admin/v1/exports) are served by this service and write
-    # this table, so it belongs here (Story 11 table split).
+    # this table, so it belongs here.
     op.create_table(
         "usage_export",
         sa.Column("export_id", sa.Text, primary_key=True),

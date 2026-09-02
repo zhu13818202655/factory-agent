@@ -1,6 +1,6 @@
 """Admin command entrypoints for retention maintenance.
 
-Metering writes (ingest and rollup) moved to factory-agent in Story 11; this
+factory-agent writes the metering events and rollup rows directly; this
 service only owns ``tenant_registry`` / ``platform_principal`` / ``admin_audit``
 (and the export record table ``usage_export``), so its admin commands cover
 audit retention only. Partition maintenance for ``usage_event`` is

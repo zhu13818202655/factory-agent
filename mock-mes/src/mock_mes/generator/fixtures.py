@@ -1,9 +1,9 @@
-"""Deterministic fixtures for the production-like generator (Story 10).
+"""Deterministic fixtures for the production-like generator.
 
 Two layers:
 - **Master data** (``master_rows``): tenant/employee/style/process tables,
   identical for every generated day, decided by the factory-scale settings.
-- **Anchored business rows** (``anchored_rows``): the Story-5/6/7 fixtures
+- **Anchored business rows** (``anchored_rows``): the anchored fixtures
   (plans, production orders, scans, hanging/manual entries, unscanned rows)
   fixed to their historic dates so the customer-shaped numbers and the wages
   golden stay byte-identical.
@@ -19,7 +19,7 @@ from decimal import Decimal
 
 from mock_mes.config import MockMesSettings
 
-#: Story-5 deterministic holiday list used by the work calendar. Weekends plus
+#: Deterministic holiday list used by the work calendar. Weekends plus
 #: these dates are non-production days (no rolling output is generated).
 HOLIDAYS: frozenset[date] = frozenset(
     {
@@ -72,7 +72,7 @@ HOLIDAYS: frozenset[date] = frozenset(
     }
 )
 
-#: Story-5/6/7 anchor dates. Anchored rows only exist on these days; rolling
+#: Anchor dates. Anchored rows only exist on these days; rolling
 #: rows are generated on every production day of the window.
 ANCHOR_PLAN_1 = date(2026, 7, 1)
 ANCHOR_PLAN_2 = date(2026, 8, 1)
@@ -151,7 +151,7 @@ def _anchored_employee(
     }
 
 
-#: Anchored employees keep their Story-5/6/7 payloads verbatim (role included),
+#: Anchored employees keep their original payloads verbatim (role included),
 #: so the customer-shaped fixtures, goldens and contract tests never drift.
 #: Scale generation fills the rest of the headcount around them. 01009 is the
 #: single factory boss (99) under the newly confirmed four-tier role codes.
@@ -341,7 +341,7 @@ def master_rows(settings: MockMesSettings) -> list[RowInsert]:
         }
     ]
 
-    # Styles: the two anchored ones keep their Story-5 payloads; the rest fill
+    # Styles: the two anchored ones keep their original payloads; the rest fill
     # out a realistic factory catalogue (a 500-person plant runs dozens).
     huohao: list[dict[str, object]] = [
         {
@@ -500,7 +500,7 @@ def master_rows(settings: MockMesSettings) -> list[RowInsert]:
 
 
 # ---------------------------------------------------------------------------
-# Anchored business rows (Story 5/6/7 fixtures, fixed to their dates).
+# Anchored business rows (fixed to their dates).
 # ---------------------------------------------------------------------------
 
 _WTNAME = {"WT01": "裁剪", "WT02": "钉扣", "WT03": "验布"}

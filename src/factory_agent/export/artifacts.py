@@ -1,10 +1,11 @@
-"""S3-compatible artifact storage adapters (Story 6).
+"""S3-compatible artifact storage adapters.
 
 The application depends only on the ``ArtifactStore`` port. Two implementations
 ship here:
 
 - ``S3ArtifactStore`` talks to any S3-compatible object store (SeaweedFS is the
-  local/private reference; the production selection is a Story 12 approval).
+  local/private reference; the production selection is pending deployment
+  review).
   Object keys are opaque UUIDs; the store never derives keys from employee IDs,
   question text, or amounts.
 - ``FilesystemArtifactStore`` is the offline test fake; it stores content under a

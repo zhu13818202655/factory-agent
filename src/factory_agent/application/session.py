@@ -397,7 +397,7 @@ class SessionService:
                 yield event
             return
 
-        # Story 7: resolve user business filters (dept/employee names, order/
+        # Resolve user business filters (dept/employee names, order/
         # style/plan codes) from the intent slots against the MES-filtered
         # directory. Every resolution failure happens before any business-data
         # call and never falls back to a broader scope.
@@ -950,7 +950,7 @@ def _time_range_label(time_range: TimeRange) -> str:
     return f"{time_range.start.date().isoformat()}_{time_range.end.date().isoformat()}"
 
 
-#: Human-readable stage labels carried on phase events (Story 6 SSE chain).
+#: Human-readable stage labels carried on phase events.
 _STAGE_LABELS: dict[SessionState, str] = {
     SessionState.PARSING: "解析",
     SessionState.AUTHORIZING: "鉴权",

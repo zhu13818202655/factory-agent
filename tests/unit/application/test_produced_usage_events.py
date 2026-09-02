@@ -1,8 +1,8 @@
 """Field hygiene of the usage events the application actually produces.
 
 The archive-payload format is owned locally by ``factory_agent.application.usage``
-(``SCHEMA_VERSION``); the cross-service contract directory was deleted in
-Story 11. These tests run real session pipelines and guard the two properties
+(``SCHEMA_VERSION``); the cross-service contract directory was deleted. These
+tests run real session pipelines and guard the two properties
 that used to be enforced by the contract schemas:
 
 1. every produced event's payload keys stay inside the whitelisted field set,

@@ -1,14 +1,11 @@
 """Capability identifiers and the authorization matrix.
 
-Story 5 rework (M11/A.1): the three-tier role matrix is display-only. Roles
-never enter ``authorize()``; capability availability is decided by whether MES
-returns data plus this capability registry. ``authorize_capability`` therefore
-only verifies tenant binding — every registered capability is available to
-every authenticated caller, and actual data visibility is enforced by MES-side
-row filtering recorded in ``DataScope.mes_filtered``.
-
-Source of truth: docs/product/permission-matrix.md (FR-001~FR-012, FR-004
-cancelled per M7).
+The three-tier role matrix is display-only. Roles never enter
+``authorize()``; capability availability is decided by whether MES returns data
+plus this capability registry. ``authorize_capability`` therefore only verifies
+tenant binding — every registered capability is available to every
+authenticated caller, and actual data visibility is enforced by MES-side row
+filtering recorded in ``DataScope.mes_filtered``.
 """
 
 from __future__ import annotations
@@ -25,8 +22,8 @@ class Capability(StrEnum):
     OWN_OUTPUT = "FR-001"
     OWN_PAYROLL_SUMMARY = "FR-002"
     OWN_PAYROLL_DETAIL = "FR-003"
-    # FR-004 (group income ranking) cancelled per M7: employee endpoints only
-    # return the caller's own data.
+    # FR-004 (group income ranking) is not registered below yet; its
+    # restoration (the caller's own group ranking) is tracked in Story #1.
     ORDER_PROGRESS = "FR-005"
     ORDER_OUTPUT = "FR-006"
     WORKSHOP_COMPARISON = "FR-007"
@@ -78,7 +75,7 @@ def authorize_capability(
 ) -> AuthorizationDecision:
     """Check tenant binding and registry membership for a resolved interaction.
 
-    Roles are display-only (M11): they never gate capabilities here.
+    Roles are display-only: they never gate capabilities here.
     """
     if scope.tenant_id != context.tenant_id:
         return AuthorizationDecision.deny(

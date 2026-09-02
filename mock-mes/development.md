@@ -1,7 +1,7 @@
 # mock-mes 开发指南
 
-模拟客户 MES 的确定性服务，用于本地开发/测试/演示，**不是生产依赖**。自 Story 10 起，
-数据完全由 `(seed, day)` 与工厂规模参数（`headcount`/`departments`/`group_size` 等）决定并**持久化到 PostgreSQL**：生成器进程写库，API
+模拟客户 MES 的确定性服务，用于本地开发/测试/演示，**不是生产依赖**。数据
+完全由 `(seed, day)` 与工厂规模参数（`headcount`/`departments`/`group_size` 等）决定并**持久化到 PostgreSQL**：生成器进程写库，API
 进程只读，PG 是唯一数据源（无内存数据集、无内存回退）。
 
 ## 快速开始
@@ -32,7 +32,7 @@ uv run --package mock-mes mock-mes
 | `src/mock_mes/api/faults.py` | `X-Mock-Fault` 故障注入中间件 |
 | `src/mock_mes/db.py` | `MockMesDb`：API 只读连接池（psycopg async） |
 | `src/mock_mes/store.py` | `MockMesStore`：SQL 行级过滤、SQL 分页/合计、三源工资归一化 |
-| `src/mock_mes/generator/fixtures.py` | 主数据 + Story-5/6/7 锚定 fixture（逐字保留） |
+| `src/mock_mes/generator/fixtures.py` | 主数据 + 锚定 fixture（逐字保留） |
 | `src/mock_mes/generator/engine.py` | 确定性生成引擎（纯函数 `compute_day_rows` + 写入/批次） |
 | `src/mock_mes/generate.py` | `mock-mes-generate` CLI（手动/定时触发入口） |
 | `src/mock_mes/migrations.py` | `mock-mes-migrate` CLI（独立版本表） |
@@ -41,9 +41,10 @@ uv run --package mock-mes mock-mes
 | `src/mock_mes/testing.py` | 测试共享助手（测试库迁移/生成窗口/构造 app） |
 | `tests/unit/test_generator.py` | 生成器纯函数测试：确定性、不变量、锚定、窗口边界（无需 DB） |
 | `tests/integration/test_pg_generator.py` | PG 集成测试：迁移、幂等、批次 hash、SQL 过滤、PG 不可用报错 |
-| `tests/golden/wages_v1.json` | 工资 golden 数据（Story 10 已随数据窗口重生成并记录原因） |
+| `tests/golden/wages_v1.json` | 工资 golden 数据（已随 PG 数据窗口重生成） |
 
-数据/接口形状的权威来源是 `contracts/mes-canonical.openapi.yaml`（在仓库根，不在本目录）。
+数据/接口形状的权威来源是 `docs/product/AI问答对外接口-整理.md`（仓库根 `docs/product/` 下），
+Mock 实现与其逐字段对齐；产品口径与客户确认结论见 `docs/product/需求及方案整理.md`。
 
 ## 生成器使用
 
@@ -84,9 +85,8 @@ uv run --package mock-mes mock-mes-generate --start 2026-08-01 --end 2026-08-31
    - 行级过滤与分页/合计**在 SQL 完成**（`store.page` / `store.sum_rows` /
      `store.distinct_count`），不把全表拉回内存。
    - 新增端点无需改 `server.py`（router 已注册）；新表要加迁移文件与 `_COLUMN_MAP`。
-3. **同步 OpenAPI 契约**（如端点属于客户真实接口）：在
-   `contracts/mes-canonical.openapi.yaml` 中登记 operation 与响应 schema，
-   否则 `tests/contract/test_mock_mes_canonical.py` 校验会失败。
+3. **对齐接口契约**（如端点属于客户真实接口）：接口形态以
+   `docs/product/AI问答对外接口-整理.md` 为准，响应信封与字段名须与之一致。
 4. **补测试**：`tests/unit/test_generator.py`（纯函数确定性/不变量）与
    `tests/unit/test_customer_api.py`（接口行为）。改数据时不要悄悄改动既有 golden
    期望值。
@@ -97,10 +97,6 @@ uv run --package mock-mes mock-mes-generate --start 2026-08-01 --end 2026-08-31
 # 单测（生成器纯函数测试无需数据库；接口/golden 测试需要测试库）
 MOCK_MES_TEST_DATABASE_URL=postgresql://mock_mes:mock_mes_dev@127.0.0.1:3432/mock_mes \
   uv run --no-sync pytest mock-mes/tests
-
-# 契约测试（响应是否符合 OpenAPI schema）
-MOCK_MES_TEST_DATABASE_URL=postgresql://mock_mes:mock_mes_dev@127.0.0.1:3432/mock_mes \
-  uv run --no-sync pytest tests/contract/test_mock_mes_canonical.py
 
 # 仓库级全套检查（lint + typecheck + 单测 + 契约 + 集成 + e2e + security）
 make check

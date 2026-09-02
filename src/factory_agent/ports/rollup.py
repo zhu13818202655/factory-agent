@@ -2,7 +2,7 @@
 
 Defined in ``ports`` so the application layer (which may depend only on
 ``domain`` and ``ports``) can drive the rollup computation without importing
-``persistence`` (Story 11 3; package-boundary test in
+``persistence`` (package-boundary test in
 ``tests/security/test_package_boundaries.py``).
 """
 

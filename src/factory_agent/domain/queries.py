@@ -20,16 +20,16 @@ class TimeRangeError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class NarrowedFilters:
-    """The single downstream exit for scope parameters (Story 2 output).
+    """The single downstream exit for scope parameters.
 
     ``tenant_id``, ``employee_ids``, and ``dept_ids`` are already intersected
     with the active ``DataScope``; downstream executors must never accept these
     values from any other source.
 
-    ``order_codes`` / ``style_codes`` / ``plan_codes`` are Story 7 business
-    filters: they only narrow the requested range and are enforced by MES-side
-    row-level filtering (M3/M19) plus the M12 "returned range smaller than
-    requested" judgement. They can never broaden the active scope.
+    ``order_codes`` / ``style_codes`` / ``plan_codes`` are business filters
+    that only narrow the requested range and are enforced by MES-side
+    row-level filtering plus the "returned range smaller than requested"
+    judgement. They can never broaden the active scope.
     """
 
     tenant_id: TenantId
@@ -38,9 +38,9 @@ class NarrowedFilters:
     order_codes: frozenset[str] | None = None
     style_codes: frozenset[str] | None = None
     plan_codes: frozenset[str] | None = None
-    #: User-requested department intersection (Story 7). ``None`` means the
-    #: user did not restrict to a department; the visible range is then the
-    #: MES-filtered range (M3/M19). When set it only narrows within the scope.
+    #: User-requested department intersection. ``None`` means the user did not
+    #: restrict to a department; the visible range is then the MES-filtered
+    #: range. When set it only narrows within the scope.
     requested_dept_ids: frozenset[DeptId] | None = None
 
 

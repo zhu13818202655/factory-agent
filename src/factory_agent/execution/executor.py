@@ -5,7 +5,7 @@ accepts ``NarrowedFilters`` as the single scope exit, rejects
 ``PlatformScope``, and guarantees that out-of-scope IDs never enter adapter
 parameters, sandbox tables, or logs.
 
-Story 5 semantics: scope-derived parameters (``uid``/``Uid``) flow only from
+Scope-derived parameters (``uid``/``Uid``) flow only from
 ``NarrowedFilters``; credential parameters (app_key/timestamp/sign) are
 injected by the adapter from ``MesCredentialBundle`` and can never be supplied
 through this path.

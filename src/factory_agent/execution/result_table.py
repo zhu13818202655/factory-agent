@@ -23,7 +23,7 @@ from factory_agent.ports.contracts import UNAVAILABLE_VALUE
 class MetricDefinition(BaseModel):
     """One named metric with an explicit version and confirmation status.
 
-    ``status`` follows the Story 5 registry contract: ``confirmed`` metrics may
+    ``status`` follows the registry contract: ``confirmed`` metrics may
     participate in numeric computation; ``unconfirmed`` and ``unavailable``
     metrics must surface as an explicit ``unavailable`` column state instead of
     a fabricated number.
@@ -63,7 +63,7 @@ class MetricRegistry:
 
 
 def default_metric_registry() -> MetricRegistry:
-    """Story 5 registry: customer-confirmed formulas plus explicit gaps.
+    """Registry: customer-confirmed formulas plus explicit gaps.
 
     Confirmed metrics come from M6/M9/M18. Unconfirmed/unavailable entries
     mirror chapter-5 open items (C.5/C.7/C.8/C.9/C.12) and must never be

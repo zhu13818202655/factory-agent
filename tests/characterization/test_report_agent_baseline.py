@@ -60,7 +60,7 @@ def test_baseline_records_the_source_transition_table() -> None:
         expected = {
             _factory_state(item) for item in source_targets if _factory_state(item) is not None
         }
-        # ``previewing -> rendering`` collapses because export lands in Story 5.
+        # ``previewing -> rendering`` collapses because export lands in a later stage.
         assert {state.value for state in migrated} >= expected - {"archived"}
 
 

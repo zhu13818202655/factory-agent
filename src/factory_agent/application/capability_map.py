@@ -1,8 +1,9 @@
-"""Product capability id (FR-001…) to recipe capability id mapping (Story 7).
+"""Product capability id (FR-001…) to recipe capability id mapping.
 
 The permission matrix and the session authorizer work with the product-facing
-``Capability`` enum values (FR-001…FR-012, FR-004 cancelled per M7). The
-capability runner executes reviewed *recipes* with descriptive ids (e.g.
+``Capability`` enum values (FR-001…FR-012; FR-004 is not mapped below yet — its
+restoration is tracked in Story #1). The capability runner executes reviewed
+*recipes* with descriptive ids (e.g.
 ``fr002_personal_wage_summary``). This module is the single place that maps
 between the two; a product id can own several recipes (FR-002/FR-003 share the
 same operation with a different ``scheme``).

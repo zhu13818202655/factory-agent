@@ -1,6 +1,6 @@
 """Smoke baseline over the real Mock MES in-process ASGI app.
 
-Proves the Story 5 vertical slice end to end: credential bundle from the
+Proves the vertical slice end to end: credential bundle from the
 customer token endpoint, scope injection through the executor, customer rows
 validated at the adapter boundary, and aggregation in the DuckDB sandbox.
 """
@@ -126,7 +126,7 @@ async def test_mock_mes_filters_by_bearer_identity(mock_mes_app: Any) -> None:
         MesRequest(
             "YskQuery",
             {
-                # Story 7: Uid is a filter; company-A employee 01001 must be
+                # Uid is a filter; company-A employee 01001 must be
                 # honoured and the company-B worker 02001 must never appear.
                 "Uid": "01001",
                 "dates": WINDOW[0],

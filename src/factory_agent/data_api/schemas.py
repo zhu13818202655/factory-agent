@@ -4,7 +4,7 @@ These models exist only at the external boundary: validated rows are converted
 to plain dicts before entering the DuckDB sandbox. Raw customer payload shapes
 never leak past ``data_api/``.
 
-Story 5: models mirror the customer envelope ``{code, message, result,
+Models mirror the customer envelope ``{code, message, result,
 timestamp}`` and the list shell ``result.{list, total}`` with optional
 ``result.footer`` (M13/M14).
 """

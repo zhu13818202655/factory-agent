@@ -1,4 +1,4 @@
-"""Story 7 kernel tests: multi-row computed tables, param-binding fan-out,
+"""Multi-row kernel tests: multi-row computed tables, param-binding fan-out,
 business-filter binding, unavailable columns, and the fan-out call budget.
 
 Uses a fake step executor returning golden rows per operation so the recipe
@@ -74,7 +74,7 @@ _DEPT_ROWS: tuple[dict[str, Any], ...] = (
 )
 
 
-class FakeStory7Executor:
+class FakeMultiRowExecutor:
     """Serves the golden rows per operation; WorktypeProgressQuery fans out by
     the bound userid parameter."""
 
@@ -160,7 +160,7 @@ def _range() -> TimeRange:
     )
 
 
-def _runner(executor: FakeStory7Executor) -> KernelCapabilityRunner:
+def _runner(executor: FakeMultiRowExecutor) -> KernelCapabilityRunner:
     return KernelCapabilityRunner(
         executor,
         load_recipes(load_catalog().operation_ids),
@@ -172,7 +172,7 @@ def _runner(executor: FakeStory7Executor) -> KernelCapabilityRunner:
 
 @pytest.mark.asyncio
 async def test_fr005_progress_fans_out_over_materials() -> None:
-    executor = FakeStory7Executor()
+    executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
         CapabilityRunRequest(
@@ -196,7 +196,7 @@ async def test_fr005_progress_fans_out_over_materials() -> None:
 
 @pytest.mark.asyncio
 async def test_fr005_binds_order_filter_into_local_compute() -> None:
-    executor = FakeStory7Executor()
+    executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
         CapabilityRunRequest(
@@ -215,7 +215,7 @@ async def test_fr005_binds_order_filter_into_local_compute() -> None:
 
 @pytest.mark.asyncio
 async def test_fr009_overdue_status_uses_today() -> None:
-    executor = FakeStory7Executor()
+    executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
         CapabilityRunRequest(
@@ -232,7 +232,7 @@ async def test_fr009_overdue_status_uses_today() -> None:
 
 @pytest.mark.asyncio
 async def test_fr009_fanout_call_budget_exhausted_is_structured() -> None:
-    executor = FakeStory7Executor()
+    executor = FakeMultiRowExecutor()
     runner = KernelCapabilityRunner(
         executor,
         load_recipes(load_catalog().operation_ids),
@@ -271,7 +271,7 @@ def _resource_columns() -> dict[str, tuple[str, ...]]:
 
 @pytest.mark.asyncio
 async def test_unavailable_metric_columns_surface_sentinel_not_number() -> None:
-    executor = FakeStory7Executor()
+    executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
         CapabilityRunRequest(
@@ -291,7 +291,7 @@ async def test_unavailable_metric_columns_surface_sentinel_not_number() -> None:
 
 @pytest.mark.asyncio
 async def test_fr011_groups_payroll_by_dept_with_unavailable_headcount() -> None:
-    executor = FakeStory7Executor()
+    executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
         CapabilityRunRequest(
@@ -308,7 +308,7 @@ async def test_fr011_groups_payroll_by_dept_with_unavailable_headcount() -> None
 
 @pytest.mark.asyncio
 async def test_fr012_target_employee_recipe_runs() -> None:
-    executor = FakeStory7Executor()
+    executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
         CapabilityRunRequest(
@@ -333,7 +333,7 @@ async def test_fr012_target_employee_recipe_runs() -> None:
 async def test_fr005_zero_total_worktype_degrades_to_unavailable() -> None:
     """A material with no worktype-progress rows must not fabricate a ratio."""
 
-    class NoWorktypesExecutor(FakeStory7Executor):
+    class NoWorktypesExecutor(FakeMultiRowExecutor):
         async def execute_full_step(
             self,
             filters: Any,

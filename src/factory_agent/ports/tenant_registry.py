@@ -1,8 +1,8 @@
-"""Read-only tenant registry port (Story 11 4).
+"""Read-only tenant registry port.
 
 ``tenant_registry`` is owned and written by usage-admin; this service only ever
 reads it. The port keeps the read behind a protocol so tests can inject a fake
-and the SQL implementation stays isolated (Story 11 4.3).
+and the SQL implementation stays isolated.
 """
 
 from __future__ import annotations

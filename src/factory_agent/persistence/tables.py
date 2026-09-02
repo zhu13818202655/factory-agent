@@ -3,7 +3,7 @@
 Every business read and write is filtered by the trusted ``(tenant_id, user_id)``
 ownership pair; there is deliberately no "by id only" access path.
 
-Table ownership (Story 11, product doc 4.4): this service owns every
+Table ownership (ADR-0003): this service owns every
 ``agent_*`` business table plus all metering tables (``usage_event``,
 ``interaction_fact``, ``llm_call_fact``, ``mes_call_fact``,
 ``mes_operation_category``, ``tenant_usage_hourly``, ``tenant_usage_daily``).
@@ -166,7 +166,7 @@ llm_call_fact_table = sa.Table(
 )
 
 #: One row per customer MES HTTP call (success or failure), written by this
-#: service at the adapter ``_send`` exit (Story 11 2.4/2.6). ``page_count`` is
+#: service at the adapter ``_send`` exit. ``page_count`` is
 #: the page number within its paged fetch (1 for non-paged calls) and is never
 #: summed into the call count (D6); call counts come from row counts.
 mes_call_fact_table = sa.Table(

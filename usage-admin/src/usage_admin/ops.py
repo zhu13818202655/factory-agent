@@ -27,7 +27,7 @@ from usage_admin.store import TenantRegistryRecord, UsageStore, hour_bucket
 
 Granularity = Literal["hour", "day"]
 
-#: Rollup rows are produced by factory-agent (Story 11 3, ``rollup-v2``); this
+#: Rollup rows are produced by factory-agent (``rollup-v2``); this
 #: service only reads the pre-aggregated tables. The label below mirrors
 #: ``factory_agent.application.rollup.ROLLUP_VERSION`` so report responses keep
 #: identifying which aggregation version produced the numbers.
@@ -62,8 +62,8 @@ _ADDITIVE_METRICS: tuple[str, ...] = (
 )
 
 #: Successful MES calls by billing category (D1/D5), computed from
-#: ``mes_call_fact`` at query time (factory-agent's rollup adds these in
-#: Story 11 3.2).
+#: ``mes_call_fact`` at query time; factory-agent's rollup pre-aggregates the
+#: same metrics.
 _MES_METRICS: tuple[str, ...] = (
     "mes_output",
     "mes_payroll",

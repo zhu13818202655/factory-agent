@@ -1,8 +1,9 @@
-"""Story 7 vertical slice: the remaining 9 L1 capabilities against Mock MES.
+"""Vertical slice for the remaining L1 capabilities against Mock MES.
 
 Runs FR-001, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010, FR-011 and
-FR-012 through the same recipe -> executor -> sandbox -> ResultTable path as
-Story 6's FR-002/FR-003, and locks the deterministic golden numbers. A boss
+FR-012 through the same recipe -> executor -> sandbox -> ResultTable path
+used by the wage slice (FR-002/FR-003), locking the deterministic golden
+numbers. A boss
 identity (move_admin_role=01) sees the whole COMPANY-A range via MES row-level
 filtering; employee_ids=None on management capabilities lets MES decide.
 """
@@ -93,7 +94,7 @@ async def test_fr001_personal_output_worker_golden(mock_mes_app: Any) -> None:
             ),
         )
         assert result.column_names == ("rq", "huohao", "worktype", "output_qty", "defective_qty")
-        # Story 10: factory-scale window — 01001 records ~70 output rows.
+        # Factory-scale window — 01001 records ~70 output rows.
         assert len(result.rows) == 70
         assert result.totals["output_qty"] == Decimal("559")
         # 合格/次品无统一数据源（C.5）：列级 unavailable，绝不渲染为数字。
@@ -177,7 +178,7 @@ async def test_fr006_order_output_golden(mock_mes_app: Any) -> None:
     try:
         result = await _run(runner, "fr006_order_output", _management_filters())
         rows = {(row[0], row[1]): row for row in result.rows}
-        # Story 10 numbers: anchored + rolling scans per style/worktype.
+        # Factory-scale numbers: anchored + rolling scans per style/worktype.
         assert rows[("HH001", "WT01")][2] == Decimal("2729")
         assert rows[("HH001", "WT01")][3] == Decimal("63")
         assert rows[("HH001", "WT03")][2] == Decimal("2697")
@@ -194,7 +195,7 @@ async def test_fr007_workshop_comparison_golden(mock_mes_app: Any) -> None:
     try:
         result = await _run(runner, "fr007_workshop_output_comparison", _management_filters())
         by_name = {row[0]: row for row in result.rows}
-        # Story 10 numbers: five workshops with ~100 people each.
+        # Factory-scale numbers: five workshops with ~100 people each.
         assert by_name["一车间"][1] == Decimal("5126")
         assert by_name["一车间"][2] == Decimal("97")
         assert by_name["一车间"][4] == Decimal("5")
@@ -212,7 +213,7 @@ async def test_fr008_payroll_ranking_golden(mock_mes_app: Any) -> None:
     try:
         result = await _run(runner, "fr008_payroll_ranking", _management_filters())
         # 位次按返回顺序编号（M7）；规模下排名覆盖全部 494 名计件员工。
-        # Story 10 numbers: ranking now includes rolling wage rows.
+        # Factory-scale numbers: ranking now includes rolling wage rows.
         assert result.rows[0] == (
             "01273",
             "秦明",
@@ -244,7 +245,7 @@ async def test_fr009_factory_order_overview_golden(mock_mes_app: Any) -> None:
         # K4 交期状态：finish_date 早于当前日期 → 已逾期（无预警阈值）。
         assert rows["PLAN-2607-001"][5] == "已逾期"
         assert rows["PLAN-2608-001"][5] == "已逾期"
-        # Story 10: totals cover the full in-production order book.
+        # Totals cover the full in-production order book.
         assert result.totals["plan_qty"] == Decimal("35877")
         assert result.totals["completed_qty"] == Decimal("35743")
     finally:
@@ -258,7 +259,7 @@ async def test_fr010_workshop_output_overview_golden(mock_mes_app: Any) -> None:
     try:
         result = await _run(runner, "fr010_workshop_output_overview", _management_filters())
         rows = {(row[0], row[1]): row for row in result.rows}
-        # Story 10: rolling plans extend the workshop totals.
+        # Rolling plans extend the workshop totals.
         assert rows[("一车间", "HH001")][2] == Decimal("12531")
         assert rows[("一车间", "HH001")][3] == Decimal("12444")
         assert rows[("一车间", "HH002")][2] == Decimal("11646")
@@ -276,7 +277,7 @@ async def test_fr011_factory_payroll_stats_golden(mock_mes_app: Any) -> None:
     try:
         result = await _run(runner, "fr011_factory_payroll_stats", _management_filters())
         by_name = {row[0]: row for row in result.rows}
-        # Story 10: rolling wage rows extend the dept gross.
+        # Rolling wage rows extend the dept gross.
         assert by_name["一车间"][1] == Decimal("52203.55")
         assert by_name["一车间"][2] == Decimal("97")
         assert by_name["二车间"][1] == Decimal("53921.80")
@@ -302,7 +303,7 @@ async def test_fr012_employee_payroll_golden(mock_mes_app: Any) -> None:
                 dept_ids=None,
             ),
         )
-        # Story 10: 01001 wage rows now include rolling output.
+        # 01001 wage rows now include rolling output.
         assert result.rows[0] == (Decimal("573.60"), Decimal("559"))
         assert result.incomplete is False
     finally:

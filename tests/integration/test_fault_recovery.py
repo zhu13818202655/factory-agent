@@ -1,7 +1,7 @@
 """Full-chain fault recovery against Mock MES fault injection.
 
-Drives the same recipe -> executor -> sandbox -> ResultTable path as the Story 7
-golden slice, but under customer-shaped faults: 429 / 5xx transport faults,
+Drives the same recipe -> executor -> sandbox -> ResultTable golden-slice path, but
+under customer-shaped faults: 429 / 5xx transport faults,
 ``code=0`` credential errors, footer disagreement, and pagination drift. Every
 fault must surface as a structured failure or an explicit incomplete state —
 never a fabricated number.

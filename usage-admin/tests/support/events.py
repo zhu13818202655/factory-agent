@@ -1,10 +1,9 @@
 """Test helpers for building metering fact rows directly.
 
-usage-admin no longer ingests raw events (Story 11: factory-agent writes the
-metering tables in a separate transaction after its business commit), so these
-helpers construct
+factory-agent writes the metering tables in a separate transaction after its
+business commit, so this service has no ingest path; these helpers construct
 the ``InteractionFact`` / ``LlmCallFact`` / ``MesCallFact`` rows that the
-in-memory store reads, mirroring what the removed ingest path used to produce.
+in-memory store reads.
 """
 
 from __future__ import annotations

@@ -1,10 +1,10 @@
-"""Production-like daily data generator over PostgreSQL (Story 10).
+"""Production-like daily data generator over PostgreSQL.
 
 The generator replaces the removed in-memory ``build_dataset``: every day of
 the data window is computed deterministically from the factory-scale settings
 (``headcount``, ``departments``, ``group_size``, ``daily_active_ratio``, …) and
 written to the ``mock_*`` tables by a dedicated writer process. Anchored
-Story-5/6/7 fixtures stay byte-identical; rolling rows are generated at real
+Anchored fixtures stay byte-identical; rolling rows are generated at real
 factory magnitude (work calendar, shifts, delayed orders, defects,
 cross-workshop, one-worker-many-orders, scanned/unscanned mix).
 
@@ -60,7 +60,7 @@ _COLUMN_MAP: dict[str, tuple[str, ...]] = {
     "mock_wsk": ("worktype", "huohao", "dept", "sl", "baohao"),
 }
 
-#: Price per worktype (确定性计件单价, Story 6 M9/M18).
+#: Price per worktype (确定性计件单价, M9/M18).
 _PRICE: dict[str, str] = {"WT01": "1.2500", "WT02": "0.8000", "WT03": "1.0000"}
 _WTNAME: dict[str, str] = {"WT01": "裁剪", "WT02": "钉扣", "WT03": "验布"}
 _CHIMA = ("M", "L", "S", "XL", "XXL")
@@ -533,7 +533,7 @@ def _replace(row: RowInsert, payload: dict[str, object]) -> RowInsert:
     return RowInsert(table=row.table, payload=payload, id=row.id, company=row.company)
 
 
-#: Payload key -> mirrored column aliases (Story-5 field names differ from
+#: Payload key -> mirrored column aliases (customer field names differ from
 #: the SQL column names).
 _PAYLOAD_KEY_ALIAS: dict[tuple[str, str], str] = {
     ("mock_barcode", "detail_id"): "detailId",
@@ -559,7 +559,7 @@ def _extract_columns(row: RowInsert) -> dict[str, object]:
 def _row_id(row: RowInsert) -> str:
     """Deterministic primary key for a row.
 
-    Story-5 records carry a payload ``id`` that is not unique per row (the
+    Customer-shaped records carry a payload ``id`` that is not unique per row (the
     anchored scan/ysk rows reuse the detail id ``1001`` across days, and the
     customer barcode records have no id at all), so the table primary key is
     derived from the payload while the API keeps returning the original shape.

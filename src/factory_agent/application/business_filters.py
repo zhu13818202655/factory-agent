@@ -1,4 +1,4 @@
-"""Resolve Story 7 user business filters against the MES-filtered directory.
+"""Resolve user business filters against the MES-filtered directory.
 
 ``dept_names`` / ``employee_names`` / ``order_codes`` / ``style_codes`` /
 ``plan_codes`` are user *business* filters: they only narrow the requested

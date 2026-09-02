@@ -1,6 +1,6 @@
 # ADR-0004: Logging, Runtime Configuration, And Tracing
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-22
 - Owners: Project maintainers
 
@@ -10,9 +10,9 @@
 piecework, payroll, and production details. Observability must help operators diagnose failures
 without leaking business data, prompts, credentials, authorization scopes, or customer API payloads.
 
-The repository currently has only the baseline rule: emit structured logs and
-OpenTelemetry-compatible telemetry after redaction. This ADR defines the intended implementation
-shape before adding production observability code.
+The repository emits structured logs and OpenTelemetry-compatible telemetry only after redaction.
+This ADR records the implemented observability, configuration, and correlation design; model
+provider access follows ADR-0006.
 
 ## Decision
 
@@ -24,13 +24,14 @@ shape before adding production observability code.
   in local development.
 - Use Pydantic Settings for all service configuration. Secrets use `SecretStr` or DSN secret types
   and are never included in readiness payloads, logs, traces, errors, or test snapshots.
-- Do not add the OpenTelemetry SDK, Collector, or trace backend in the current Stories. Use
-  structured logs, correlation IDs, and explicit duration/status fields for current diagnostics.
+- Do not add the OpenTelemetry SDK, Collector, or trace backend today. Use structured logs,
+  correlation IDs, and explicit duration/status fields for diagnostics.
 - Keep the observability adapter OpenTelemetry-compatible so production tracing can be added later
   without changing application and domain interfaces.
-- LLM provider keys, provider fallback, provider retry policy, and provider routing stay in LiteLLM
-  Proxy. The application configures only the LiteLLM Proxy endpoint, proxy credential, logical model
-  aliases, request defaults, and application-level semantic repair limits.
+- LLM provider keys, provider fallback, provider retry policy, and provider routing follow
+  ADR-0006: the application embeds the LiteLLM Router SDK and owns the reviewed deployment registry
+  (`configs/knowledge/models.yaml`); keys are referenced by environment variable and resolved into
+  `SecretStr` at startup. Business code only names logical aliases.
 
 ## Logging Design
 
@@ -144,50 +145,27 @@ overrides explicitly rather than mutating global state.
 
 ### Factory Agent Variables
 
+变量与 `src/factory_agent/config.py` 对齐，随配置演进以代码为准；下表给出主要入口。
+
 | Variable | Type | Description |
 | :--- | :--- | :--- |
-| `FACTORY_AGENT_CANONICAL_MES_BASE_URL` | URL | Canonical MES or Mock MES base URL |
-| `FACTORY_AGENT_POSTGRES_URL` | Postgres DSN | Main application metadata and outbox database |
+| `FACTORY_AGENT_CANONICAL_MES_BASE_URL` | URL | Customer MES (or Mock MES) base URL |
+| `FACTORY_AGENT_POSTGRES_URL` | Postgres DSN | Application metadata and metering database |
 | `FACTORY_AGENT_REDIS_URL` | Redis DSN | Optional cache endpoint; non-authoritative |
 | `FACTORY_AGENT_ARTIFACT_ENDPOINT` | URL | S3-compatible artifact endpoint |
 | `FACTORY_AGENT_ARTIFACT_BUCKET` | string | Artifact bucket/container name |
 | `FACTORY_AGENT_MODEL_REGISTRY_PATH` | path | Reviewed model registry; see ADR-0006 |
 | `FACTORY_AGENT_LLM_KEY_*` | secret | Provider keys named by the registry (ADR-0006) |
-| `FACTORY_AGENT_LLM_DEFAULT_MODEL` | string | Logical model alias, not provider model name |
-| `FACTORY_AGENT_LLM_FAST_MODEL` | string | Optional alias for routing/simple classification |
-| `FACTORY_AGENT_LLM_REASONING_MODEL` | string | Optional alias for heavier reasoning |
-| `FACTORY_AGENT_LLM_TEMPERATURE` | Decimal/float | Default bounded sampling temperature |
-| `FACTORY_AGENT_LLM_TOP_P` | Decimal/float | Default bounded nucleus sampling value |
-| `FACTORY_AGENT_LLM_TIMEOUT_SECONDS` | float | Per logical LLM request timeout |
-| `FACTORY_AGENT_LLM_MAX_REPAIR_ATTEMPTS` | int | Application semantic/schema repair attempts, default at most `1` |
+| `FACTORY_AGENT_LLM_*` | various | Logical alias and sampling/safety defaults; see `config.py` (`llm_fast_alias`, `llm_reasoning_alias`, `llm_summary_alias`, temperature, top-p, timeout, max repair attempts) |
 
 ### LLM Config Boundary
 
-> **Superseded by ADR-0006.** This project does not deploy a LiteLLM Proxy, so
-> the application owns provider configuration through the reviewed registry and
-> delegates fallback, retry, and cooldown to the LiteLLM Router SDK. The
-> sensitive-data rules below remain fully in force.
-
-The application sends requests to one LiteLLM Proxy through the `ModelGateway` port. The app may set:
-
-- logical model alias;
-- temperature and `top_p` defaults;
-- timeout for the logical application call;
-- maximum schema/semantic repair attempts;
-- safe response schema and bounded output size.
-
-The app must not own:
-
-- provider API keys;
-- direct provider base URLs;
-- provider fallback chains;
-- provider retry/backoff policy;
-- provider-specific routing rules.
-
-Those belong in LiteLLM Proxy configuration. The application may record sanitized fallback facts
-returned by LiteLLM for usage metering, such as `fallback=true`, logical alias, final model name if
-allowed, attempt count, status, token counts, and duration. It must not log prompts, completions,
-request bodies, or provider credentials.
+LLM provider configuration, fallback, retry, and cooldown follow ADR-0006
+(`docs/adr/0006-model-provider-access-without-proxy.md`): the application embeds the LiteLLM
+Router SDK and owns the reviewed deployment registry (`configs/knowledge/models.yaml`); keys are
+referenced by environment variable, never written as literals. The sensitive-data rules in this
+document and in ADR-0006 remain fully in force: prompts, completions, request bodies, and provider
+credentials never enter logs, errors, usage events, or test snapshots.
 
 ## Tracing Design
 
@@ -209,7 +187,7 @@ otherwise generate a new opaque ID.
 
 ### OpenTelemetry Trigger Conditions
 
-Reconsider OpenTelemetry in Story 12 only when at least one of these conditions exists:
+Reconsider OpenTelemetry only when at least one of these conditions exists:
 
 - requests cross enough independently operated services that correlation logs are insufficient;
 - production incidents require a call tree rather than per-stage duration logs;
@@ -223,7 +201,7 @@ introduced only because the adapter supports it.
 
 ### Future Trace Attributes
 
-If Story 12 approves OTel, allowed attributes are:
+If OTel is approved, allowed attributes are:
 
 | Attribute | Description |
 | :--- | :--- |
@@ -251,18 +229,18 @@ on OTel.
 3. Open the trace in the configured backend.
 4. Inspect spans and sanitized event metadata without exposing business data.
 
-## Implementation Plan
+## Implementation Status
 
-1. **Story 2:** add Loguru, typed common/log settings, centralized sinks and standard logging
-  interception.
-2. **Story 2:** add request middleware and `contextvars` binding for validated `request_id`, trusted
-  tenant context after authorization, and `interaction_id` when available.
-3. **Story 2:** prove sensitive canary values do not appear in logs, errors, or snapshots.
-4. **Story 4:** add typed LLM settings, LiteLLM adapter configuration, logical aliases, sampling
-  defaults, timeout, and at most one semantic repair.
-5. **Story 4:** emit redacted LLM/MES operation facts and usage events with correlation IDs.
-6. **Story 12:** evaluate the OTel trigger conditions. Add SDK, Collector/exporter configuration,
-  sampling, redaction tests, and runbooks only if tracing is approved and operationally justified.
+- Loguru with typed settings, centralized sinks, and standard-library interception is implemented
+  under `src/factory_agent/observability/` (`get_logger` facade; usage-admin mirrors it under
+  `usage_admin/logging.py`).
+- Request middleware binds validated `request_id`, authorized tenant context, and `interaction_id`
+  via `contextvars`.
+- Sensitive-canary tests prove the values never appear in logs, errors, or snapshots.
+- Redacted LLM/MES operation facts and usage events carry correlation IDs; LLM configuration
+  follows ADR-0006.
+- OTel is not introduced: the SDK, Collector/exporter configuration, sampling, and runbooks are
+  added only if the trigger conditions above are met and tracing is operationally justified.
 
 ## Consequences
 
@@ -271,6 +249,7 @@ on OTel.
 - Correlation IDs and structured duration logs cover current diagnostics without requiring a
   Collector, trace backend, sampling policy, or trace storage operations.
 - The observability adapter preserves a future vendor-neutral OpenTelemetry integration point.
-- LiteLLM remains the provider fallback and credential boundary; application config stays focused on
-  logical model behavior and safety limits.
+- Model provider configuration, fallback, and retry are owned per ADR-0006 (LiteLLM Router SDK +
+  reviewed registry); application config stays focused on logical aliases, sampling defaults, and
+  safety limits, and only sanitized model facts are logged.
 - Observability is useful by default but cannot become a side channel for sensitive factory data.

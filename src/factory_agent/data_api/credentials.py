@@ -1,14 +1,14 @@
-"""Customer credential bundle: the trusted identity entry (Story 5, M1/M4/M15).
+"""Customer credential bundle: the trusted identity entry.
 
 The bundle mirrors the customer ``/api/system/token`` response. It is a frozen
 value object that only ``data_api/`` may read; credential values never enter
 LLM prompts, logs, traces, errors, audit events, or test snapshots.
 
 Identity binding rules:
-- ``tenant_id`` is the plaintext ``app_key`` (one factory, one AppKey — M4).
+- ``tenant_id`` is the plaintext ``app_key`` (one factory, one AppKey).
 - ``employee_id`` / ``user_id`` is the token response ``user`` (work number);
-  the display name is ``uname`` (M10).
-- ``roles`` / ``permissions`` are parsed but always empty today (M11) and never
+  the display name is ``uname``.
+- ``roles`` / ``permissions`` are parsed but always empty today and never
   participate in authorization decisions.
 """
 
@@ -43,12 +43,12 @@ class MesCredentialBundle:
 
     @property
     def tenant_id(self) -> TenantId:
-        """AppKey is the tenant ID (M4); no other source may define it."""
+        """AppKey is the tenant ID; no other source may define it."""
         return TenantId(self.app_key)
 
     @property
     def employee_id(self) -> EmployeeId:
-        """Token ``user`` (work number) is the employee ID (M10)."""
+        """Token ``user`` (work number) is the employee ID."""
         return EmployeeId(self.user)
 
     def seconds_until_expiry(self, now: datetime) -> int:

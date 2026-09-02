@@ -11,14 +11,14 @@ Use these sources in order when requirements conflict:
 
 1. The current numbered Story under `.github/story/`, including its scope, assumptions, and tasks.
 2. `SECURITY.md` and accepted permission/data-classification ADRs.
-3. OpenAPI and JSON Schema under `contracts/`.
-4. Accepted requirements under `docs/product/`.
-5. `ARCHITECTURE.md` and accepted ADRs under `docs/adr/`.
-6. This file and the nearest scoped `AGENTS.md`.
-7. Existing implementation patterns.
+3. Accepted customer requirements and the customer MES interface contract under `docs/product/`
+   (`需求及方案整理.md`, `AI问答对外接口-整理.md`).
+4. `ARCHITECTURE.md` and accepted ADRs under `docs/adr/`.
+5. This file and the nearest scoped `AGENTS.md`.
+6. Existing implementation patterns.
 
-Files under `docs/requirements/source/` and `docs/reference/source-plans/` preserve provenance.
-They are not implementation authority and may contain stale assumptions.
+Superseded requirements, plans, and customer documents stay recoverable through git history and are
+not kept as live provenance copies.
 
 Do not silently resolve a conflict in a lower-priority source. Record the conflict and stop.
 
@@ -49,18 +49,17 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 - `mock-mes/`: self-contained simulator; never a production dependency.
 - `usage-admin/`: independently built production service for authorized multi-tenant usage
    aggregation, operational APIs, and reports; it never calls MES endpoints.
-- `contracts/`: versioned OpenAPI and JSON Schema compatibility boundary.
 - `configs/knowledge/`: reviewed API catalog, metrics, and L1 DAGs.
 - `tests/support/`: in-process fakes and pytest-managed test processes, not services.
 - `data/`: ignored runtime output only.
 
-`factory_agent`, `mock_mes`, and `usage_admin` must never import each other. Since the Story 11
-direct-write refactor there is no cross-service usage transport and no usage-event contract:
+`factory_agent`, `mock_mes`, and `usage_admin` must never import each other. There is no
+cross-service usage transport and no usage-event contract:
 factory-agent writes every metering table (`usage_event`, the `*_fact` tables,
 `mes_operation_category`, `tenant_usage_*`) directly into the shared PostgreSQL in a separate
 transaction after its business commit (failures are alerted, never rolled back into or blocking
 the business answer), and usage-admin only
-reads the shared PostgreSQL. Table ownership is exclusive (product doc §4.4): factory-agent owns
+reads the shared PostgreSQL. Table ownership is exclusive (ADR-0003 §7): factory-agent owns
 its business tables (`agent_*`) plus all metering tables; usage-admin owns and writes only
 `tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export` — factory-agent reads
 `tenant_registry` read-only for MES AppKey resolution (ADR-0003 §4.3). Both services migrate one
@@ -82,11 +81,11 @@ directory.
 4. When a Story uses ADO-style state, use `New -> Active -> Resolved -> Closed`: implementation starts
    at `Active`, reaches `Resolved` only after its checklist and relevant engineering checks are
    complete, and reaches `Closed` only after human review. State never overrides checklist evidence.
-5. When a customer API or business rule is unavailable, continue against the contract in
-   `contracts/` and Mock MES, and keep the temporary assumption visible in the Story or relevant
-   product document. Confirmed customer facts live in
-   `docs/reference/弘兆MES接口整体说明-V2.md` (M/K identifiers); unconfirmed calculations must
-   surface as an explicit `unavailable` state rather than a fabricated number.
+5. When a customer API or business rule is unavailable, continue against Mock MES and the customer
+   interface contract in `docs/product/AI问答对外接口-整理.md`, and keep the temporary assumption
+   visible in the Story or relevant product document. Confirmed customer facts live in
+   `docs/product/需求及方案整理.md`; unconfirmed calculations must surface as an explicit
+   `unavailable` state rather than a fabricated number.
 6. After the Story checklist is complete, summarize the result for the user. The user reviews the
    implementation manually and decides whether follow-up changes are needed.
 
@@ -97,7 +96,6 @@ make bootstrap
 make lint
 make typecheck
 make test-unit
-make test-contract
 make test-integration
 make test-e2e
 make security

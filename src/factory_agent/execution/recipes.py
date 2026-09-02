@@ -72,7 +72,7 @@ class RecipeStep(BaseModel):
 
 
 class ResultColumn(BaseModel):
-    """One output column with optional type/unit for rendering (Story 6)."""
+    """One output column with optional type/unit for rendering."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

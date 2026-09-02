@@ -29,7 +29,7 @@ class FilterNarrower:
     ``employee_ids`` and ``dept_ids`` are intersected with the scope and an
     empty intersection is rejected before any business-data call.
 
-    Story 7 business filters (``order_codes`` / ``style_codes`` /
+    Business filters (``order_codes`` / ``style_codes`` /
     ``plan_codes`` and a user-requested department) are narrow-only: they are
     passed to MES which enforces row-level filtering (M3/M19), and a too-small
     return is surfaced via the M12 judgement. They are never treated as scope

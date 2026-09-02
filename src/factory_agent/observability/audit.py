@@ -94,7 +94,7 @@ class AuditWriteError(RuntimeError):
 
 
 class InMemoryAuditSink:
-    """Test/offline implementation; PostgreSQL persistence arrives in Story 4~5."""
+    """Test/offline implementation used when no persistent sink is wired."""
 
     def __init__(self) -> None:
         self.events: list[AuditEvent] = []

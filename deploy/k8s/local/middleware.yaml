@@ -4,14 +4,21 @@ metadata:
   name: postgres-init
 data:
   init-databases.sql: |
+    # factory-agent + usage-admin share one logical database (ADR-0003 §7);
+    # mock-mes stays on its own database. See deploy/compose/postgres/init-databases.sql.
     CREATE USER factory_agent WITH PASSWORD 'factory_agent_dev';
     CREATE DATABASE factory_agent OWNER factory_agent;
 
+    CREATE USER usage_admin WITH PASSWORD 'usage_admin_dev';
+    GRANT CONNECT ON DATABASE factory_agent TO usage_admin;
+    GRANT CREATE ON SCHEMA public TO usage_admin;
+    ALTER DEFAULT PRIVILEGES FOR ROLE usage_admin IN SCHEMA public
+        GRANT SELECT ON TABLES TO factory_agent;
+    ALTER DEFAULT PRIVILEGES FOR ROLE factory_agent IN SCHEMA public
+        GRANT SELECT ON TABLES TO usage_admin;
+
     CREATE USER mock_mes WITH PASSWORD 'mock_mes_dev';
     CREATE DATABASE mock_mes OWNER mock_mes;
-
-    CREATE USER usage_admin WITH PASSWORD 'usage_admin_dev';
-    CREATE DATABASE usage_admin OWNER usage_admin;
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

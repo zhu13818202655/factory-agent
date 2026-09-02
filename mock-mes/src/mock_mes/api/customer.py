@@ -1,8 +1,8 @@
-"""Mock MES customer-shaped endpoints: all 27 interfaces (Story 5, PG-backed).
+"""Mock MES customer-shaped endpoints: all 27 interfaces, PG-backed.
 
 Implements the authentication chain, the ``{code, message, result, timestamp}``
 envelope, ``footer`` totals, row-level filtering (M3/M19) and ``code=0`` error
-scenarios. Since Story 10 every endpoint reads from PostgreSQL through
+scenarios. Every endpoint reads from PostgreSQL through
 ``MockMesStore``: row-level filtering (company → dept → ``move_admin_role="00"``
 own-data), pagination and SQL COUNT/SUM happen in SQL; the three wage sources
 are normalised in Python after SQL filtering. There is no in-memory dataset and
@@ -657,8 +657,8 @@ async def gongzi_mx_query(request: Request) -> JSONResponse:
     scheme = str(body.get("scheme", ""))
     store = store_from(request)
     rows = await store.wage_rows(identity, types, start, end)
-    # Story 7: honor the Uid filter for manager/boss identities (M19 row-level
-    # filtering simulates the customer contract where Uid is a required param).
+    # Honor the Uid filter for manager/boss identities (the customer contract
+    # requires the Uid parameter for row-level filtering).
     target_uid = body.get("Uid")
     if target_uid:
         rows = [row for row in rows if str(row["uid"]) == str(target_uid)]

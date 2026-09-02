@@ -1,11 +1,11 @@
-"""Direct-to-table metering writes with failure isolation (Story 11).
+"""Direct-to-table metering writes with failure isolation.
 
 ``SqlMeteringStore`` writes the raw ``usage_event`` archive plus the derived
 ``interaction_fact`` / ``llm_call_fact`` / ``mes_call_fact`` rows in one
 transaction, using ``event_id`` + ``ON CONFLICT DO NOTHING`` for idempotency
 (the ``usage_event`` primary key is ``(event_id, occurred_at)``).
 
-Failure isolation (Story 11 1.6 / R1): every write is wrapped so that any
+Failure isolation: every write is wrapped so that any
 exception is logged as a structured alert and never raised into the business
 transaction. The metering transaction is intentionally separate from the
 business commit — a metering failure can therefore never roll back an answer.
@@ -61,7 +61,7 @@ class SqlMeteringStore:
             async with self._engine.begin() as connection:
                 for event in events:
                     await self._write_event(connection, event)
-        except Exception as error:  # noqa: BLE001 - isolation contract (Story 11 1.6)
+        except Exception as error:  # noqa: BLE001 - isolation contract
             _LOGGER.exception("usage.metering.write_failed", event_count=len(events))
             if self._on_failure is not None:
                 try:

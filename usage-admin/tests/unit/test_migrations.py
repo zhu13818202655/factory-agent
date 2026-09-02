@@ -53,8 +53,7 @@ def test_usage_admin_migration_creates_only_its_owned_tables() -> None:
     assert "CREATE TABLE admin_audit" in sql
     assert "CREATE TABLE usage_export" in sql
     # factory-agent-owned business and MES metering tables are never created
-    # here (legacy metering DDL from Story 8 is moved to factory-agent in
-    # Story 11 and is out of scope for this Story).
+    # here; they belong to factory-agent's own migration history.
     for foreign_table in (
         "agent_interaction",
         "agent_message",
@@ -69,7 +68,7 @@ def test_usage_admin_migration_creates_only_its_owned_tables() -> None:
 # NOTE: the former test_new_tenant_migration_creates_only_story_nine_tables
 # asserted on the standalone ``20260829_0002_tenant_registry`` revision. The
 # development migration history was merged into a single baseline
-# (``20260827_0001_usage``, Story 11 5.4), so that revision no longer exists;
+# (``20260827_0001_usage``), so that revision no longer exists;
 # the single-baseline coverage (tenant_registry / platform_principal /
 # admin_audit / usage_export only, no metering tables) is provided above by
 # test_usage_admin_migration_creates_only_its_owned_tables.
@@ -86,7 +85,7 @@ def test_factory_agent_migration_never_creates_shared_tables() -> None:
 
 def test_version_tables_are_isolated_between_services() -> None:
     """usage-admin pins its own Alembic version table; factory-agent uses the
-    default ``alembic_version`` (Story 11 revert)."""
+    default ``alembic_version``."""
     usage_admin_env = (_REPO_ROOT / "usage-admin" / "migrations" / "env.py").read_text()
     factory_agent_env = (_REPO_ROOT / "migrations" / "env.py").read_text()
 

@@ -5,7 +5,7 @@ Events carry only the whitelisted fields of the local archive-payload format
 lists never enter an event; the user is identified by an irreversible
 per-tenant pseudonym.
 
-Since Story 11 the events are written by the owning service directly into the
+The events are written by the owning service directly into the
 ``usage_event`` / ``*_fact`` tables in a separate transaction after the business
 commit; the payload shape is validated before write. A metering failure is
 alerted and never blocks the interaction.
@@ -56,7 +56,7 @@ _INTERACTION_STATUS_MAP: dict[InteractionStatus, CompletionStatus] = {
 #: Active interaction usage context, set by the session pipeline while one turn
 #: is executing. The MES adapter reads it at its single ``_send`` exit to build
 #: ``mes_call_completed`` events without threading identifiers through every
-#: executor layer (Story 11 2.6).
+#: executor layer.
 _usage_context_var: ContextVar[UsageContext | None] = ContextVar(
     "factory_agent_usage_context", default=None
 )
@@ -100,7 +100,7 @@ def record_mes_call(call: MesCallRecord) -> None:
 
     Idempotent and exception-safe by contract: outside a metered interaction
     (readiness probes, unresolved scope) the call is dropped; a construction
-    failure is logged and never propagates into the MES adapter (Story 11 1.6).
+    failure is logged and never propagates into the MES adapter.
     """
     context = current_usage_context()
     events = _mes_events_var.get()
@@ -264,7 +264,7 @@ def mes_call_completed_event(
     status: MesCallStatus,
     error_category: str | None = None,
 ) -> UsageEvent:
-    """One MES HTTP call completion event (Story 11 2.5).
+    """One MES HTTP call completion event.
 
     Fields follow the local archive-payload format (``SCHEMA_VERSION``) and
     never carry a URL, business parameter value, or credential. ``page_count``

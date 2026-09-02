@@ -23,7 +23,7 @@ class MockMesSettings(BaseSettings):
     port: int = 8010
     seed: int = 20260821
     virtual_now: datetime = datetime.fromisoformat("2026-08-21T08:00:00+00:00")
-    #: PostgreSQL data base (Story 10). The API is read-only against it; the
+    #: PostgreSQL data base. The API is read-only against it; the
     #: generator process writes. Credentials come only from the environment.
     database_url: SecretStr | None = None
     #: Data-window start; defaults to January 1st of the previous year.
@@ -71,7 +71,7 @@ class MockMesSettings(BaseSettings):
             end = self.data_end
         else:
             end = self.virtual_now.date()
-        # Never generate data in the future (Story 10 invariant).
+        # Never generate data in the future.
         return min(end, self.virtual_now.date(), date.today())
 
 

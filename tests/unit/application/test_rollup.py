@@ -1,4 +1,4 @@
-"""Rollup metrics for MES calls (Story 11 3.2 / 6.1).
+"""Rollup metrics for MES calls.
 
 ``compute_bucket_metrics`` must aggregate ``mes_call_fact`` rows per category
 and per status, keep success and failure separate, and never re-count

@@ -3,8 +3,8 @@
 These rules apply to `tests/` and `mock-mes/tests/`.
 
 - Unit tests use no network and no real database. In-process ASGI transport is allowed.
-- Contract tests verify OpenAPI/JSON Schema compatibility and Adapter consumer behavior.
 - Integration tests use real PostgreSQL, Redis, DuckDB, or pytest-managed HTTP processes.
+  The published health surface (`/health/*`) is verified in `tests/integration/test_health_openapi.py`.
 - E2E tests cover user text through authorization, orchestration, result, audit, and export.
 - Do not assert only status codes; assert scope, calls, rows, audit, and grounded values.
 - A denied authorization test must assert zero downstream business-data calls.

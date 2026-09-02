@@ -1,4 +1,4 @@
-"""SQLAlchemy artifact metadata repository (Story 6).
+"""SQLAlchemy artifact metadata repository.
 
 Only the opaque object key and approved metadata are stored: tenant/user owner,
 capability, filename, size, SHA-256, and retention timestamps. No sensitive

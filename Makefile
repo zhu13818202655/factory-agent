@@ -7,7 +7,7 @@ GIT_SAFE_ENV := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VA
 
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap lint typecheck test-unit test-contract test-integration
+.PHONY: help bootstrap lint typecheck test-unit test-integration
 .PHONY: test-e2e security check dev dev-mock dev-usage-admin pre-commit compose-config compose-up compose-down middleware-up middleware-down build-images test-images
 
 help:
@@ -40,9 +40,6 @@ typecheck:
 test-unit:
 	$(PYTEST) tests/unit tests/eval mock-mes/tests/unit usage-admin/tests/unit
 
-test-contract:
-	$(PYTEST) tests/contract
-
 test-integration:
 	$(PYTEST) tests/integration usage-admin/tests/integration
 
@@ -54,7 +51,7 @@ security:
 	$(RUN) pip-audit --skip-editable
 	$(PYTEST) tests/security
 
-check: lint typecheck test-unit test-contract test-integration test-e2e security
+check: lint typecheck test-unit test-integration test-e2e security
 
 pre-commit:
 	$(GIT_SAFE_ENV) $(RUN) pre-commit run --all-files

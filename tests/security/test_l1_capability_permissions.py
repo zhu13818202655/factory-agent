@@ -1,4 +1,4 @@
-"""Story 7 permission & privacy tests for the remaining L1 capabilities.
+"""Permission & privacy tests for the remaining L1 capabilities.
 
 Proves the four data-capability guarantees on the new recipes:
 1. User business filters (dept/employee) only narrow; out-of-scope ids are
@@ -145,7 +145,7 @@ async def test_fr008_card_and_xlsx_never_leak_credentials(mock_mes_app: Any) -> 
     assert CANARY_TOKEN not in serialized
     assert "01009" not in serialized  # caller's uid is not a ranking row field
     assert CANARY_APP_KEY not in _xlsx_text(excel)
-    # The card/summary only cite numbers already in the table (Story 10 totals).
+    # The card/summary only cite numbers already in the table.
     assert "264029.2" in summary
 
 

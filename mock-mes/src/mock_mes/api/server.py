@@ -1,6 +1,6 @@
-"""Mock MES FastAPI application: customer-shaped endpoints (Story 5, PG-backed).
+"""Mock MES FastAPI application: customer-shaped endpoints, PG-backed.
 
-Since Story 10 the app owns a read-only PostgreSQL pool (``MockMesDb``) and a
+The app owns a read-only PostgreSQL pool (``MockMesDb``) and a
 ``MockMesStore`` facade; there is no in-memory dataset and no fallback. A
 missing ``MOCK_MES_DATABASE_URL`` is a loud startup error, and readiness checks
 the live database connection.
@@ -61,7 +61,7 @@ def create_app(settings: MockMesSettings | None = None) -> FastAPI:
         active_settings.database_url.get_secret_value() if active_settings.database_url else None
     )
     if database_url is None:
-        # Story 10: PG is the only data source; there is no in-memory fallback.
+        # PG is the only data source; there is no in-memory fallback.
         raise RuntimeError("MOCK_MES_DATABASE_URL is required (in-memory dataset removed)")
 
     db = MockMesDb(database_url)

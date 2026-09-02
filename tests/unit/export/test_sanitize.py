@@ -1,4 +1,4 @@
-"""Filename and spreadsheet-cell safety (Story 6): traversal and formula injection."""
+"""Filename and spreadsheet-cell safety: traversal and formula injection."""
 
 from __future__ import annotations
 

@@ -1,10 +1,10 @@
-"""Story 5: trusted identity resolution and tenant context tests.
+"""Trusted identity resolution and tenant context tests.
 
-The A1/A2/A3 closure chain is replaced by the customer credential bundle
-(M1/M4/M15). ``tenant_id`` is the plaintext AppKey and ``employee_id`` is the
-token ``user``; one factory has one AppKey, so membership is naturally unique.
-``DataScope`` is the minimal provable range with ``mes_filtered`` recorded at
-the adapter boundary, never here. Roles are display-only (M11).
+Membership comes from the customer credential bundle: ``tenant_id`` is the
+plaintext AppKey and ``employee_id`` is the token ``user``; one factory has one
+AppKey, so membership is naturally unique. ``DataScope`` is the minimal
+provable range with ``mes_filtered`` recorded at the adapter boundary, never
+here. Roles are display-only.
 """
 
 from __future__ import annotations

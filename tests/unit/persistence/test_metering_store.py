@@ -1,4 +1,4 @@
-"""Metering store failure isolation (Story 11 1.6 / 6.3).
+"""Metering store failure isolation.
 
 ``SqlMeteringStore.write_usage_events`` must never raise: any database fault is
 logged and forwarded to the optional alert callback. These tests drive a fake

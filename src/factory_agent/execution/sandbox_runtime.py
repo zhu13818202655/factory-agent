@@ -133,7 +133,7 @@ class InteractionSandbox:
         """Run one reviewed read-only statement and fetch all rows.
 
         Named parameters are passed through as a dict so reviewed local compute
-        can reference ``$order_codes``-style bindings (Story 7 business
+        can reference ``$order_codes``-style bindings (user business
         filters); positional sequences are passed as a list. Values are always
         bound parameters — never interpolated into the SQL text.
         """

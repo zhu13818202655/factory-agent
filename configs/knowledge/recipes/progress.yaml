@@ -1,4 +1,4 @@
-# Reviewed L1 progress recipes (Story 7). File changes are semantics changes
+# Reviewed L1 progress recipes. File changes are semantics changes
 # and require human review.
 #
 # FR-005 订单/款号进度 and FR-009 全厂订单进度总览 share the same chain:

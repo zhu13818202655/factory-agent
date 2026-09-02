@@ -1,10 +1,10 @@
-"""Replayable hourly/daily rollup owned by this service (Story 11 3).
+"""Replayable hourly/daily rollup owned by this service.
 
 Raw facts remain the source of truth; the rollup engine groups them into hour
 and day buckets and upserts idempotent rows stamped with a rollup version. The
 engine is pure against a ``RollupStore`` protocol so unit tests run offline.
 
-MES category metrics (Story 11 3.2): ``mes_call_fact`` rows are classified by
+MES category metrics: ``mes_call_fact`` rows are classified by
 joining ``mes_operation_category`` (reviewed from ``apis.yaml``), and counts
 are aggregated per category and per status — success and failure are kept
 separate. Call counts come from fact row counts; ``page_count`` is never summed
@@ -30,7 +30,7 @@ from factory_agent.ports.rollup import (
 _LOGGER = get_logger("factory_agent.application.rollup")
 
 #: Bumped whenever the metric set changes so old windows are recomputed under a
-#: new version instead of being silently overwritten (Story 11 3.3).
+#: new version instead of being silently overwritten.
 ROLLUP_VERSION = "rollup-v2"
 
 #: Billing categories from ``mes_operation_category`` / ``apis.yaml`` (D5).

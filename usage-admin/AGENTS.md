@@ -7,11 +7,11 @@ These rules apply to `usage-admin/`.
 - Platform authorization uses a reviewed `PlatformScope`; it never reuses tenant MES roles.
 - Metering tables are written by factory-agent in a separate transaction after its business
   commit (failures are alerted, never blocking or rolling back an answer); this service never
-  ingests events and only reads the fact/rollup tables (Story 11 direct write).
+  ingests events and only reads the fact/rollup tables read-only.
 - Database schema changes use Alembic migrations; startup never creates tables.
 - Keep liveness local. Readiness may report missing optional development configuration without secrets.
 - Unit tests use no network or real database.
-- **Table ownership (breaking change, Story 9 / product doc §4.4)**: this service owns and writes
+- **Table ownership (ADR-0003 §7)**: this service owns and writes
   `tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export`; every other table in
   the shared PostgreSQL (business tables and all metering tables, including `mes_call_fact` and
   `mes_operation_category`) is factory-agent owned and **read-only here**. No table may appear in

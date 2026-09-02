@@ -1,4 +1,4 @@
-"""PG-backed fixtures for mock-mes tests (Story 10).
+"""PG-backed fixtures for mock-mes tests.
 
 Requires ``MOCK_MES_TEST_DATABASE_URL``; tests that need PostgreSQL skip when
 it is not set. The schema migration and the fixed test window are applied once

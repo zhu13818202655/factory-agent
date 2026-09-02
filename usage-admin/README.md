@@ -1,7 +1,7 @@
 # usage-admin
 
 Independent production service for authorized, multi-tenant usage metering, operational reports,
-and **tenant master data** (Story 9). It does not import `factory_agent` or `mock_mes`, and it
+and **tenant master data**. It does not import `factory_agent` or `mock_mes`, and it
 never calls MES endpoints.
 
 ## Responsibilities
@@ -12,7 +12,7 @@ never calls MES endpoints.
 - **Tenant master data**: owns and writes `tenant_registry` (factory name + AppKey + status),
   `platform_principal` (internal operations accounts), and `admin_audit`. factory-agent reads
   `tenant_registry` read-only; every other table in the shared database is factory-agent owned and
-  **read-only here** (table-ownership breaking change, product doc §4.4).
+  **read-only here** (table ownership, ADR-0003 §7).
 
 ## Authentication
 
@@ -34,16 +34,17 @@ uv run --package usage-admin usage-admin
 ```
 
 The liveness endpoint is `GET /health/live`. Readiness is `degraded` until
-`USAGE_ADMIN_DATABASE_URL` is configured. Required secrets for production: set
+`USAGE_ADMIN_DATABASE_URL` is configured — point it at the database shared with factory-agent
+(`factory_agent` in the local topology, ADR-0003 §7). Required secrets for production: set
 `USAGE_ADMIN_TOKEN_SIGNING_SECRET` and `USAGE_ADMIN_API_TOKEN` (front-end). See
 [`docs/API.md`](docs/API.md) for the full front-end contract.
 
 ## Migrations
 
-This service's Alembic history contains **only** `tenant_registry`, `admin_audit`, and
-`platform_principal`; every metering table's DDL lives in the factory-agent history. It uses its
-own version table `alembic_version_usage_admin` so both services can migrate one shared database in
-any order.
+This service's Alembic history contains **only** `tenant_registry`, `admin_audit`,
+`platform_principal`, and `usage_export`; every metering table's DDL lives in the factory-agent
+history. It uses its own version table `alembic_version_usage_admin` so both services can migrate
+one shared database in any order.
 
 ```bash
 USAGE_ADMIN_DATABASE_URL=postgresql://... uv run --package usage-admin usage-admin-migrate upgrade head

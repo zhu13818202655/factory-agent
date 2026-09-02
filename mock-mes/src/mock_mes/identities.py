@@ -1,4 +1,4 @@
-"""Deterministic test identities (Story 5, moved out of the removed seed.py).
+"""Deterministic test identities (moved out of the removed seed.py).
 
 Covers the four customer role tiers confirmed for row-level filtering (M19):
 ``99`` boss (whole factory), ``02`` manager and ``01`` group leader (own

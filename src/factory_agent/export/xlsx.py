@@ -1,4 +1,4 @@
-"""XLSX renderer consuming only a ``RenderTable`` (Story 6).
+"""XLSX renderer consuming only a ``RenderTable``.
 
 The renderer never re-queries the database or the MES; it writes the numbers,
 types, units, and warning markers that already exist on the table. Monetary,

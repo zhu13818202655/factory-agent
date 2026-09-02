@@ -1,4 +1,4 @@
-"""PostgreSQL connection management (Story 10).
+"""PostgreSQL connection management.
 
 The API process owns a read-only connection pool and never writes; the
 generator process opens its own write connections and commits inside explicit
@@ -30,7 +30,7 @@ class MockMesDb:
         )
         await self._pool.open()
         # Fail fast: a missing data base must be a loud startup error, not a
-        # silent in-memory fallback (Story 10 acceptance).
+        # silent in-memory fallback.
         async with self.pool.connection() as connection:
             await connection.execute("SELECT 1")
 

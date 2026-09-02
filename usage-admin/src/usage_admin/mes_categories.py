@@ -1,11 +1,11 @@
 """MES API classification for usage reporting (D1/D5).
 
 The billing-relevant statistic is the number of customer MES API calls grouped
-by API business category — not by agent capability (R1). The authoritative
+by API business category — not by agent capability. The authoritative
 source of the mapping is ``mes_operation_category`` (owned by factory-agent,
-read-only here, seeded from ``configs/knowledge/apis.yaml`` in Story 11); this
-module also carries the reviewed default mapping so the service behaves
-correctly before Story 11 creates that table, and so tests can run offline.
+read-only here, seeded from ``configs/knowledge/apis.yaml``); this module also
+carries the reviewed default mapping so the service behaves correctly when that
+table is not yet migrated, and so tests can run offline.
 
 Categories: ``output`` (产量查询) / ``payroll`` (工资查询) / ``order`` (订单进度)
 / ``other`` (其余 15 个：认证 3 + 基础数据 9 + 吊挂 3, D5). The four values sum
@@ -76,7 +76,7 @@ class MesCategoryResolver:
 
     The live mapping comes from the ``mes_operation_category`` table
     (factory-agent owned, read-only here); when the table is not present yet
-    (Story 11 not applied) or a row is missing, the reviewed default mapping
+    or a row is missing, the reviewed default mapping
     applies and unknown operations fall back to ``other``.
     """
 

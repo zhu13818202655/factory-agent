@@ -96,7 +96,6 @@ class TenantDisabledError(MesError):
     """The tenant's AppKey is disabled in ``tenant_registry`` (D13).
 
     Raised before any MES HTTP request so a disabled account issues zero
-    external calls (Story 11 4.2).
     """
 
     def __init__(self, message: str = "tenant is disabled") -> None:

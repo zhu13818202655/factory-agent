@@ -1,4 +1,4 @@
-"""``mes_operation_category`` consistency (Story 11 2.2 / 2.3).
+"""``mes_operation_category`` consistency.
 
 The reviewed billing classification lives in ``configs/knowledge/apis.yaml``
 (``usage_category``) and is mirrored as the seed rows of the single

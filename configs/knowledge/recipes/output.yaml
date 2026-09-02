@@ -1,4 +1,4 @@
-# Reviewed L1 output recipe (Story 7). File changes are semantics changes and
+# Reviewed L1 output recipe. File changes are semantics changes and
 # require human review.
 #
 # FR-001 个人产量统计: personal output grouped by date x 货号 x 工序.

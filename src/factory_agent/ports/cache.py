@@ -14,7 +14,7 @@ class CacheStore(Protocol):
         """Best-effort invalidation of every key under a prefix.
 
         Used when an organization, permission, contract, metric, or sensitive
-        classification change must evict old cache lines (Story 2 scope_version
+        classification change must evict old cache lines (scope-version
         consumers). Stores without prefix support should implement a no-op.
         """
         ...

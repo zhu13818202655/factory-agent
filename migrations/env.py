@@ -17,7 +17,7 @@ if config.config_file_name is not None:
 target_metadata = METADATA
 
 # factory-agent uses the default Alembic version table; usage-admin keeps its
-# own isolated version table (Story 11 revert).
+# own isolated version table.
 
 
 def run_migrations_offline() -> None:

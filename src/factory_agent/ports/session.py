@@ -59,8 +59,7 @@ class InteractionCommit:
 
     Usage events are handed to the owning service's metering store, which writes
     them in a separate transaction after the business commit; a metering failure
-    is caught and alerted without rolling back or blocking the answer (Story 11
-    direct-write protection).
+    is caught and alerted without rolling back or blocking the answer.
     """
 
     interaction: InteractionRecord
@@ -181,7 +180,7 @@ class CapabilityRunResult:
 
 
 class CapabilityRunner(Protocol):
-    """Story 3 bounded executor seen from the application layer."""
+    """Bounded executor seen from the application layer."""
 
     async def run(self, request: CapabilityRunRequest) -> CapabilityRunResult: ...
 

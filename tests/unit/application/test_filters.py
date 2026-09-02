@@ -1,4 +1,4 @@
-"""Story 2: filter narrowing, DEC-012 rejection, and zero-MES-call guarantees."""
+"""Filter narrowing, DEC-012 rejection, and zero-MES-call guarantees."""
 
 from __future__ import annotations
 
@@ -85,8 +85,8 @@ def test_out_of_scope_filter_never_broadens_the_scope() -> None:
     assert narrowed.dept_ids == depts("g9")
 
 
-def test_story7_order_and_style_filters_pass_through_as_narrow_only() -> None:
-    """Story 7: order/style/plan codes narrow within MES filtering (M3/M12)."""
+def test_order_and_style_filters_pass_through_as_narrow_only() -> None:
+    """Order/style/plan codes narrow within MES filtering (M3/M12)."""
     counter = CallCounter()
 
     narrowed = FilterNarrower().narrow(

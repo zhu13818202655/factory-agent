@@ -463,7 +463,7 @@ async def test_ownership_filter_is_used_for_every_store_read() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Story 7: business filter resolution (FR-012 target employee, dept names).
+# Business filter resolution (FR-012 target employee, dept names).
 # ---------------------------------------------------------------------------
 
 

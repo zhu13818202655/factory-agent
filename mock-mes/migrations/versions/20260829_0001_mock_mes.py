@@ -1,8 +1,8 @@
-"""Mock MES PostgreSQL data base (Story 10).
+"""Mock MES PostgreSQL data base.
 
 Creates the persistent data base for the customer-shaped mock: master data,
 production chain, the three piecework sources, scan progress, and the
-generation batch table. Every business table stores the full Story-5 ``Record``
+generation batch table. Every business table stores the full customer ``Record``
 in ``payload`` (JSONB) and mirrors the columns needed for SQL row-level
 filtering (``company`` / ``dept`` / ``uid``) and SQL aggregation (``sl``,
 ``je``, ``fhsl``, ``baohao``) so the API never loads whole tables into memory.

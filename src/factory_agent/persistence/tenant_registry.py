@@ -1,6 +1,6 @@
 """Read-only access to the usage-admin-owned ``tenant_registry`` table.
 
-Per table ownership (product doc 4.4 / Story 11 4.3) this service never
+Per table ownership (ADR-0003) this service never
 creates, alters, or deletes ``tenant_registry``; it only reads the AppKey /
 status pair that drives the D13 pre-call guard. The table is deliberately not
 declared in this service's ``tables.METADATA`` so the disposable test schema

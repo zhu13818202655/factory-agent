@@ -4,7 +4,7 @@ URL construction, bearer credentials, raw payloads, and customer field names
 are confined to this module. Application and domain code depend on the
 ``MesDataSource`` Protocol and never see base URLs or path mappings.
 
-Story 5 semantics:
+Adapter semantics:
 - Single ``HongzhaoMesAdapter``: POST + JSON, public parameter injection
   (app_key/timestamp/sign from ``MesCredentialBundle``), Bearer injection,
   ``{code, message, result}`` envelope unwrapping, ``footer`` extraction.
@@ -340,11 +340,11 @@ class HongzhaoMesAdapter:
         envelope: Any | None = None,
         error: Exception | None = None,
     ) -> None:
-        """Meter one MES HTTP attempt at its exit (Story 11 2.6).
+        """Meter one MES HTTP attempt at its exit.
 
         Success and failure are both recorded; the recorder never raises into
         the adapter — a recorder fault is alerted and dropped so the MES call
-        result is never affected (Story 11 1.6 / R1). The record carries no
+        result is never affected. The record carries no
         URL, parameter value, or credential.
         """
         if self._recorder is None:

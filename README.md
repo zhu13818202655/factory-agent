@@ -1,28 +1,30 @@
 # factory-agent
 
-`factory-agent` is a read-only factory MES assistant. Development follows nine numbered Markdown
-Stories in `.github/story/`. The MES contract and Mock MES mirror the customer's real endpoints as
-documented in [docs/reference/弘兆MES接口整体说明-V2.md](docs/reference/弘兆MES接口整体说明-V2.md).
+`factory-agent` is a read-only factory MES assistant. Development follows the numbered Markdown
+Stories in `.github/story/`. Mock MES mirrors the customer's real endpoints as documented in
+[docs/product/AI问答对外接口-整理.md](docs/product/AI问答对外接口-整理.md); product requirements
+and confirmed customer answers live in [docs/product/需求及方案整理.md](docs/product/需求及方案整理.md).
 
 ## Start here
 
 - [Stories](.github/story): the ordered implementation checklists.
-- [Roadmap](ROADMAP.md): the nine-Story sequence and working approach.
-- [Product requirements](docs/product/requirements.md): authoritative functional and quality scope.
+- [Roadmap](ROADMAP.md): the Story sequence and working approach.
+- [Product requirements](docs/product/需求及方案整理.md): authoritative functional and quality scope,
+  including the confirmed customer answers that drive the current Stories.
 - [Repository rules](AGENTS.md): architecture boundaries and development conventions.
 
-Original requirements and earlier plans are immutable provenance snapshots under
-`docs/requirements/source/` and `docs/reference/source-plans/`; they are not the current workflow.
+Superseded requirements and customer documents stay recoverable through git history and are not kept
+as live provenance copies.
 
 ## Services
 
 Three buildable units live in this repository and never import each other:
 
-- `factory-agent` (repository root): the read-only MES assistant. Since Story 11 it also writes
-  usage metering (`usage_event`, the `*_fact` tables, `mes_operation_category`, `tenant_usage_*`)
-  directly into the shared PostgreSQL in a separate transaction after its business commit — no
-  outbox, no publisher, no cross-service usage-event contract. A metering failure is alerted and
-  never rolls back or blocks an answer.
+- `factory-agent` (repository root): the read-only MES assistant. It also writes usage metering
+  (`usage_event`, the `*_fact` tables, `mes_operation_category`, `tenant_usage_*`) directly into
+  the shared PostgreSQL in a separate transaction after its business commit — no outbox, no
+  publisher, no cross-service usage-event contract. A metering failure is alerted and never rolls
+  back or blocks an answer.
 - `usage-admin/`: independently built production service for usage dashboards, tenant master data,
   and exports. It owns and writes `tenant_registry`, `admin_audit`, `platform_principal`, and
   `usage_export`; every other table in the shared database is read-only for it.

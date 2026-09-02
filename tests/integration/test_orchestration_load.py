@@ -1,4 +1,4 @@
-"""Orchestration load baseline without a real LLM (Story 8, K3).
+"""Orchestration load baseline without a real LLM.
 
 Runs the full start -> stream session pipeline many times with an in-process
 Fake LLM and a recorded capability runner, then records the p50/p95/p99

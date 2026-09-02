@@ -1,10 +1,11 @@
 # usage-admin 后台 API 文档（前端对接版）
 
-- 版本：v1.0（2026-08-29，随 `.github/story/#9.md` 落地）
+- 版本：v1.0（2026-08-29）
 - 服务：`usage-admin`，多租户用量计量与运营管理服务
-- 状态标识：✅ 已实现可用 ｜ ✅ 已实现（Story 9 交付；真实 MES 统计数据的端到端验证待 Story 11 计量数据产出后进行）
+- 状态标识：✅ 已实现可用 ｜ ✅ 已实现（真实 MES 统计数据的端到端验证待计量数据产出后进行）
 - 本文档是**前端对接的唯一接口依据**；字段语义、口径与权限的完整说明见
-  [`docs/product/usage-admin-dashboard-gap.md`](../docs/product/usage-admin-dashboard-gap.md)。
+  [`docs/adr/0003-usage-metering-and-admin-service.md`](../docs/adr/0003-usage-metering-and-admin-service.md)
+  与 usage-admin 各模块 docstring。
 
 ## 1. 服务信息
 
@@ -351,7 +352,7 @@ GET /admin/v1/usage/dimensions?start=...&end=...&dimension=capability
 ```
 
 > 注意：`capability` 是「智能体能力」口径，与 5.2.6 的 MES API 分类口径**不同**，前端
-> 不得混用（详见产品文档 §2.2 陷阱说明）。
+> 不得混用（详见产品文档「角色权限与数据校验策略」中的口径说明）。
 
 #### 5.2.5 用户级活跃（✅ 现有）
 

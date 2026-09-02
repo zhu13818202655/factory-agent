@@ -118,7 +118,7 @@ def build_container(
 ) -> ApplicationContainer:
     supplied = overrides or DependencyOverrides()
     # One shared recorder feeds the MES adapter and the metering context; the
-    # session pipeline drains it at each commit (Story 11 2.6).
+    # session pipeline drains it at each commit.
     mes_recorder: MesCallRecorder = supplied.mes_call_recorder or ContextVarMesCallRecorder()
     if supplied.mes is not None:
         mes = supplied.mes
@@ -247,7 +247,7 @@ def _build_cache(settings: FactoryAgentSettings) -> AuthAwareCache | None:
 
     Redis is only an optimization: the cache falls back to the source of truth
     on any store error, and every key is bound to the tenant and an irreversible
-    scope fingerprint (Story 2 ``scope_version``).
+    scope fingerprint (``scope_version``).
     """
     if settings.redis_url is None:
         return None
@@ -328,8 +328,8 @@ def _build_capability_runner(
 ) -> CapabilityRunner | None:
     """Compose the reviewed kernel runner over a real Hongzhao adapter only.
 
-    Injected fakes always win; a real adapter produces the kernel that closes
-    the Story 6 vertical slice (recipe → executor → sandbox → ResultTable).
+    Injected fakes always win; only a real ``HongzhaoMesAdapter`` builds the
+    full kernel pipeline (recipe → executor → sandbox → ResultTable).
     ``resource_columns`` lets an empty fan-out (FR-009 call-budget exhaustion)
     still register a typed sandbox table for downstream local compute.
     """
@@ -402,7 +402,7 @@ def _load_registry(settings: FactoryAgentSettings) -> ModelRegistry | None:
 
 
 class _UnresolvedMemberships:
-    """Placeholder until the credential-bundle resolver is wired (Story 6+)."""
+    """Placeholder until the credential-bundle resolver is wired."""
 
     async def resolve(self, credential: TrustedCredential, as_of: datetime):
         raise DependencyNotConfiguredError("membership resolver is not configured")

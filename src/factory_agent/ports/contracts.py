@@ -44,7 +44,7 @@ class IdentityProvider(Protocol):
 class MembershipResolver(Protocol):
     """Resolve the unique membership for a trusted credential pair.
 
-    Story 5: the binding comes from the customer credential bundle (tenant =
+    The binding comes from the customer credential bundle (tenant =
     plaintext app_key, employee = token ``user``); one factory has one AppKey,
     so membership is naturally unique. Implementations raise
     ``MembershipNotFoundError`` when no active employee record exists.

@@ -1,4 +1,4 @@
-"""Structured card builder tests (Story 6): numbers only, no fabrication."""
+"""Structured card builder tests: numbers only, no fabrication."""
 
 from __future__ import annotations
 

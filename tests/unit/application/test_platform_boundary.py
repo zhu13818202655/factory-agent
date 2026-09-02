@@ -1,4 +1,4 @@
-"""Story 2: PlatformScope isolation guard tests."""
+"""PlatformScope isolation guard tests."""
 
 from __future__ import annotations
 

@@ -1,9 +1,9 @@
 """Fake sources for authorization use-case tests; deterministic and offline.
 
-Story 5 rework mirrors the new ``AuthorizationService``: membership is unique
-per credential (one factory, one AppKey — M4), the credential bundle supplies
-``tenant_id``/``employee_id``, and department membership comes from
-``EmployeeQuery``/``DeptQuery`` current relations (K2). Roles are display-only.
+Mirrors ``AuthorizationService``: membership is unique per credential (one
+factory, one AppKey), the credential bundle supplies ``tenant_id``/
+``employee_id``, and department membership comes from ``EmployeeQuery``/
+``DeptQuery`` current relations. Roles are display-only.
 """
 
 from __future__ import annotations

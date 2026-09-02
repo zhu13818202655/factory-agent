@@ -22,6 +22,6 @@ async def assert_service_liveness(app: FastAPI, service: str) -> None:
 @pytest.mark.asyncio
 async def test_story_one_services_are_live(mock_mes_app: Any) -> None:
     await assert_service_liveness(create_factory_app(), "factory-agent")
-    # Story 10: the mock-mes app is PG-backed; liveness works the same way.
+    # The mock-mes app is PG-backed; liveness works the same way.
     await assert_service_liveness(mock_mes_app, "mock-mes")
     await assert_service_liveness(create_usage_admin_app(), "usage-admin")

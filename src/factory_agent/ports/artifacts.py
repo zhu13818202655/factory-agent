@@ -1,4 +1,4 @@
-"""Artifact metadata repository port (Story 6).
+"""Artifact metadata repository port.
 
 Separate from the object-storage ``ArtifactStore``: the repository records only
 approved metadata (opaque object key, owner, capability, filename, size, SHA-256,

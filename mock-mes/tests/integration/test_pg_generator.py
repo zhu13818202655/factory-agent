@@ -1,4 +1,4 @@
-"""PostgreSQL integration tests (Story 10).
+"""PostgreSQL integration tests.
 
 Requires ``MOCK_MES_TEST_DATABASE_URL`` pointing at a disposable database with
 the mock-mes migration applied; skipped otherwise. Covers the Alembic

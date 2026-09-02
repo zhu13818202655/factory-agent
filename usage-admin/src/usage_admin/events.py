@@ -2,7 +2,7 @@
 
 The metering tables (``interaction_fact`` / ``llm_call_fact`` /
 ``mes_call_fact``) are owned and written by factory-agent inside its business
-transaction (Story 11); this service reads them read-only for platform
+transaction; this service reads them read-only for platform
 reporting. The dataclasses here mirror one row of each table.
 
 Payload validation happens on the writer side (factory-agent) before a row is

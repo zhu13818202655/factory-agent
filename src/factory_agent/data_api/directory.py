@@ -1,4 +1,4 @@
-"""MES-backed directory and current-department membership (Story 7).
+"""MES-backed directory and current-department membership.
 
 Implements the application-layer ``OrganizationSource`` (K2 current
 department membership) and ``DirectoryResolver`` (dept/employee name lookup)
@@ -6,7 +6,7 @@ over the reviewed ``DeptQuery`` / ``EmployeeQuery`` operations. Both are
 MES-filtered by the Bearer identity (M3/M19): a ``move_admin_role="00"``
 caller only ever resolves their own employee record.
 
-Scope semantics (Story 7): ``DataScope.dept_ids`` is the caller's *visible*
+Scope semantics: ``DataScope.dept_ids`` is the caller's *visible*
 department range (DeptQuery, MES-filtered), not a single home department; a
 wider range stays recorded as MES-side filtering (``mes_filtered``). User
 department requests are intersected with this range by ``FilterNarrower``.

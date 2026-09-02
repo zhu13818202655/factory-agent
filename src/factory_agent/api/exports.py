@@ -1,4 +1,4 @@
-"""Export artifact download endpoint (Story 6).
+"""Export artifact download endpoint.
 
 Download re-validates the trusted tenant (app_key) and user identity header,
 resolves the current authorization, and then issues a short-lived presigned URL

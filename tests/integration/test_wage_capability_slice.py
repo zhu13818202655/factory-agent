@@ -1,4 +1,4 @@
-"""Story 6 vertical slice against the real Mock MES in-process app.
+"""Wage vertical slice against the real Mock MES in-process app.
 
 Proves FR-002 (summary) and FR-003 (detail) share the ``GongziMxQuery`` path,
 that the local aggregate reconciles against ``footer.je_total``, and that the
@@ -81,7 +81,7 @@ async def test_fr002_and_fr003_slice_against_mock_mes(mock_mes_app: Any) -> None
     )
 
     assert detail.column_names == ("rq", "worktype", "sl", "price", "je")
-    # Story 10: the window is a real 500-person factory; 01001 has ~100 wage
+    # The window is a real 500-person factory; 01001 has ~100 wage
     # rows in two months (mirrors the regenerated golden).
     assert len(detail.rows) == 94
     assert detail.totals["je"] == Decimal("573.60")

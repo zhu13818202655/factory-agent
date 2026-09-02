@@ -1,4 +1,4 @@
-"""Port over the MES-filtered department/employee directory (Story 7).
+"""Port over the MES-filtered department/employee directory.
 
 ``DeptRecord`` / ``EmployeeRecord`` are vendor-neutral directory records; the
 ``DirectoryResolver`` protocol lets application code resolve user business

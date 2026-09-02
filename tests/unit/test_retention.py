@@ -1,4 +1,4 @@
-"""Retention routine verification (Story 8).
+"""Retention routine verification.
 
 Checks the 3-month artifact cleanup and the download re-authorization path:
 cleanup removes only expired artifacts (never another tenant's live data) and a

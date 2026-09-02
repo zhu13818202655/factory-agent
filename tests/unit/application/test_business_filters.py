@@ -1,4 +1,4 @@
-"""Story 7 business filter resolution: dept/employee name -> id narrowing."""
+"""Business filter resolution: dept/employee name -> id narrowing."""
 
 from __future__ import annotations
 

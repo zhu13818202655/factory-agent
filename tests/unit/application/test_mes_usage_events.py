@@ -1,10 +1,10 @@
-"""``mes_call_completed`` event construction (Story 11 2.5).
+"""``mes_call_completed`` event construction.
 
 The event is the only MES metering record: it carries the operation id, page
 count (supporting metric only), a row-count bucket, duration, and status. It
 must never carry a URL, business parameter value, or credential, and its field
 set must stay inside the whitelist enforced in
-``tests/contract/test_produced_usage_events.py`` (archive payload format
+``tests/unit/application/test_produced_usage_events.py`` (archive payload format
 ``SCHEMA_VERSION`` in ``factory_agent.application.usage``).
 """
 

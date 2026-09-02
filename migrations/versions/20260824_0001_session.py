@@ -1,9 +1,9 @@
-"""factory-agent 数据库定稿基线（开发期单版本，Story 1-11 全部 schema）。
+"""factory-agent 数据库定稿基线（开发期单版本，最终 schema）。
 
 开发期（未上线）迁移历史于 2026-09-02 合并为单一版本：本文件是
 ``migrations/versions/`` 下**唯一**的迁移，内容为原 ``0001_session`` ->
 ``0002_artifact`` -> ``0003_personal`` -> ``0004_metering`` 迭代链的净建表
-结果。Story 11 的 outbox 移除与表归属拆分已整体融入初始态：
+结果。outbox 移除与表归属拆分已整体融入初始态：
 ``usage_event_outbox`` / ``usage_event_receipt`` / ``usage_event_dead_letter``
 从未出现在本历史中；``tenant_registry`` / ``admin_audit`` /
 ``platform_principal`` / ``usage_export`` 归 usage-admin 拥有，建在
@@ -14,14 +14,14 @@ usage-admin 的单版本迁移 ``20260827_0001_usage`` 中，本文件绝不触�
 
 包含的表：
 - 业务表：``agent_interaction`` / ``agent_message`` /
-  ``agent_interaction_event``（Story 4）、``agent_artifact``（Story 6）、
-  ``agent_user_mapping`` / ``agent_query_history`` / ``agent_favorite``（Story 8）
-- 计量表（Story 11 同库直写，本服务拥有并写入）：按月分区 ``usage_event``、
+  ``agent_interaction_event``、``agent_artifact``、
+  ``agent_user_mapping`` / ``agent_query_history`` / ``agent_favorite``
+- 计量表（同库直写，本服务拥有并写入）：按月分区 ``usage_event``、
   事实表 ``interaction_fact`` / ``llm_call_fact`` / ``mes_call_fact``、
   分类映射 ``mes_operation_category``（27 行种子）、汇总
   ``tenant_usage_hourly`` / ``tenant_usage_daily``。
 
-计量写入口径（Story 11 决策）：业务数据先提交，计量在业务提交后的**独立
+计量写入口径：业务数据先提交，计量在业务提交后的**独立
 事务**中直写；``usage_event`` 与其 ``*_fact`` 在同一计量事务内原子写入；
 计量失败仅告警，绝不回滚业务、不阻塞问答。
 
@@ -42,7 +42,7 @@ depends_on: str | tuple[str, ...] | None = None
 
 
 def upgrade() -> None:
-    # --- Story 4: session / message / interaction-event baseline ------------
+    # --- Session / message / interaction-event baseline --------------------
     op.create_table(
         "agent_interaction",
         sa.Column("interaction_id", sa.Text, primary_key=True),
@@ -108,7 +108,7 @@ def upgrade() -> None:
         ),
     )
 
-    # --- Story 6: artifact metadata -----------------------------------------
+    # --- Artifact metadata --------------------------------------------------
     # Artifact content lives in object storage; this table records only the
     # opaque object key plus the tenant/owning user, capability, filename, size,
     # SHA-256, and retention timestamps. It never stores employee IDs, names,
@@ -135,7 +135,7 @@ def upgrade() -> None:
     )
     op.create_index("agent_artifact_expiry_idx", "agent_artifact", ["expires_at"])
 
-    # --- Story 8: user mapping / query history / favorites ------------------
+    # --- User mapping / query history / favorites ---------------------------
     # History and favorites are ownership-filtered by the trusted
     # (tenant_id, user_id) pair exactly like sessions; they store only
     # normalized non-sensitive slots.
@@ -185,7 +185,7 @@ def upgrade() -> None:
     )
     op.create_index("agent_favorite_expiry_idx", "agent_favorite", ["expires_at"])
 
-    # --- Story 11: metering tables (direct-write, owned by this service) -----
+    # --- Metering tables (direct-write, owned by this service) --------------
     # Raw archive, partitioned by month. Primary key is (event_id,
     # occurred_at) because event_id alone is not unique across months and the
     # partition key must be part of any unique constraint. Writes use
@@ -335,7 +335,7 @@ def upgrade() -> None:
     # service and seeded from configs/knowledge/apis.yaml. Classification is
     # applied at aggregation time so a reclassification never rewrites history.
     # The 27 rows below mirror the `usage_category` fields in apis.yaml (verified
-    # by tests/unit/.../test_mes_operation_categories.py, Story 11 2.3); a new
+    # by tests/unit/.../test_mes_operation_categories.py); a new
     # operation added to apis.yaml fails that test until it is classified here.
     op.create_table(
         "mes_operation_category",

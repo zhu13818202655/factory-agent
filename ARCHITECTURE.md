@@ -17,8 +17,8 @@ flowchart LR
     Orchestrator --> Adapter[MesDataSource Adapter]
     Adapter --> MES[Customer MES or mock-mes]
     Orchestrator --> Sandbox[Interaction DuckDB]
-    Orchestrator --> Gateway[LiteLLM Gateway]
-    Gateway --> Models[vLLM then remote fallbacks]
+    Orchestrator --> Gateway[Model Gateway]
+    Gateway --> Models[Reviewed registry deployments]
 ```
 
 ## Dependency Direction
@@ -38,10 +38,10 @@ database, HTTP, and provider types do not cross into domain code.
 
 ## Technology Baseline
 
-The baseline below is the implementation choice proposed in
-`docs/adr/0002-runtime-storage-and-migration-baseline.md`. Customer-specific authentication,
-API fields, deployment platform, object-storage endpoint, model provider, and business formulas remain
-replaceable configuration or Adapter concerns.
+The baseline below follows the accepted ADRs under `docs/adr/` (`0002` for runtime, storage, and
+migrations; `0004` for logging and configuration; `0006` for model access). Customer-specific
+authentication, API fields, deployment platform, object-storage endpoint, model provider, and
+business formulas remain replaceable configuration or Adapter concerns.
 
 | Concern | Choice | Boundary |
 | :--- | :--- | :--- |
@@ -51,15 +51,17 @@ replaceable configuration or Adapter concerns.
 | Durable application data | PostgreSQL 16, Psycopg 3, Alembic | Sessions, messages, interactions, audit metadata, favorites, and artifact metadata only |
 | Mock MES data | Separate PostgreSQL database, Psycopg 3, Alembic, deterministic seed | Never a production dependency and never shares application tables |
 | Interaction processing | One in-memory DuckDB connection per interaction | Validated authorized rows only; no persistence or external/file access |
-| Model access | LiteLLM Proxy behind an OpenAI-compatible application port | Providers, keys, retries, and fallback stay outside the application |
-| Cache | Redis, introduced only for Story 8 | Optional optimization; PostgreSQL/MES remain authoritative |
-| Export | XlsxWriter from `ResultTable` | XLSX only in the first release; external text is always written as text |
+| Model access | LiteLLM Router SDK with a reviewed deployment registry (ADR-0006) | Business code only names logical aliases; keys live in the environment; fallback/retry/cooldown are owned by the Router |
+| Cache | TTL-based application cache; Redis optional and added only if measurements justify it | Optional optimization; PostgreSQL/MES remain authoritative |
+| Export | XlsxWriter from `ResultTable`; delivery follows the customer-confirmed no-server-retention policy | XLSX only in the first release; external text is always written as text |
 | Artifact storage | Filesystem fake for unit tests; S3-compatible port with SeaweedFS as the Apache-2.0 reference implementation | PostgreSQL stores metadata, never file contents; application code uses no vendor API, and the production endpoint waits for deployment review |
 | Observability | Structured JSON logs and OpenTelemetry-compatible traces/metrics | Sensitive fields and raw prompts are filtered before emission |
 | Delivery | OCI images and Docker Compose for development/integration | Production orchestrator and managed services remain deployment decisions |
 
-Dependencies are added only when their owning Story starts. PostgreSQL, Redis, LiteLLM, and object
-storage are separate runtime services; they are not embedded into domain or application code.
+Dependencies are added when the code that needs them is implemented. PostgreSQL is a separate
+runtime service; Redis and object storage are added only when measurements justify them. The model
+gateway embeds the LiteLLM Router SDK behind a port (ADR-0006) and never leaks into domain or
+application code.
 
 ## Target Package Skeleton
 
@@ -77,10 +79,11 @@ src/factory_agent/
     observability/    # redacted audit, logs, traces and metrics
 ```
 
-Story 1 creates these boundaries, configuration objects, test doubles, and application wiring even
-where the first implementation is a typed `NotConfigured` adapter. Stories 2 through 4 fill the
-security and infrastructure behavior. Story 5 is the first complete business path through every
-layer; Stories 6 through 8 add recipes rather than new parallel architectures.
+The boundaries, configuration objects, test doubles, and application wiring are implemented, as are
+the security and observability infrastructure and the first complete business path through every
+layer. Later capabilities register as recipes on the single reviewed execution path rather than as
+new parallel architectures. Remaining alignment and release work is tracked in the numbered Stories
+under `.github/story/`.
 
 ## Repository Shape
 
@@ -88,9 +91,10 @@ The root builds `src/factory_agent`. `mock-mes/` is a separately runnable uv wor
 used only for development and tests. `usage-admin/` is a separately built production uv workspace
 member for authorized multi-tenant usage aggregation, operational APIs, and reports. Each service
 owns its package, tests, Dockerfile, migrations, and configuration. No service imports another;
-metering facts are written by factory-agent directly into the shared PostgreSQL inside its business
-transaction and usage-admin reads them (Story 11) — there is no HTTP usage-event contract between
-the services, and either could be split into separate repositories later. Every shared table has
+metering facts are written by factory-agent directly into the shared PostgreSQL in a separate
+transaction after its business commit, and usage-admin reads them — there
+is no HTTP usage-event contract between the services, and either could be split into separate
+repositories later. Every shared table has
 exactly one owner: usage-admin owns and writes `tenant_registry` (which factory-agent reads
 read-only to resolve the AppKey for MES calls, ADR-0003 §4.3), `admin_audit`,
 `platform_principal`, and `usage_export`; factory-agent owns and writes all business and metering
@@ -112,21 +116,18 @@ Irreversible choices and boundary changes are recorded under `docs/adr/`.
 
 ## report-agent Migration Boundary
 
-`/home/admin2/proj/report-agent` is a source of proven behavior, not a runtime dependency. Migration
-uses characterization tests and rewrites factory-specific boundaries rather than copying the package.
+`/home/admin2/proj/report-agent` was the read-only migration source for proven behavior; the
+migration is complete and the repository never depends on it at runtime. The boundary rewrites it
+forced are now standing invariants:
 
-| Source | Decision | Factory target |
-| :--- | :--- | :--- |
-| `state_machine.py` | Migrate pure transition behavior, rename states | `domain/` and application tests |
-| interaction/message models in `schemas.py` | Adapt IDs, sequence and lifecycle; remove flight fields | domain values and API views |
-| `repository.py` and Alembic revisions | Reuse repository shape and migration lessons; rewrite every query with tenant/user ownership | `ports/` and `persistence/` |
-| `context.py` and follow-up patch prompts | Reuse bounded-history and patch behavior; exclude prior detail and scope | `application/` |
-| `api/router.py` | Reuse endpoint/SSE shape only | `api/`; identity comes from trusted middleware, never request `user_id/tenant_id` |
-| `llm/` | Reuse typed request/response and error tests | `llm/`; base URL and provider fallback point only to LiteLLM |
-| `export/` | Reuse renderer/router separation | `export/`; implement card/XLSX from `ResultTable` |
-| `permissions.py` | Interface inspiration only | Replaced by Story 2 `DataScope`; no allow-all production default |
-| `dikong_sql/`, `text2sql/`, Vanna, flight prompts/analyzers/charts | Do not migrate | MES data is available only through `MesDataSource` and reviewed local recipes |
-| DOCX/PDF renderers and flight templates | Do not migrate in the first release | XLSX is the only initial artifact |
+- identity comes from trusted credential resolution, never from request-body `user_id`/`tenant_id`;
+  there is no allow-all production default (scope is `DataScope`/`PlatformScope`);
+- MES data is reachable only through `MesDataSource` and reviewed local recipes — Vanna,
+  Text-to-SQL production execution, and direct business-database queries are rejected;
+- XLSX is the only initial artifact renderer (DOCX/PDF renderers and flight templates do not
+  migrate);
+- durable event replay and trusted identity are native implementations, not claimed reuse (the
+  source used process-local SSE subscribers and request-body identity).
 
-The source implementation has process-local SSE subscribers and accepts identity in request payloads;
-therefore durable event replay and trusted identity are new implementations, not claimed reuse.
+Pure state-transition, bounded-context, typed-model-response, error-category, and renderer-
+separation behavior was ported through characterization tests.

@@ -1,4 +1,4 @@
-"""In-process fake MES adapter for Story 3 kernel tests.
+"""In-process fake MES adapter for kernel tests.
 
 The fake replays deterministic page sequences, including fault scenarios
 (duplicate pages, missing pages, total drift), and records every request so

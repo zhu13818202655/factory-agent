@@ -1,4 +1,4 @@
-"""mock-mes-generate CLI (Story 10).
+"""mock-mes-generate CLI.
 
 Deterministic production-like data generation into PostgreSQL. Manual runs and
 scheduled runs share this entry point; the batch ledger makes every run

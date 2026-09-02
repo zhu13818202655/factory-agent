@@ -1,4 +1,4 @@
-"""Artifact store adapters (Story 6): filesystem fake and object-key safety."""
+"""Artifact store adapters: filesystem fake and object-key safety."""
 
 from __future__ import annotations
 

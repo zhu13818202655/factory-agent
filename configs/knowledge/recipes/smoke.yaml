@@ -1,6 +1,7 @@
 # Reviewed L1 capability recipes. File changes are semantics changes and
-# require human review. Real business capability recipes register in Story 5~7;
-# this file ships the minimal EmployeeQuery + DeptQuery smoke recipe.
+# require human review. Real business capability recipes live in their own
+# per-capability files; this file ships the minimal EmployeeQuery + DeptQuery
+# smoke recipe.
 version: 1
 capabilities:
   - capability_id: smoke_piecework_summary

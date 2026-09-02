@@ -82,7 +82,7 @@ def test_evaluation_case_matches_the_expected_interpretation(case: dict[str, Any
 def test_every_evaluation_group_is_represented() -> None:
     groups = {str(case["group"]) for case in CASES}
 
-    # Story 8 adds scope and fault-recovery to the original four groups.
+    # Scope and fault-recovery evaluation groups extend the original four.
     assert groups == {"intent", "slots", "clarification", "grounding", "scope", "fault-recovery"}
 
 

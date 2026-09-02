@@ -1,4 +1,4 @@
-"""Offline intent evaluation scorer (dev dependency, Story 8).
+"""Offline intent evaluation scorer (dev dependency).
 
 Loads ``tests/data/intent_eval_set.json`` and runs every case through the
 deterministic ``CapabilityIntentParser.interpret`` — the same path the session

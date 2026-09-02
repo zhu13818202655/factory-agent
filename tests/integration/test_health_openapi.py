@@ -17,8 +17,8 @@ def test_factory_agent_publishes_liveness_contract() -> None:
     assert_liveness_contract(create_factory_app())
 
 
-def test_mock_mes_publishes_liveness_contract(contract_database_url: str) -> None:
-    # Story 10: the mock is PG-backed; the health contract still applies.
+def test_mock_mes_publishes_liveness_contract(mock_mes_database_url: str) -> None:
+    # The mock is PG-backed; its published health surface still applies.
     from mock_mes.testing import make_test_app
 
-    assert_liveness_contract(make_test_app(contract_database_url))
+    assert_liveness_contract(make_test_app(mock_mes_database_url))

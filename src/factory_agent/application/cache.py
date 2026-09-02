@@ -1,7 +1,7 @@
 """Authorization-aware cache with scope fingerprints and versioned keys.
 
 Redis is only an optimization. Every key carries the tenant, an irreversible
-scope fingerprint (consuming Story 2's ``scope_version``), the canonical
+scope fingerprint (consuming ``DataScope.scope_version``), the canonical
 parameters, and the contract/metric/data versions. A cache line is returned
 only when the caller can prove the exact same scope; on store errors, unknown
 versions, or unprovable scopes the cache falls back to the source of truth.
@@ -19,9 +19,8 @@ from typing import Any
 from factory_agent.domain import DataScope, TenantId
 from factory_agent.ports import CacheStore
 
-#: Cache domains and their short TTLs (seconds). All TTLs are placeholders to
-#: be confirmed by load testing in Story 12 (K3 — performance is not a gate in
-#: this story).
+#: Cache domains and their short TTLs (seconds). All TTLs are conservative
+#: placeholders to be confirmed by load testing; performance is not a gate.
 CACHE_DOMAINS: tuple[str, ...] = ("identity_org", "order_progress", "output", "payroll")
 
 DEFAULT_TTL_BY_DOMAIN: dict[str, int] = {
@@ -92,7 +91,7 @@ class AuthAwareCache:
     def scope_fingerprint(self, scope: DataScope) -> str:
         """Irreversible summary of the effective scope.
 
-        Consumes Story 2's ``scope_version`` and records only counts — never the
+        Consumes ``DataScope.scope_version`` and records only counts — never the
         ``employee_ids``/``dept_ids`` values themselves.
         """
         summary = (

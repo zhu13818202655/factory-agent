@@ -1,4 +1,4 @@
-"""Fault injection middleware adapted to the customer envelope (Story 5).
+"""Fault injection middleware adapted to the customer envelope.
 
 Opt-in via the ``X-Mock-Fault`` header; never active by default. Structural
 faults (duplicate page, missing page, wrong total, footer/list mismatch, null

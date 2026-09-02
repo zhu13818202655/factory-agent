@@ -1,4 +1,4 @@
-"""MES event buffering on the usage ContextVar (Story 11 2.6).
+"""MES event buffering on the usage ContextVar.
 
 ``record_mes_call`` appends into a per-interaction buffer; the session pipeline
 drains it at each commit via ``drain_mes_events`` without closing it, and

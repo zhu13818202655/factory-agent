@@ -52,10 +52,10 @@ class CapabilityId(NonEmptyId):
 class Role(str, Enum):
     """Display-only role tier (employee/manager/boss).
 
-    Story 5 (M11/A.1): roles never enter authorization decisions; capability
-    availability is decided by whether MES returns data plus the capability
-    registry. The enum exists for presentation mapping once the customer
-    confirms the enumeration in chapter-5 item A.1.
+    Roles never enter authorization decisions; capability availability is
+    decided by whether MES returns data plus the capability registry. The enum
+    exists for presentation mapping; alignment with the four-role customer
+    model (00/01/02/99) is tracked in Story #1.
     """
 
     EMPLOYEE = "employee"
@@ -65,7 +65,7 @@ class Role(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class TenantMembership:
-    """Unique tenant membership derived from the credential bundle (M4/M10).
+    """Unique tenant membership derived from the credential bundle.
 
     ``tenant_id`` is the plaintext app_key and ``employee_id`` is the token
     ``user``; one factory has one AppKey, so membership is naturally unique.
@@ -83,7 +83,7 @@ class Identity:
     """Trusted identity: the credential pair behind one interaction.
 
     ``tenant_id`` is the plaintext app_key and ``user_id`` is the token
-    ``user`` (work number); both come only from the credential bundle (M4/M10).
+    ``user`` (work number); both come only from the credential bundle.
     """
 
     tenant_id: TenantId
@@ -146,7 +146,7 @@ WHOLE_TENANT = OwnerMarker()
 
 @dataclass(frozen=True, slots=True)
 class DataScope:
-    """Minimal provable in-tenant data scope (Story 5 semantics, M3/M12).
+    """Minimal provable in-tenant data scope.
 
     Row-level filtering beyond the caller's own record is performed by the
     customer MES; ``mes_filtered=True`` records this trust and never claims the
@@ -155,7 +155,7 @@ class DataScope:
 
     ``employee_ids`` currently contains only the caller's own work number;
     ``dept_ids`` comes from ``EmployeeQuery``/``DeptQuery`` current membership
-    (K2: latest relations only, no history).
+    (latest relations only, no history).
     """
 
     tenant_id: TenantId

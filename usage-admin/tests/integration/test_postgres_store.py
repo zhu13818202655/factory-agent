@@ -1,7 +1,7 @@
 """PostgreSQL usage store integration tests.
 
 Requires ``USAGE_ADMIN_TEST_DATABASE_URL`` pointing at a disposable database
-with the usage-admin and factory-agent (Story 11, single baseline
+with the usage-admin and factory-agent (single baseline
 ``20260824_0001_session``) migrations
 applied; skipped otherwise. factory-agent writes the metering tables in a
 separate transaction after its business commit, so this suite seeds
@@ -132,7 +132,7 @@ async def _insert_llm_call_fact(
 
 
 async def _seed_metering_rows(database_url: str) -> None:
-    """Write the metering rows factory-agent would have persisted (Story 11)."""
+    """Write the metering rows factory-agent would have persisted."""
     async with await psycopg.AsyncConnection.connect(database_url) as connection:
         # Wipe any rows left over from a previous run, then seed fresh ones.
         tables = ("tenant_usage_daily", "tenant_usage_hourly", "interaction_fact", "llm_call_fact")

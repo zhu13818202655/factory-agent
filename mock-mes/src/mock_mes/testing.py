@@ -1,4 +1,4 @@
-"""Test helpers for the PG-backed mock-mes (Story 10).
+"""Test helpers for the PG-backed mock-mes.
 
 Shared by ``mock-mes/tests`` and the repository contract tests. All helpers
 require ``MOCK_MES_TEST_DATABASE_URL`` pointing at a disposable database; tests
@@ -28,7 +28,7 @@ load_dotenv(_REPO_ROOT / ".env")
 
 TEST_DATABASE_URL = os.environ.get("MOCK_MES_TEST_DATABASE_URL")
 
-#: Fixed test window covering every anchor date (Story 5/6/7 fixtures).
+#: Fixed test window covering every anchor date.
 TEST_WINDOW_START = date(2026, 7, 1)
 TEST_WINDOW_END = date(2026, 8, 21)
 TEST_SEED = 20260821

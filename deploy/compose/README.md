@@ -24,9 +24,10 @@ make compose-up
 make middleware-up
 ```
 
-PostgreSQL listens on `127.0.0.1:3432` and initializes separate `factory_agent`, `mock_mes`, and
-`usage_admin` databases. Redis listens on `127.0.0.1:3379`. Override host ports with
-`POSTGRES_PORT` and `REDIS_PORT`. The checked-in usernames and passwords are development-only.
+PostgreSQL listens on `127.0.0.1:3432` and initializes one shared `factory_agent` database (used by
+both `agent-api` and `usage-admin`) plus a separate `mock_mes` database. Redis listens on
+`127.0.0.1:3379`. Override host ports with `POSTGRES_PORT` and `REDIS_PORT`. The checked-in
+usernames and passwords are development-only.
 Remove local data explicitly with:
 
 ```bash
@@ -36,10 +37,16 @@ docker compose -f deploy/compose/middleware.yaml down --volumes
 `compose.yaml` is a local development topology. Mock MES must not be included in a production
 deployment.
 
-`usage-admin` intentionally uses its own PostgreSQL database instead of directly reading the
-`factory-agent` database. The two services have different ownership and data scopes: `factory-agent`
-stores tenant-scoped interaction metadata and outbox records for the factory assistant, while
-`usage-admin` stores redacted platform usage events and rollups for operational reporting. Keeping
-the databases separate avoids cross-service schema coupling, prevents platform analytics queries
-from reading factory business state, and lets usage ingestion or reporting fail independently from
-factory question answering.
+`factory-agent` and `usage-admin` share one logical PostgreSQL database (`factory_agent`, ADR-0003
+§7). Each service connects with its own user (`factory_agent` / `usage_admin`) and runs its own
+Alembic migrations against it, tracked in separate version tables (`alembic_version` /
+`alembic_version_usage_admin`); table ownership is exclusive per service. `factory-agent` writes
+its business tables (`agent_*`) and every metering table (`usage_event`, `*_fact`,
+`mes_operation_category`, `tenant_usage_*`) directly into that database in a separate transaction
+after the business commit — there is no outbox and no cross-service usage-event transport
+(ADR-0003 §5). `usage-admin` never ingests usage events: it reads the metering tables read-only for
+operational reporting, and owns only `tenant_registry`, `admin_audit`, `platform_principal`, and
+`usage_export` (ADR-0003 §7). `init-databases.sql` grants `usage_admin` the right to create its own
+tables in the shared database and sets default privileges so each service can read the other's
+tables (factory-agent reads `tenant_registry`; usage-admin reads metering). Mock MES keeps its own
+`mock_mes` database.

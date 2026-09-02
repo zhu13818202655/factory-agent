@@ -1,4 +1,4 @@
-"""Metering end-to-end against a real PostgreSQL (Story 11 6.2/6.3/6.4/6.6/6.7).
+"""Metering end-to-end against a real PostgreSQL.
 
 Set ``FACTORY_AGENT_TEST_POSTGRES_URL`` to a disposable database to enable the
 suite. It creates and drops its own schema and never touches customer data.
@@ -326,7 +326,7 @@ async def test_migration_coexistence_both_orders(clean_database: sa.Engine) -> N
                 )
             )
         )
-    # Single development baseline per service (Story 11 5.4 history merge):
+    # Single development baseline per service:
     # factory-agent = 20260824_0001_session, usage-admin = 20260827_0001_usage.
     assert "20260824_0001_session" in version_rows
     assert "20260827_0001_usage" in version_rows

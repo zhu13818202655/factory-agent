@@ -1,4 +1,4 @@
-"""Export service tests (Story 6): render, store, metadata, presign, cleanup."""
+"""Export service tests: render, store, metadata, presign, cleanup."""
 
 from __future__ import annotations
 

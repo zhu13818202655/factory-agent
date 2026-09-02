@@ -1,9 +1,9 @@
-"""Read-only data access over PostgreSQL (Story 10).
+"""Read-only data access over PostgreSQL.
 
-Replaces the in-memory ``Dataset``: every endpoint query maps to SQL over the
-``mock_*`` tables. Row-level filtering (M3/M19) is pushed into the ``WHERE``
+Every endpoint query maps to SQL over the ``mock_*`` tables: row-level
+filtering (M3/M19) is pushed into the ``WHERE``
 clause (company → dept → ``move_admin_role="00"`` own-data), pagination and
-footers use SQL COUNT/SUM, and the returned rows keep the exact Story-5
+footers use SQL COUNT/SUM, and the returned rows keep the exact customer-shaped
 ``Record`` shapes so ``api/customer.py`` application logic barely changes.
 
 The three piecework sources are still merged in Python because the customer
@@ -33,7 +33,7 @@ _WINDOWED = {
     "mock_ysk": "rq",
 }
 
-#: Tables whose payload lacks a tenant column in Story 5 are seeded under
+#: Tables whose payload lacks a tenant column are seeded under
 #: COMPANY-A and are not company-filtered by their endpoints.
 _TENANT_NEUTRAL = {
     "mock_user_info",
@@ -75,7 +75,7 @@ def _d(value: object) -> Decimal:
 
 @dataclass(frozen=True, slots=True)
 class Page:
-    """SQL-paginated result with total; mirrors Story-5 ``paginate``."""
+    """SQL-paginated result with total."""
 
     items: list[Record]
     total: int

@@ -2,8 +2,8 @@
 
 ``commit`` writes the interaction state, its messages, and its SSE events in
 one business transaction, then hands the usage events to the metering store.
-Metering writes happen in a separate transaction whose failures are isolated
-(Story 11 1.6): they are alerted and never roll back or block the answer.
+Metering writes happen in a separate transaction whose failures are isolated:
+failures are alerted and never roll back or block the answer.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ class SqlInteractionStore:
                     )
                 )
         # Metering is a separate transaction so a write failure can never roll
-        # back the business data above (Story 11 1.6 / R1).
+        # back the business data above.
         await self._metering.write_usage_events(commit.usage_events)
 
     async def claim_run(

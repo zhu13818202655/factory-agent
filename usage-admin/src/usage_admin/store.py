@@ -3,7 +3,7 @@
 The service and API layers depend only on ``UsageStore``, so unit tests can
 inject the in-memory implementation without a database or network. The
 PostgreSQL implementation reads the metering tables owned and written by
-factory-agent (Story 11: ``usage_event`` / ``*_fact`` / ``tenant_usage_*``) and
+factory-agent (``usage_event`` / ``*_fact`` / ``tenant_usage_*``) and
 owns the writes to this service's tables (``tenant_registry`` /
 ``platform_principal`` / ``admin_audit`` / ``usage_export``).
 """
@@ -57,7 +57,7 @@ class ExportRecord:
 
 @dataclass(frozen=True, slots=True)
 class TenantRegistryRecord:
-    """Tenant master data owned by this service (Story 9).
+    """Tenant master data owned by this service.
 
     ``app_key`` is the primary key and the tenant identifier itself (D12);
     ``status`` is ``active`` or ``disabled`` (D10/D13). AppKey is stored in
@@ -144,7 +144,7 @@ class UsageStore(Protocol):
 
     async def list_exports(self, principal_id: str, limit: int) -> list[ExportRecord]: ...
 
-    # --- Tenant master data (owned by this service, Story 9) ---
+    # --- Tenant master data (owned by this service) ---
 
     async def list_tenant_registry(
         self, limit: int, offset: int
@@ -167,7 +167,7 @@ class UsageStore(Protocol):
 
     async def search_tenant_registry_names(self, fragment: str) -> list[str]: ...
 
-    # --- Platform principal accounts (owned by this service, Story 9) ---
+    # --- Platform principal accounts (owned by this service) ---
 
     async def create_principal(self, record: PlatformPrincipalRecord) -> bool: ...
 
@@ -175,7 +175,7 @@ class UsageStore(Protocol):
 
     async def get_principal_by_username(self, username: str) -> PlatformPrincipalRecord | None: ...
 
-    # --- MES metering facts (factory-agent owned; read-only here, Story 9/11) ---
+    # --- MES metering facts (factory-agent owned; read-only here) ---
 
     async def list_mes_call_facts(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime
@@ -433,7 +433,7 @@ class PostgresUsageStore:
 
     Connection-per-operation keeps the service stateless; every statement is
     parameterised. Reads cover the metering tables owned by factory-agent
-    (Story 11) and writes touch only this service's own tables
+    and writes touch only this service's own tables
     (``tenant_registry`` / ``platform_principal`` / ``admin_audit`` /
     ``usage_export``).
     """
@@ -531,7 +531,7 @@ class PostgresUsageStore:
                 )
                 fetched = await rows.fetchall()
         except psycopg.errors.UndefinedTable:
-            # mes_call_fact lands in Story 11; until then MES tenants are empty.
+            # A missing table (un-migrated database) simply yields no MES tenants.
             return []
         return sorted(str(row["tenant_id"]) for row in fetched)
 
@@ -743,8 +743,8 @@ class PostgresUsageStore:
                 )
                 fetched = await rows.fetchall()
         except psycopg.errors.UndefinedTable:
-            # mes_call_fact is created and written by factory-agent (Story 11);
-            # before that lands the query is empty, never an error.
+            # mes_call_fact is created and written by factory-agent; a missing table
+            # yields an empty query result, never an error.
             return []
         return [_mes_call_fact_from_row(row) for row in fetched]
 
