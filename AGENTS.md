@@ -54,12 +54,20 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 - `tests/support/`: in-process fakes and pytest-managed test processes, not services.
 - `data/`: ignored runtime output only.
 
-`factory_agent`, `mock_mes`, and `usage_admin` must never import each other. They communicate only
-through versioned HTTP and event contracts, plus the single shared table `tenant_registry`
-(usage-admin owns and writes; factory-agent reads read-only for MES AppKey resolution — ADR-0003
-§4.3). Production Compose excludes Mock MES but includes
-`usage-admin` when usage metering is enabled. Read the nearest scoped `AGENTS.md` before modifying a
-governed directory.
+`factory_agent`, `mock_mes`, and `usage_admin` must never import each other. Since the Story 11
+direct-write refactor there is no cross-service usage transport and no usage-event contract:
+factory-agent writes every metering table (`usage_event`, the `*_fact` tables,
+`mes_operation_category`, `tenant_usage_*`) directly into the shared PostgreSQL in a separate
+transaction after its business commit (failures are alerted, never rolled back into or blocking
+the business answer), and usage-admin only
+reads the shared PostgreSQL. Table ownership is exclusive (product doc §4.4): factory-agent owns
+its business tables (`agent_*`) plus all metering tables; usage-admin owns and writes only
+`tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export` — factory-agent reads
+`tenant_registry` read-only for MES AppKey resolution (ADR-0003 §4.3). Both services migrate one
+shared database with separate Alembic version tables (`alembic_version` /
+`alembic_version_usage_admin`). Production Compose excludes Mock MES but includes `usage-admin`
+when usage metering is enabled. Read the nearest scoped `AGENTS.md` before modifying a governed
+directory.
 
 ## Story Workflow
 

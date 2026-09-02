@@ -32,15 +32,23 @@ from factory_agent.data_api.pagination import BoundedPager
 from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE, row_to_plain_dict
 from factory_agent.domain.errors import (
     InvalidRequestError,
+    MesError,
+    MesErrorCode,
     MesTimeoutError,
     RateLimitedError,
+    TenantDisabledError,
     UnauthenticatedError,
     UnsupportedOperationError,
     UpstreamInvalidError,
     UpstreamUnavailableError,
 )
 from factory_agent.domain.queries import NarrowedFilters
+from factory_agent.observability.logging_adapter import get_logger
+from factory_agent.ports import MesCallRecord, MesCallRecorder
 from factory_agent.ports.contracts import ResourceFetchResult
+from factory_agent.ports.tenant_registry import TenantRegistryReader
+
+_LOGGER = get_logger("factory_agent.data_api.hongzhao")
 
 #: Customer failure messages that indicate credential problems (M8/M14).
 _EXPIRED_MESSAGES = ("请求已过期", "签名无效")
@@ -114,6 +122,8 @@ class HongzhaoMesAdapter:
         client: httpx.AsyncClient | None = None,
         clock: Any | None = None,
         pager: BoundedPager | None = None,
+        recorder: MesCallRecorder | None = None,
+        tenant_registry: TenantRegistryReader | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._bundle = bundle
@@ -123,6 +133,8 @@ class HongzhaoMesAdapter:
         self._client = client
         self._clock = clock
         self._pager = pager or BoundedPager(adapter=self)
+        self._recorder = recorder
+        self._tenant_registry = tenant_registry
 
     @property
     def bundle(self) -> MesCredentialBundle:
@@ -152,6 +164,7 @@ class HongzhaoMesAdapter:
     async def execute(self, request: MesRequest) -> MesResponse:
         """Execute one whitelisted operation with envelope unwrapping."""
         operation = self._operation(request.operation_id)
+        await self._assert_tenant_enabled()
         if self._bundle.needs_refresh(self._now(), self._settings.refresh_threshold_seconds):
             await self._refresh_bundle()
 
@@ -166,6 +179,14 @@ class HongzhaoMesAdapter:
                 raise UpstreamInvalidError("successful response has no result")
             return self._unwrap(envelope)
         raise map_message_to_error(envelope.message)
+
+    async def _assert_tenant_enabled(self) -> None:
+        """D13 guard: a disabled AppKey is rejected before any MES request."""
+        if self._tenant_registry is None:
+            return
+        record = await self._tenant_registry.get(self._bundle.app_key)
+        if record is not None and record.status == "disabled":
+            raise TenantDisabledError()
 
     async def fetch_resource_rows(
         self,
@@ -276,6 +297,7 @@ class HongzhaoMesAdapter:
         last_error: Exception | None = None
         while attempts_left > 0:
             attempts_left -= 1
+            started = self._now()
             try:
                 response = await self._ensure_client().post(
                     operation.path,
@@ -284,21 +306,67 @@ class HongzhaoMesAdapter:
                 )
             except httpx.TimeoutException:
                 last_error = MesTimeoutError()
+                self._record_mes_call(operation, started, status="failed", error=last_error)
                 continue
             except httpx.HTTPError:
                 last_error = UpstreamUnavailableError("transport failure while calling upstream")
+                self._record_mes_call(operation, started, status="failed", error=last_error)
                 continue
 
             if response.status_code == 429:
                 retry_after = _parse_retry_after(response.headers.get("Retry-After"))
                 error = RateLimitedError(retry_after_seconds=retry_after)
+                self._record_mes_call(operation, started, status="failed", error=error)
                 if attempts_left > 0:
                     last_error = error
                     continue
                 raise error
-            return self._map_status(response)
+            try:
+                envelope = self._map_status(response)
+            except Exception as error:  # noqa: BLE001 - failure is metered, then re-raised
+                self._record_mes_call(operation, started, status="failed", error=error)
+                raise
+            self._record_mes_call(operation, started, status="completed", envelope=envelope)
+            return envelope
 
         raise last_error or UpstreamUnavailableError("upstream call exhausted retries")
+
+    def _record_mes_call(
+        self,
+        operation: CatalogOperation,
+        started: datetime,
+        *,
+        status: str,
+        envelope: Any | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        """Meter one MES HTTP attempt at its exit (Story 11 2.6).
+
+        Success and failure are both recorded; the recorder never raises into
+        the adapter — a recorder fault is alerted and dropped so the MES call
+        result is never affected (Story 11 1.6 / R1). The record carries no
+        URL, parameter value, or credential.
+        """
+        if self._recorder is None:
+            return
+        duration_ms = max(0, int((self._now() - started).total_seconds() * 1000))
+        error_category = _error_category(error) if error is not None else None
+        try:
+            self._recorder.record(
+                MesCallRecord(
+                    operation_id=operation.operation_id,
+                    page_count=1,
+                    row_count=_result_row_count(envelope) if envelope is not None else 0,
+                    duration_ms=duration_ms,
+                    status="completed" if status == "completed" else "failed",
+                    error_category=error_category,
+                )
+            )
+        except Exception:  # noqa: BLE001 - metering must never break the MES call (R1)
+            _LOGGER.exception(
+                "mes.metering.record_failed",
+                operation_id=operation.operation_id,
+            )
 
     def _build_body(self, operation: CatalogOperation, params: Mapping[str, Any]) -> dict[str, Any]:
         """Inject public parameters from the bundle; reject unknown sources.
@@ -355,6 +423,34 @@ def _parse_retry_after(raw: str | None) -> int | None:
         return max(int(raw), 0)
     except ValueError:
         return None
+
+
+def _error_category(error: Exception) -> str:
+    """Canonical category for a metered failure; never carries message text."""
+    if isinstance(error, MesError):
+        return error.code.value
+    return MesErrorCode.INTERNAL_ERROR.value
+
+
+def _result_row_count(envelope: Any) -> int:
+    """Row count estimate from a successful envelope's ``result``.
+
+    ``mes_call_fact.row_count_bucket`` is derived from this count. The count
+    is only ever an estimate for rollup display; call counts themselves come
+    from event rows, never from summing this number (D6).
+    """
+    result = getattr(envelope, "result", None)
+    if isinstance(result, list):
+        return len(cast("list[object]", result))
+    if isinstance(result, dict):
+        payload = cast("dict[str, object]", result)
+        rows = payload.get("list") or payload.get("rows")
+        if isinstance(rows, list):
+            return len(cast("list[object]", rows))
+        total = payload.get("total")
+        if isinstance(total, int):
+            return total
+    return 0
 
 
 __all__ = [

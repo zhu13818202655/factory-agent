@@ -79,14 +79,6 @@ def test_cursor_narrows_the_result_window() -> None:
     assert f"tenant_id = '{TENANT}'" in sql
 
 
-def test_outbox_claim_skips_published_and_dead_lettered_rows() -> None:
-    sql = compiled(queries.claim_outbox(10, NOW))
-
-    assert "published_at IS NULL" in sql
-    assert "dead_lettered IS false" in sql
-    assert "LIMIT 10" in sql
-
-
 def test_messages_and_events_cascade_from_the_interaction() -> None:
     cascading = {
         table.name: {constraint.ondelete for constraint in table.foreign_key_constraints}

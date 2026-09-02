@@ -46,7 +46,11 @@ def clean_database() -> Iterator[sa.Engine]:
     def drop_everything() -> None:
         with engine.begin() as connection:
             METADATA.drop_all(connection)
-            connection.execute(sa.text("DROP TABLE IF EXISTS alembic_version"))
+            # factory-agent uses the default ``alembic_version`` table and
+            # usage-admin keeps ``alembic_version_usage_admin``; drop both so a
+            # stale stamp never skips a needed upgrade on a reused test database.
+            for table in ("alembic_version", "alembic_version_usage_admin"):
+                connection.execute(sa.text(f"DROP TABLE IF EXISTS {table}"))
 
     drop_everything()
     try:

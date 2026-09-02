@@ -1,4 +1,4 @@
-"""Session persistence, capability execution, and usage outbox contracts.
+"""Session persistence, capability execution, and direct metering contracts.
 
 Every durable read and write is keyed by a trusted ``InteractionOwner`` derived
 from the resolved ``TenantContext``. Callers can never supply their own tenant
@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Literal, Protocol
 
 from factory_agent.domain import (
     CapabilityId,
@@ -36,11 +36,14 @@ class InteractionOwner:
 
 
 @dataclass(frozen=True, slots=True)
-class UsageOutboxEvent:
-    """One versioned usage event awaiting publication.
+class UsageEvent:
+    """One metering event written directly into the owning service's tables.
 
-    ``payload`` is validated against ``contracts/usage-events/v1`` before it is
-    enqueued and contains no prompts, detail rows, or scope ID lists.
+    The payload is a whitelisted archive-payload format (``application/usage.py``)
+    and contains no prompts, detail rows, or scope ID lists. ``event_id`` is the
+    idempotency key: the ``usage_event`` table uses it (with the partition
+    column) as its primary key and writes are ``ON CONFLICT DO NOTHING``, so a
+    repeated event is recorded exactly once.
     """
 
     event_id: str
@@ -54,14 +57,16 @@ class UsageOutboxEvent:
 class InteractionCommit:
     """Atomic unit: interaction state, messages, SSE events, and usage events.
 
-    A usage-admin outage can never change the answer outcome because publication
-    happens outside this transaction.
+    Usage events are handed to the owning service's metering store, which writes
+    them in a separate transaction after the business commit; a metering failure
+    is caught and alerted without rolling back or blocking the answer (Story 11
+    direct-write protection).
     """
 
     interaction: InteractionRecord
     messages: tuple[MessageRecord, ...] = ()
     events: tuple[SessionEvent, ...] = ()
-    usage_events: tuple[UsageOutboxEvent, ...] = ()
+    usage_events: tuple[UsageEvent, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +79,34 @@ class MessagePage:
 class InteractionPage:
     items: tuple[InteractionRecord, ...]
     next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MesCallRecord:
+    """One completed (or failed) MES HTTP call, recorded at the adapter exit.
+
+    ``page_count`` is the page number of this request within its paged fetch
+    (1 for non-paged calls); it is a supporting metric and never re-counted
+    into the call count (D6). No URL, business parameter value, or credential
+    ever enters this record.
+    """
+
+    operation_id: str
+    page_count: int
+    row_count: int
+    duration_ms: int
+    status: Literal["completed", "failed"]
+    error_category: str | None = None
+
+
+class MesCallRecorder(Protocol):
+    """Records a MES call at the single ``_send`` exit point.
+
+    The recorder is invoked synchronously after every MES HTTP attempt
+    (success and failure); implementations must never raise into the adapter.
+    """
+
+    def record(self, call: MesCallRecord) -> None: ...
 
 
 class InteractionStore(Protocol):
@@ -153,38 +186,6 @@ class CapabilityRunner(Protocol):
     async def run(self, request: CapabilityRunRequest) -> CapabilityRunResult: ...
 
 
-@dataclass(frozen=True, slots=True)
-class OutboxRecord:
-    event_id: str
-    event_type: str
-    tenant_id: TenantId
-    payload: dict[str, object]
-    attempts: int
-    available_at: datetime
-
-
-class UsageOutbox(Protocol):
-    async def claim(self, limit: int, now: datetime) -> tuple[OutboxRecord, ...]: ...
-
-    async def mark_published(self, event_ids: tuple[str, ...], now: datetime) -> None: ...
-
-    async def mark_failed(
-        self,
-        event_ids: tuple[str, ...],
-        reason: str,
-        retry_at: datetime,
-        dead_letter: bool,
-    ) -> None: ...
-
-    async def backlog_size(self, now: datetime) -> int: ...
-
-
-class UsageEventSink(Protocol):
-    """Batch transport to usage-admin; returns the accepted event IDs."""
-
-    async def publish(self, records: tuple[OutboxRecord, ...]) -> tuple[str, ...]: ...
-
-
 __all__ = [
     "CapabilityRunRequest",
     "CapabilityRunResult",
@@ -194,8 +195,7 @@ __all__ = [
     "InteractionPage",
     "InteractionStore",
     "MessagePage",
-    "OutboxRecord",
-    "UsageEventSink",
-    "UsageOutbox",
-    "UsageOutboxEvent",
+    "MesCallRecord",
+    "MesCallRecorder",
+    "UsageEvent",
 ]

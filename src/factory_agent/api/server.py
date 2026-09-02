@@ -16,6 +16,7 @@ from factory_agent.observability.context import (
     accept_request_id,
     bind_request_id,
 )
+from factory_agent.observability.logging_adapter import configure_logging
 
 
 class HealthResponse(BaseModel):
@@ -50,6 +51,7 @@ def create_app(
     overrides: DependencyOverrides | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
+    configure_logging(resolved_settings)
     app = FastAPI(title="factory-agent", version=__version__)
     app.state.container = build_container(resolved_settings, overrides)
     app.state.settings = resolved_settings

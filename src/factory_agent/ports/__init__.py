@@ -30,11 +30,14 @@ from factory_agent.ports.session import (
     InteractionOwner,
     InteractionPage,
     InteractionStore,
+    MesCallRecord,
+    MesCallRecorder,
     MessagePage,
-    OutboxRecord,
-    UsageEventSink,
-    UsageOutbox,
-    UsageOutboxEvent,
+    UsageEvent,
+)
+from factory_agent.ports.tenant_registry import (
+    TenantRegistryReader,
+    TenantRegistryRecord,
 )
 
 __all__ = [
@@ -50,6 +53,8 @@ __all__ = [
     "InteractionOwner",
     "InteractionPage",
     "InteractionStore",
+    "MesCallRecord",
+    "MesCallRecorder",
     "MesDataSource",
     "MessagePage",
     "ModelErrorCategory",
@@ -61,11 +66,10 @@ __all__ = [
     "ModelRole",
     "ModelStage",
     "ModelUsage",
-    "OutboxRecord",
     "SessionRecord",
     "SessionRepository",
+    "TenantRegistryReader",
+    "TenantRegistryRecord",
     "TrustedCredential",
-    "UsageEventSink",
-    "UsageOutbox",
-    "UsageOutboxEvent",
+    "UsageEvent",
 ]

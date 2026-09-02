@@ -16,21 +16,20 @@ flight-domain code, and process-local streaming behavior that conflict with fact
 
 - Build the application with Python 3.12, FastAPI, Pydantic v2, HTTPX, uv, Ruff, Pyright, and pytest.
 - Use PostgreSQL 16 with Psycopg 3 and Alembic for durable application metadata. Run Mock MES against
-  a separate PostgreSQL database and migration history. Run usage-admin against its own separate
-  PostgreSQL database and migration history, hosted on the same database server as the application
-  in deployment. The single deliberate cross-service exception is the tenant registry table
-  `tenant_registry` (factory name, AppKey, status): usage-admin owns its schema, migrations, and
-  writes; factory-agent reads it read-only to resolve the AppKey for MES calls. No other table is
-  shared.
+  a separate PostgreSQL database and migration history. Run usage-admin and factory-agent against
+  the same PostgreSQL database, each with its own migration history and Alembic version table
+  (Story 11 direct write). usage-admin owns the tenant registry table `tenant_registry` (factory
+  name, AppKey, status) — its schema, migrations, and writes — and factory-agent reads it read-only
+  to resolve the AppKey for MES calls. Every other table is owned by exactly one service.
 - When services share one database, every table has exactly one owner that holds its DDL and CRUD
-  while the other service only reads. usage-admin owns `tenant_registry`, `admin_audit`, and
-  `platform_principal`; factory-agent owns the business tables (`agent_*`) and every metering table
-  (`usage_event`, `*_fact`, `mes_operation_category`, `tenant_usage_*`, `usage_export`). No table
-  may appear in both migration histories.
-- Give every service its own Alembic version table: factory-agent uses
-  `alembic_version_factory_agent` and usage-admin uses `alembic_version_usage_admin`. A shared
-  `alembic_version` row would make each service abort on the other's revision ids, because the two
-  revision histories are unrelated.
+  while the other service only reads. usage-admin owns `tenant_registry`, `admin_audit`,
+  `platform_principal`, and `usage_export`; factory-agent owns the business tables (`agent_*`) and
+  every metering table (`usage_event`, `*_fact`, `mes_operation_category`, `tenant_usage_*`). No
+  table may appear in both migration histories.
+- Keep each service's Alembic version table separate: usage-admin uses
+  `alembic_version_usage_admin` while factory-agent uses the default `alembic_version` (Story 11
+  reverted its one-off `alembic_version_factory_agent`). A shared row would make each service abort
+  on the other's revision ids, because the two revision histories are unrelated.
 - Use one in-memory DuckDB connection per interaction for bounded processing of validated,
   authorized data. DuckDB is not a durable store.
 - Use LiteLLM Proxy as the only product model gateway. The application uses logical aliases through
@@ -45,8 +44,9 @@ flight-domain code, and process-local streaming behavior that conflict with fact
   classification and redaction.
 - Use OCI images and Docker Compose for development and integration. Do not select a production
   orchestrator, managed database, object-storage product, or telemetry backend in this ADR.
-- Use a transactional application outbox and versioned usage-event contract to send redacted
-  interaction, LLM, MES, and artifact facts to the independently deployed usage-admin service.
+- Write metering facts directly into the shared database inside factory-agent's business
+  transaction (Story 11); usage-admin only reads the metering tables. There is no HTTP usage-event
+  contract between the services.
 - Treat report-agent as a read-only migration source. Port behavior through characterization tests;
   do not add it as a package, workspace member, submodule, or runtime dependency.
 - Migrate pure state transitions, bounded context handling, typed model responses, error categories,
@@ -61,16 +61,18 @@ flight-domain code, and process-local streaming behavior that conflict with fact
   before customer fields or formulas are known.
 - Stories 2 through 4 fill the stable security and infrastructure boundaries; Story 5 validates them
   with the first complete capability; later Stories add recipes rather than new execution paths.
-- Application, Mock MES, and usage-admin PostgreSQL schemas, credentials, and lifecycle remain
-  separate even if development Compose runs the database instances on one server. The only shared
-  object is `tenant_registry`, which usage-admin owns and factory-agent reads read-only; schema
-  changes to it require synchronized review by both services (ADR-0003 §4.3).
+- factory-agent and usage-admin share one PostgreSQL database with separate credentials and
+  migration lifecycles; Mock MES keeps its own database. Every shared table has exactly one owner:
+  usage-admin owns `tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export`;
+  factory-agent owns and writes the metering tables that usage-admin only reads. Schema changes to
+  shared tables require synchronized review by both services (ADR-0003 §4.3).
 - Separate Alembic version tables let both services run migrations against one database in any
-  order; migrations stay independent and each service may only create, alter, or drop the tables it
-  owns. Table prefixes make ownership visible in review.
+  order (usage-admin pins `alembic_version_usage_admin`; factory-agent uses the default
+  `alembic_version`); migrations stay independent and each service may only create, alter, or drop
+  the tables it owns. Table prefixes make ownership visible in review.
 - One owner per table keeps schema changes in a single service: usage-admin's migration history
-  contains only `tenant_registry`, `admin_audit`, and `platform_principal`; every other table's DDL
-  lives in factory-agent's history.
+  contains only `tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export`; every
+  other table's DDL lives in factory-agent's history.
 - Source behavior from report-agent is preserved only when a factory-agent test states the intended
   behavior. No automatic synchronization with the source repository exists.
 - New dependencies are added in the Story that first executes them, not preinstalled for empty

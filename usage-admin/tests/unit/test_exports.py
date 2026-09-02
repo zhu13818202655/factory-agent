@@ -14,7 +14,6 @@ from usage_admin.exports import (
     sign_download,
     verify_download,
 )
-from usage_admin.ingest import IngestService
 from usage_admin.ops import OpsService
 from usage_admin.platform import PlatformRole, PlatformScope, PlatformScopeError
 from usage_admin.store import InMemoryUsageStore
@@ -79,9 +78,7 @@ async def test_only_analyst_can_create_export() -> None:
 @pytest.mark.asyncio
 async def test_create_export_builds_file_and_audits() -> None:
     service, store, files = make_service()
-    await IngestService(store, clock=lambda: NOW).ingest(
-        [interaction_started("s-1", user_subject_id="u" * 64)]
-    )
+    store.interaction_facts = [interaction_started("s-1", user_subject_id="u" * 64)]
 
     view = await service.create_export(analyst(), start=START, end=END, format="csv")
 
@@ -95,7 +92,7 @@ async def test_create_export_builds_file_and_audits() -> None:
 @pytest.mark.asyncio
 async def test_download_resolves_token_and_returns_bytes() -> None:
     service, store, _ = make_service()
-    await IngestService(store, clock=lambda: NOW).ingest([interaction_started("s-1")])
+    store.interaction_facts = [interaction_started("s-1")]
 
     view = await service.create_export(analyst(), start=START, end=END, format="csv")
     assert view.download_url is not None
@@ -111,7 +108,7 @@ async def test_download_resolves_token_and_returns_bytes() -> None:
 @pytest.mark.asyncio
 async def test_expired_or_tampered_token_returns_none() -> None:
     service, store, _ = make_service()
-    await IngestService(store, clock=lambda: NOW).ingest([interaction_started("s-1")])
+    store.interaction_facts = [interaction_started("s-1")]
 
     view = await service.create_export(analyst(), start=START, end=END, format="csv")
     assert view.download_url is not None

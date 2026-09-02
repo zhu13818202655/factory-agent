@@ -37,9 +37,9 @@ from factory_agent.domain import (
     UserId,
 )
 from factory_agent.persistence.engine import normalize_dsn
-from factory_agent.persistence.session_store import SqlInteractionStore, SqlUsageOutbox
-from factory_agent.persistence.tables import METADATA
-from factory_agent.ports import InteractionCommit, InteractionOwner, UsageOutboxEvent
+from factory_agent.persistence.session_store import SqlInteractionStore
+from factory_agent.persistence.tables import METADATA, usage_event_table
+from factory_agent.ports import InteractionCommit, InteractionOwner, UsageEvent
 
 DATABASE_URL = os.environ.get("FACTORY_AGENT_TEST_POSTGRES_URL")
 
@@ -171,7 +171,7 @@ async def test_commit_writes_messages_and_events_in_one_transaction(
                 ),
             ),
             usage_events=(
-                UsageOutboxEvent(
+                UsageEvent(
                     event_id="11111111-1111-4111-8111-111111111111",
                     event_type="interaction_started",
                     tenant_id=TENANT,
@@ -184,14 +184,17 @@ async def test_commit_writes_messages_and_events_in_one_transaction(
 
     events = await store.list_events(OWNER, InteractionId("i-1"), after_sequence=0)
     messages = await store.list_messages(OWNER, SESSION, limit=10)
-    backlog = await SqlUsageOutbox(engine).backlog_size(NOW)
+    async with engine.connect() as connection:
+        stored_usage = (
+            await connection.execute(sa.select(sa.func.count()).select_from(usage_event_table))
+        ).scalar_one()
 
     assert [event.name for event in events] == [
         "interaction.started",
         "interaction.completed",
     ]
     assert len(messages.items) == 1
-    assert backlog == 1
+    assert stored_usage == 1
 
 
 async def test_last_event_id_resume_returns_only_newer_events(store: SqlInteractionStore) -> None:

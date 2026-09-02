@@ -284,7 +284,7 @@ GET /admin/v1/usage/summary?start=...&end=...
     "llm_duration_ms": {"count": 86240, "mean_ms": 2100.8, "p50_ms": 1750.0, "p95_ms": 6100.0, "p99_ms": 9900.0},
     "local_duration_ms": {"count": 86240, "mean_ms": 120.1, "p50_ms": 80.0, "p95_ms": 400.0, "p99_ms": 900.0}
   },
-  "metric_version": "rollup=rollup-v1;contract=usage-events-v1;p=percentile-cont-v1",
+  "metric_version": "rollup=rollup-v2;p=percentile-cont-v1",
   "timezone": "Asia/Shanghai",
   "freshness": "2026-08-29T02:00:00Z",
   "incomplete": false

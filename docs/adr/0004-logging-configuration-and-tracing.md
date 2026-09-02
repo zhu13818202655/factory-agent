@@ -44,6 +44,14 @@ logger = get_logger(__name__).bind(component="data_api")
 logger.info("mes_call_completed", operation_id=operation_id, status="ok")
 ```
 
+> **Implementation note (2026-09):** the package-boundary test
+> (`tests/security/test_package_boundaries.py`) allows `application`,
+> `persistence`, and `data_api` to depend on `observability`, so application
+> modules bind their logger through `get_logger(...)` as shown above. The
+> `usage-admin` service mirrors the facade under `usage_admin/logging.py`.
+> Tests assert on log content through `caplog`; the root `tests/conftest.py`
+> bridges Loguru records back into stdlib `logging` so `caplog` keeps working.
+
 The adapter owns:
 
 - sink setup at process startup;

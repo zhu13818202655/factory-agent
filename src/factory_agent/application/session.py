@@ -33,10 +33,12 @@ from factory_agent.application.structured import StructuredOutputError
 from factory_agent.application.usage import (
     UsageContext,
     completion_status,
+    drain_mes_events,
     interaction_completed_event,
     interaction_started_event,
     llm_call_event,
     new_trace_id,
+    set_usage_context,
 )
 from factory_agent.domain import (
     INTERACTION_CLARIFICATION,
@@ -70,7 +72,7 @@ from factory_agent.ports import (
     ModelGatewayError,
     ModelStage,
     TrustedCredential,
-    UsageOutboxEvent,
+    UsageEvent,
 )
 from factory_agent.ports.artifacts import ArtifactExporter
 from factory_agent.ports.session import CapabilityRunner
@@ -150,9 +152,22 @@ class SessionService:
             raise ValueError("interaction text exceeds the configured maximum length")
 
         now = self._clock.now()
-        authorization = await self._authorization.authorize(credential, now)
-        context = authorization.tenant_context
         interaction_id = InteractionId(self._new_id())
+        # Bind the usage context before authorization so MES directory calls
+        # (EmployeeQuery/DeptQuery) during scope resolution are metered too.
+        usage = UsageContext(
+            tenant_id=credential.tenant_id,
+            user_id=credential.user_id,
+            session_id=request.session_id,
+            interaction_id=interaction_id,
+            trace_id=new_trace_id(),
+        )
+        set_usage_context(usage)
+        try:
+            authorization = await self._authorization.authorize(credential, now)
+        finally:
+            set_usage_context(None)
+        context = authorization.tenant_context
         record = InteractionRecord(
             interaction_id=interaction_id,
             session_id=request.session_id,
@@ -168,13 +183,6 @@ class SessionService:
             created_at=now,
             updated_at=now,
             completed_at=None,
-        )
-        usage = UsageContext(
-            tenant_id=context.tenant_id,
-            user_id=context.user_id,
-            session_id=request.session_id,
-            interaction_id=interaction_id,
-            trace_id=new_trace_id(),
         )
         await self._store.commit(
             InteractionCommit(
@@ -294,30 +302,43 @@ class SessionService:
             sequence=max(record.last_event_sequence, after_sequence),
             started_monotonic=time.monotonic(),
         )
-        started = SessionEvent(
-            sequence=state.next_sequence(),
-            name=INTERACTION_STARTED,
-            data={
-                "interaction_id": str(record.interaction_id),
-                "session_id": str(record.session_id),
-                "state": SessionState.PARSING.value,
-                "stage": "接收",
-                "status": "accepted",
-            },
-        )
-        state.record = replace(
-            state.record,
-            status=InteractionStatus.RUNNING,
-            last_event_sequence=started.sequence,
-            updated_at=self._clock.now(),
-        )
-        await self._store.commit(InteractionCommit(interaction=state.record, events=(started,)))
-        yield started
+        # The adapter meters every MES call at its ``_send`` exit; the active
+        # usage context is bound for the duration of this run so business-data
+        # calls carry the interaction identifiers.
+        set_usage_context(self._usage_context(record))
+        try:
+            started = SessionEvent(
+                sequence=state.next_sequence(),
+                name=INTERACTION_STARTED,
+                data={
+                    "interaction_id": str(record.interaction_id),
+                    "session_id": str(record.session_id),
+                    "state": SessionState.PARSING.value,
+                    "stage": "接收",
+                    "status": "accepted",
+                },
+            )
+            state.record = replace(
+                state.record,
+                status=InteractionStatus.RUNNING,
+                last_event_sequence=started.sequence,
+                updated_at=self._clock.now(),
+            )
+            await self._store.commit(
+                InteractionCommit(
+                    interaction=state.record,
+                    events=(started,),
+                    usage_events=drain_mes_events(),
+                )
+            )
+            yield started
 
-        async for event in self._pipeline(owner, authorization, state, history):
-            yield event
-        if state.record.status in _TERMINAL_STATUSES:
-            await self._record_history(owner, state)
+            async for event in self._pipeline(owner, authorization, state, history):
+                yield event
+            if state.record.status in _TERMINAL_STATUSES:
+                await self._record_history(owner, state)
+        finally:
+            set_usage_context(None)
 
     async def _pipeline(
         self,
@@ -326,7 +347,7 @@ class SessionService:
         state: _RunState,
         history: tuple[ConversationTurn, ...],
     ) -> AsyncIterator[SessionEvent]:
-        usage_events: list[UsageOutboxEvent] = []
+        usage_events: list[UsageEvent] = []
         try:
             intent = await self._parse(state, history, usage_events)
         except ModelGatewayError as exc:
@@ -531,7 +552,7 @@ class SessionService:
                     ),
                 ),
                 events=(result_event, terminal),
-                usage_events=tuple(usage_events),
+                usage_events=tuple(usage_events) + drain_mes_events(),
             )
         )
         yield result_event
@@ -541,7 +562,7 @@ class SessionService:
         self,
         state: _RunState,
         history: tuple[ConversationTurn, ...],
-        usage_events: list[UsageOutboxEvent],
+        usage_events: list[UsageEvent],
     ) -> CapabilityIntent:
         logical_call_id = self._new_id()
         now = self._clock.now()
@@ -587,7 +608,7 @@ class SessionService:
         self,
         state: _RunState,
         intent: CapabilityIntent,
-        usage_events: list[UsageOutboxEvent],
+        usage_events: list[UsageEvent],
     ) -> AsyncIterator[SessionEvent]:
         question = clarification_for(intent) or "请补充更多信息。"
         async for event in self._clarify_message(state, question, usage_events):
@@ -597,7 +618,7 @@ class SessionService:
         self,
         state: _RunState,
         question: str,
-        usage_events: list[UsageOutboxEvent],
+        usage_events: list[UsageEvent],
     ) -> AsyncIterator[SessionEvent]:
         clarifying = self._advance(state.record, SessionState.CLARIFYING, "slots_missing")
         event = SessionEvent(
@@ -637,7 +658,7 @@ class SessionService:
                     ),
                 ),
                 events=(event, terminal),
-                usage_events=tuple(usage_events),
+                usage_events=tuple(usage_events) + drain_mes_events(),
             )
         )
         yield event
@@ -659,11 +680,17 @@ class SessionService:
         state.record = replace(
             advanced, last_event_sequence=event.sequence, updated_at=self._clock.now()
         )
-        await self._store.commit(InteractionCommit(interaction=state.record, events=(event,)))
+        await self._store.commit(
+            InteractionCommit(
+                interaction=state.record,
+                events=(event,),
+                usage_events=drain_mes_events(),
+            )
+        )
         return event
 
     async def _fail(
-        self, state: _RunState, category: str, usage_events: list[UsageOutboxEvent]
+        self, state: _RunState, category: str, usage_events: list[UsageEvent]
     ) -> AsyncIterator[SessionEvent]:
         async for event in self._terminate(
             state, InteractionStatus.FAILED, category, usage_events, "查询未能完成。"
@@ -671,7 +698,7 @@ class SessionService:
             yield event
 
     async def _reject(
-        self, state: _RunState, category: str, usage_events: list[UsageOutboxEvent]
+        self, state: _RunState, category: str, usage_events: list[UsageEvent]
     ) -> AsyncIterator[SessionEvent]:
         async for event in self._reject_message(
             state, category, "当前角色无权执行该查询。", usage_events
@@ -683,7 +710,7 @@ class SessionService:
         state: _RunState,
         category: str,
         message: str,
-        usage_events: list[UsageOutboxEvent],
+        usage_events: list[UsageEvent],
     ) -> AsyncIterator[SessionEvent]:
         async for event in self._terminate(
             state,
@@ -699,7 +726,7 @@ class SessionService:
         state: _RunState,
         status: InteractionStatus,
         category: str,
-        usage_events: list[UsageOutboxEvent],
+        usage_events: list[UsageEvent],
         text: str,
     ) -> AsyncIterator[SessionEvent]:
         now = self._clock.now()
@@ -739,7 +766,7 @@ class SessionService:
                     ),
                 ),
                 events=(event,),
-                usage_events=tuple(usage_events),
+                usage_events=tuple(usage_events) + drain_mes_events(),
             )
         )
         yield event
@@ -869,7 +896,7 @@ class SessionService:
         *,
         result: CapabilityRunResult | None,
         error_category: str | None,
-    ) -> UsageOutboxEvent:
+    ) -> UsageEvent:
         duration_ms = max(0, int((record.updated_at - record.created_at).total_seconds() * 1000))
         return interaction_completed_event(
             self._usage_context(record),

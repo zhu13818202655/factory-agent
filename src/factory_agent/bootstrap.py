@@ -18,6 +18,7 @@ from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
 from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.session import SessionLimits, SessionService
+from factory_agent.application.usage import ContextVarMesCallRecorder
 from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
@@ -36,18 +37,21 @@ from factory_agent.llm.router_gateway import LiteLlmRouterGateway
 from factory_agent.observability.audit import AuditSink, InMemoryAuditSink
 from factory_agent.persistence.artifact_repository import SqlArtifactRepository
 from factory_agent.persistence.engine import create_session_engine
+from factory_agent.persistence.metering import SqlMeteringStore
 from factory_agent.persistence.personal_store import (
     SqlFavoriteRepository,
     SqlHistoryRepository,
     SqlUserMappingRepository,
 )
 from factory_agent.persistence.session_store import SqlInteractionStore
+from factory_agent.persistence.tenant_registry import SqlTenantRegistryReader
 from factory_agent.ports import (
     ArtifactStore,
     CapabilityRunner,
     Clock,
     IdentityProvider,
     InteractionStore,
+    MesCallRecorder,
     MesDataSource,
     ModelGateway,
     SessionRepository,
@@ -85,6 +89,7 @@ class DependencyOverrides:
     capability_catalog: CapabilityCatalog | None = None
     personalization: PersonalizationService | None = None
     new_id: Callable[[], str] | None = None
+    mes_call_recorder: MesCallRecorder | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,10 +117,18 @@ def build_container(
     settings: FactoryAgentSettings, overrides: DependencyOverrides | None = None
 ) -> ApplicationContainer:
     supplied = overrides or DependencyOverrides()
+    # One shared recorder feeds the MES adapter and the metering context; the
+    # session pipeline drains it at each commit (Story 11 2.6).
+    mes_recorder: MesCallRecorder = supplied.mes_call_recorder or ContextVarMesCallRecorder()
     if supplied.mes is not None:
         mes = supplied.mes
         mes_status = "fake"
     elif settings.canonical_mes_base_url is not None:
+        tenant_registry = (
+            SqlTenantRegistryReader(create_session_engine(str(settings.postgres_url)))
+            if settings.postgres_url is not None
+            else None
+        )
         mes = HongzhaoMesAdapter(
             str(settings.canonical_mes_base_url),
             # Placeholder bundle for readiness; real credentials are injected
@@ -130,6 +143,8 @@ def build_container(
                 uname="unconfigured",
             ),
             load_catalog(),
+            recorder=mes_recorder,
+            tenant_registry=tenant_registry,
         )
         mes_status = "configured"
     else:
@@ -165,7 +180,8 @@ def build_container(
         interactions: InteractionStore | None = supplied.interactions
         interactions_status = "fake"
     elif settings.postgres_url is not None:
-        interactions = SqlInteractionStore(create_session_engine(str(settings.postgres_url)))
+        engine = create_session_engine(str(settings.postgres_url))
+        interactions = SqlInteractionStore(engine, metering=SqlMeteringStore(engine))
         interactions_status = "configured"
     else:
         interactions = None

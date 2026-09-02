@@ -87,11 +87,14 @@ layer; Stories 6 through 8 add recipes rather than new parallel architectures.
 The root builds `src/factory_agent`. `mock-mes/` is a separately runnable uv workspace member
 used only for development and tests. `usage-admin/` is a separately built production uv workspace
 member for authorized multi-tenant usage aggregation, operational APIs, and reports. Each service
-owns its package, tests, Dockerfile, migrations, configuration, and database. No service imports
-another; they communicate through versioned HTTP and usage-event contracts and can be
-split into separate repositories later. The single deliberate storage exception is the tenant
-registry table `tenant_registry`, which usage-admin owns and writes and factory-agent reads
-read-only to resolve the AppKey for MES calls (ADR-0003 §4.3); no other table is shared.
+owns its package, tests, Dockerfile, migrations, and configuration. No service imports another;
+metering facts are written by factory-agent directly into the shared PostgreSQL inside its business
+transaction and usage-admin reads them (Story 11) — there is no HTTP usage-event contract between
+the services, and either could be split into separate repositories later. Every shared table has
+exactly one owner: usage-admin owns and writes `tenant_registry` (which factory-agent reads
+read-only to resolve the AppKey for MES calls, ADR-0003 §4.3), `admin_audit`,
+`platform_principal`, and `usage_export`; factory-agent owns and writes all business and metering
+tables that usage-admin only reads.
 
 ## Request Invariants
 

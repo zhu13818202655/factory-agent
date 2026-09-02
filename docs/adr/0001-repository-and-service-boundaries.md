@@ -17,10 +17,14 @@ active tenant-local `DataScope`; platform usage aggregation uses a separate `Pla
 - `mock-mes/` is a self-contained uv workspace child with its own package, Dockerfile, tests,
   configuration, and future migrations.
 - `usage-admin/` is a self-contained production uv workspace child with its own package, Dockerfile,
-  tests, configuration, migrations, and database. It consumes versioned, redacted usage events and
-  never calls MES endpoints.
+  tests, configuration, and migrations. It shares the application PostgreSQL and reads
+  factory-agent's metering tables directly (Story 11: no usage-event transport anymore); it never
+  calls MES endpoints.
 - The repository has one `.git` and one `uv.lock`.
-- The packages never import each other and communicate only through versioned HTTP and event contracts.
+- The packages never import each other. Cross-service usage transport was removed in Story 11:
+  factory-agent writes metering tables directly in the shared database (separate transaction after
+  its business commit) and usage-admin only reads them; the single shared-table read boundary is
+  `tenant_registry` (ADR-0003 §4.3).
 - Production images and Compose topology exclude Mock MES unless its explicit development overlay
   is selected. Production usage metering deploys `usage-admin` independently from `factory-agent`.
 - Shared Python DTO packages are deferred. Canonical OpenAPI and JSON Schema are the compatibility

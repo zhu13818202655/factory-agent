@@ -1,20 +1,22 @@
-"""Every usage event the application actually produces must satisfy the v1 schemas.
+"""Field hygiene of the usage events the application actually produces.
 
-``test_usage_event_schemas`` validates hand-written examples against the
-contract. This module runs real session pipelines and validates whatever they
-enqueue, so a field added in application code cannot silently escape the
-allowlist or carry a sensitive canary.
+The archive-payload format is owned locally by ``factory_agent.application.usage``
+(``SCHEMA_VERSION``); the cross-service contract directory was deleted in
+Story 11. These tests run real session pipelines and guard the two properties
+that used to be enforced by the contract schemas:
+
+1. every produced event's payload keys stay inside the whitelisted field set,
+   so a field added in application code cannot silently escape the allowlist;
+2. no event carries a sensitive canary (question text, employee id, ...).
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import pytest
-from jsonschema import Draft202012Validator, FormatChecker
 
 from factory_agent.application.authorization import (
     AuthorizationService,
@@ -27,7 +29,7 @@ from factory_agent.application.intent import (
 )
 from factory_agent.application.session import SessionService, StartRequest
 from factory_agent.domain import CapabilityId, Role, SessionId, TenantId, UserId
-from factory_agent.ports import ModelErrorCategory, ModelGatewayError, UsageOutboxEvent
+from factory_agent.ports import ModelErrorCategory, ModelGatewayError, UsageEvent
 from factory_agent.ports.contracts import TrustedCredential
 from tests.support.authorization import (
     FakeMembershipSource,
@@ -42,7 +44,6 @@ from tests.support.session import (
     SequentialIds,
 )
 
-CONTRACT_ROOT = Path(__file__).resolve().parents[2] / "contracts" / "usage-events" / "v1"
 NOW = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
 SESSION = SessionId("session-1")
 
@@ -54,13 +55,52 @@ CANARIES = (
     "user-a",
 )
 
-SCHEMA_BY_EVENT_TYPE = {
-    "interaction_started": "interaction",
-    "interaction_completed": "interaction",
-    "llm_call_completed": "llm",
-    "mes_call_completed": "mes",
-    "artifact_generated": "artifact",
-    "artifact_downloaded": "artifact",
+#: Envelope fields shared by every event (mirror of ``UsageContext.envelope``).
+ENVELOPE_FIELDS = frozenset(
+    {
+        "event_id",
+        "schema_version",
+        "occurred_at",
+        "tenant_id",
+        "user_subject_id",
+        "session_id",
+        "interaction_id",
+        "trace_id",
+        "event_type",
+    }
+)
+
+#: Whitelisted fields per event type (mirror of ``application/usage.py``).
+ALLOWED_FIELDS: dict[str, frozenset[str]] = {
+    "interaction_started": ENVELOPE_FIELDS | {"capability", "entrypoint", "role_category"},
+    "interaction_completed": ENVELOPE_FIELDS
+    | {
+        "status",
+        "duration_ms",
+        "mes_duration_ms",
+        "llm_duration_ms",
+        "local_duration_ms",
+        "result_rows_bucket",
+        "error_category",
+    },
+    "llm_call_completed": ENVELOPE_FIELDS
+    | {
+        "logical_call_id",
+        "stage",
+        "model_alias",
+        "actual_model",
+        "attempt",
+        "prompt_tokens",
+        "completion_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
+        "duration_ms",
+        "status",
+        "fallback_reason",
+        "error_category",
+    },
+    "mes_call_completed": ENVELOPE_FIELDS
+    | {"operation_id", "page_count", "row_count_bucket", "duration_ms", "status", "error_category"},
 }
 
 CATALOG = CapabilityCatalog(
@@ -85,16 +125,6 @@ OWNER_ONLY = (
 INCOMPLETE = '{"capability_id": null, "confidence": 0.2, "slots": {}}'
 
 
-def load_schema(name: str) -> dict[str, Any]:
-    return json.loads((CONTRACT_ROOT / f"{name}.schema.json").read_text(encoding="utf-8"))
-
-
-def validator_for(event_type: str) -> Draft202012Validator:
-    schema = load_schema(SCHEMA_BY_EVENT_TYPE[event_type])
-    schema["allOf"][0] = load_schema("envelope")
-    return Draft202012Validator(schema, format_checker=FormatChecker())
-
-
 def credential() -> TrustedCredential:
     return TrustedCredential(tenant_id=TenantId("tenant-a"), user_id=UserId("user-a"))
 
@@ -116,7 +146,7 @@ async def run_pipeline(
     role: Role = Role.EMPLOYEE,
     failure: Exception | None = None,
     cancel: bool = False,
-) -> list[UsageOutboxEvent]:
+) -> list[UsageEvent]:
     store = InMemoryInteractionStore()
     gateway = ScriptedModelGateway(contents=[payload], failures=[failure] if failure else [])
     service = SessionService(
@@ -152,14 +182,16 @@ PIPELINES: dict[str, dict[str, Any]] = {
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", sorted(PIPELINES))
-async def test_produced_events_validate_against_the_v1_schemas(scenario: str) -> None:
+async def test_produced_events_stay_inside_the_whitelisted_field_set(scenario: str) -> None:
     events = await run_pipeline(**PIPELINES[scenario])
 
     assert events, "every terminal pipeline must produce at least one usage event"
     for event in events:
         event_type = event.payload["event_type"]
         assert isinstance(event_type, str)
-        validator_for(event_type).validate(event.payload)  # pyright: ignore[reportUnknownMemberType]
+        assert event_type in ALLOWED_FIELDS, f"unexpected event type {event_type!r}"
+        unknown = set(event.payload) - ALLOWED_FIELDS[event_type]
+        assert not unknown, f"{event_type} carries unapproved fields: {sorted(unknown)}"
 
 
 @pytest.mark.asyncio
@@ -174,7 +206,7 @@ async def test_produced_events_never_carry_a_canary(scenario: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_every_event_id_is_unique_so_ingest_can_deduplicate() -> None:
+async def test_every_event_id_is_unique_for_idempotent_writes() -> None:
     events = await run_pipeline(COMPLETE)
 
     event_ids = [event.event_id for event in events]

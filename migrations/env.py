@@ -9,14 +9,15 @@ from factory_agent.persistence.tables import METADATA
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # ``disable_existing_loggers=False`` keeps pre-existing loggers (e.g.
+    # tests' or mock-mes's) alive when alembic runs inside a test process;
+    # the fileConfig default of True would disable them for the whole session.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = METADATA
 
-#: Each service keeps its own Alembic version table. factory-agent and
-#: usage-admin share one PostgreSQL database, and a shared ``alembic_version``
-#: row would make each service fail on the other's revision ids.
-VERSION_TABLE = "alembic_version_factory_agent"
+# factory-agent uses the default Alembic version table; usage-admin keeps its
+# own isolated version table (Story 11 revert).
 
 
 def run_migrations_offline() -> None:
@@ -25,7 +26,6 @@ def run_migrations_offline() -> None:
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
-        version_table=VERSION_TABLE,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -41,7 +41,6 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            version_table=VERSION_TABLE,
         )
         with context.begin_transaction():
             context.run_migrations()

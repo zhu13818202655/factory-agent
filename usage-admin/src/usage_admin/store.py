@@ -2,41 +2,23 @@
 
 The service and API layers depend only on ``UsageStore``, so unit tests can
 inject the in-memory implementation without a database or network. The
-PostgreSQL implementation keeps raw events in the monthly-partitioned table and
-computes duration percentiles with ``percentile_cont``.
+PostgreSQL implementation reads the metering tables owned and written by
+factory-agent (Story 11: ``usage_event`` / ``*_fact`` / ``tenant_usage_*``) and
+owns the writes to this service's tables (``tenant_registry`` /
+``platform_principal`` / ``admin_audit`` / ``usage_export``).
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 import psycopg
 import psycopg.rows
 
 from usage_admin.events import InteractionFact, LlmCallFact, MesCallFact
-
-
-@dataclass(frozen=True, slots=True)
-class Receipt:
-    event_id: str
-    schema_version: str
-    event_type: str
-    tenant_id: str
-    payload_digest: str
-    received_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class DeadLetterEntry:
-    event_id: str
-    event_type: str
-    tenant_id: str
-    payload_digest: str
-    reason: str
-    rejected_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,21 +95,7 @@ class MesOperationCategory:
 
 
 class UsageStore(Protocol):
-    """Persistent boundary used by ingest, rollup, ops, and exports."""
-
-    async def receipt_digest(self, event_id: str) -> str | None: ...
-
-    async def record_receipt(self, receipt: Receipt) -> None: ...
-
-    async def insert_raw_event(
-        self, payload: dict[str, object], *, received_at: datetime
-    ) -> None: ...
-
-    async def insert_interaction_fact(self, fact: InteractionFact) -> None: ...
-
-    async def insert_llm_call_fact(self, fact: LlmCallFact) -> None: ...
-
-    async def dead_letter(self, entry: DeadLetterEntry) -> None: ...
+    """Persistent boundary used by ops, exports, and tenant/principal services."""
 
     async def list_interaction_facts(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime
@@ -136,8 +104,6 @@ class UsageStore(Protocol):
     async def list_llm_call_facts(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime
     ) -> list[LlmCallFact]: ...
-
-    async def upsert_rollup_rows(self, rows: list[RollupRow]) -> None: ...
 
     async def list_rollup_rows(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime, granularity: str
@@ -222,15 +188,12 @@ class UsageStore(Protocol):
 class InMemoryUsageStore:
     """In-memory ``UsageStore`` for unit tests and offline development."""
 
-    receipts: dict[str, Receipt] = field(default_factory=dict[str, Receipt])
-    raw_events: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     interaction_facts: list[InteractionFact] = field(default_factory=list[InteractionFact])
     llm_call_facts: list[LlmCallFact] = field(default_factory=list[LlmCallFact])
     mes_call_facts: list[MesCallFact] = field(default_factory=list[MesCallFact])
     mes_operation_categories: list[MesOperationCategory] = field(
         default_factory=list[MesOperationCategory]
     )
-    dead_letters: list[DeadLetterEntry] = field(default_factory=list[DeadLetterEntry])
     rollup_rows: list[RollupRow] = field(default_factory=list[RollupRow])
     audits: list[AuditEntry] = field(default_factory=list[AuditEntry])
     exports: dict[str, ExportRecord] = field(default_factory=dict[str, ExportRecord])
@@ -240,25 +203,6 @@ class InMemoryUsageStore:
     principals: dict[str, PlatformPrincipalRecord] = field(
         default_factory=dict[str, PlatformPrincipalRecord]
     )
-
-    async def receipt_digest(self, event_id: str) -> str | None:
-        receipt = self.receipts.get(event_id)
-        return receipt.payload_digest if receipt is not None else None
-
-    async def record_receipt(self, receipt: Receipt) -> None:
-        self.receipts[receipt.event_id] = receipt
-
-    async def insert_raw_event(self, payload: dict[str, object], *, received_at: datetime) -> None:
-        self.raw_events.append(dict(payload))
-
-    async def insert_interaction_fact(self, fact: InteractionFact) -> None:
-        self.interaction_facts.append(fact)
-
-    async def insert_llm_call_fact(self, fact: LlmCallFact) -> None:
-        self.llm_call_facts.append(fact)
-
-    async def dead_letter(self, entry: DeadLetterEntry) -> None:
-        self.dead_letters.append(entry)
 
     async def list_interaction_facts(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime
@@ -277,19 +221,6 @@ class InMemoryUsageStore:
             for fact in self.llm_call_facts
             if fact.tenant_id in tenant_ids and start <= fact.occurred_at < end
         ]
-
-    async def upsert_rollup_rows(self, rows: list[RollupRow]) -> None:
-        existing = {
-            (row.tenant_id, row.bucket_start, row.metric, row.granularity): index
-            for index, row in enumerate(self.rollup_rows)
-        }
-        for row in rows:
-            key = (row.tenant_id, row.bucket_start, row.metric, row.granularity)
-            if key in existing:
-                self.rollup_rows[existing[key]] = row
-            else:
-                existing[key] = len(self.rollup_rows)
-                self.rollup_rows.append(row)
 
     async def list_rollup_rows(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime, granularity: str
@@ -501,145 +432,14 @@ class PostgresUsageStore:
     """Production ``UsageStore`` over PostgreSQL 16.
 
     Connection-per-operation keeps the service stateless; every statement is
-    parameterised and read-only except the explicit ingest/rollup writes.
+    parameterised. Reads cover the metering tables owned by factory-agent
+    (Story 11) and writes touch only this service's own tables
+    (``tenant_registry`` / ``platform_principal`` / ``admin_audit`` /
+    ``usage_export``).
     """
 
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
-
-    async def receipt_digest(self, event_id: str) -> str | None:
-        async with await _connect(self._database_url) as connection:
-            rows = await connection.execute(
-                "SELECT payload_digest FROM usage_event_receipt WHERE event_id = %s",
-                (event_id,),
-            )
-            row = await rows.fetchone()
-        return str(row["payload_digest"]) if row else None
-
-    async def record_receipt(self, receipt: Receipt) -> None:
-        async with await _connect(self._database_url) as connection:
-            await connection.execute(
-                """
-                INSERT INTO usage_event_receipt
-                    (event_id, schema_version, event_type, tenant_id, payload_digest, received_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (event_id) DO NOTHING
-                """,
-                (
-                    receipt.event_id,
-                    receipt.schema_version,
-                    receipt.event_type,
-                    receipt.tenant_id,
-                    receipt.payload_digest,
-                    receipt.received_at,
-                ),
-            )
-
-    async def insert_raw_event(self, payload: dict[str, object], *, received_at: datetime) -> None:
-        async with await _connect(self._database_url) as connection:
-            await connection.execute(
-                """
-                INSERT INTO usage_event
-                    (event_id, schema_version, event_type, tenant_id, occurred_at, received_at,
-                     user_subject_id, session_id, interaction_id, trace_id, payload)
-                VALUES (%(event_id)s, %(schema_version)s, %(event_type)s, %(tenant_id)s,
-                        %(occurred_at)s, %(received_at)s, %(user_subject_id)s, %(session_id)s,
-                        %(interaction_id)s, %(trace_id)s, %(payload)s)
-                """,
-                {
-                    **payload,
-                    "received_at": received_at,
-                    "payload": json.dumps(payload),
-                },
-            )
-
-    async def insert_interaction_fact(self, fact: InteractionFact) -> None:
-        async with await _connect(self._database_url) as connection:
-            await connection.execute(
-                """
-                INSERT INTO interaction_fact
-                    (event_id, tenant_id, session_id, interaction_id, event_type, user_subject_id,
-                     occurred_at, capability_id, entrypoint, role_category, status, duration_ms,
-                     mes_duration_ms, llm_duration_ms, local_duration_ms, result_rows_bucket,
-                     error_category, received_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (event_id) DO NOTHING
-                """,
-                (
-                    fact.event_id,
-                    fact.tenant_id,
-                    fact.session_id,
-                    fact.interaction_id,
-                    fact.event_type,
-                    fact.user_subject_id,
-                    fact.occurred_at,
-                    fact.capability_id,
-                    fact.entrypoint,
-                    fact.role_category,
-                    fact.status,
-                    fact.duration_ms,
-                    fact.mes_duration_ms,
-                    fact.llm_duration_ms,
-                    fact.local_duration_ms,
-                    fact.result_rows_bucket,
-                    fact.error_category,
-                    fact.received_at,
-                ),
-            )
-
-    async def insert_llm_call_fact(self, fact: LlmCallFact) -> None:
-        async with await _connect(self._database_url) as connection:
-            await connection.execute(
-                """
-                INSERT INTO llm_call_fact
-                    (event_id, tenant_id, session_id, interaction_id, occurred_at, logical_call_id,
-                     stage, model_alias, actual_model, attempt, prompt_tokens, completion_tokens,
-                     cached_tokens, reasoning_tokens, duration_ms, status, fallback_reason,
-                     error_category, received_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (event_id) DO NOTHING
-                """,
-                (
-                    fact.event_id,
-                    fact.tenant_id,
-                    fact.session_id,
-                    fact.interaction_id,
-                    fact.occurred_at,
-                    fact.logical_call_id,
-                    fact.stage,
-                    fact.model_alias,
-                    fact.actual_model,
-                    fact.attempt,
-                    fact.prompt_tokens,
-                    fact.completion_tokens,
-                    fact.cached_tokens,
-                    fact.reasoning_tokens,
-                    fact.duration_ms,
-                    fact.status,
-                    fact.fallback_reason,
-                    fact.error_category,
-                    fact.received_at,
-                ),
-            )
-
-    async def dead_letter(self, entry: DeadLetterEntry) -> None:
-        async with await _connect(self._database_url) as connection:
-            await connection.execute(
-                """
-                INSERT INTO usage_event_dead_letter
-                    (event_id, event_type, tenant_id, payload_digest, reason, rejected_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (event_id) DO NOTHING
-                """,
-                (
-                    entry.event_id,
-                    entry.event_type,
-                    entry.tenant_id,
-                    entry.payload_digest,
-                    entry.reason,
-                    entry.rejected_at,
-                ),
-            )
 
     async def list_interaction_facts(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime
@@ -672,52 +472,6 @@ class PostgresUsageStore:
             )
             fetched = await rows.fetchall()
         return [_llm_call_fact_from_row(row) for row in fetched]
-
-    async def upsert_rollup_rows(self, rows: list[RollupRow]) -> None:
-        if not rows:
-            return
-        async with await _connect(self._database_url) as connection:
-            for row in rows:
-                if row.granularity == "hour":
-                    await connection.execute(
-                        """
-                        INSERT INTO tenant_usage_hourly
-                            (tenant_id, bucket_start, metric, value, rollup_version, rolled_up_at)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (tenant_id, bucket_start, metric)
-                        DO UPDATE SET value = EXCLUDED.value,
-                                      rollup_version = EXCLUDED.rollup_version,
-                                      rolled_up_at = EXCLUDED.rolled_up_at
-                        """,
-                        (
-                            row.tenant_id,
-                            row.bucket_start,
-                            row.metric,
-                            row.value,
-                            row.rollup_version,
-                            row.rolled_up_at,
-                        ),
-                    )
-                else:
-                    await connection.execute(
-                        """
-                        INSERT INTO tenant_usage_daily
-                            (tenant_id, bucket_date, metric, value, rollup_version, rolled_up_at)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (tenant_id, bucket_date, metric)
-                        DO UPDATE SET value = EXCLUDED.value,
-                                      rollup_version = EXCLUDED.rollup_version,
-                                      rolled_up_at = EXCLUDED.rolled_up_at
-                        """,
-                        (
-                            row.tenant_id,
-                            _bucket_date(row.bucket_start),
-                            row.metric,
-                            row.value,
-                            row.rollup_version,
-                            row.rolled_up_at,
-                        ),
-                    )
 
     async def list_rollup_rows(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime, granularity: str
@@ -1161,10 +915,6 @@ _DURATION_COLUMN: dict[str, str] = {
 }
 
 
-def _bucket_date(bucket_start: datetime) -> date:
-    return bucket_start.astimezone(timezone.utc).date()
-
-
 def _interaction_fact_from_row(row: dict[str, Any]) -> InteractionFact:
     return InteractionFact(
         event_id=str(row["event_id"]),
@@ -1304,13 +1054,11 @@ def percentile(sorted_values: list[float], p: float) -> float | None:
 
 __all__ = [
     "AuditEntry",
-    "DeadLetterEntry",
     "ExportRecord",
     "InMemoryUsageStore",
     "MesOperationCategory",
     "PlatformPrincipalRecord",
     "PostgresUsageStore",
-    "Receipt",
     "RollupRow",
     "TenantRegistryRecord",
     "UsageStore",

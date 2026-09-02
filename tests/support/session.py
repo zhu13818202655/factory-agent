@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import itertools
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -28,8 +27,7 @@ from factory_agent.ports import (
     ModelRequest,
     ModelResponse,
     ModelUsage,
-    OutboxRecord,
-    UsageOutboxEvent,
+    UsageEvent,
 )
 
 
@@ -40,7 +38,7 @@ class InMemoryInteractionStore:
     interactions: dict[str, InteractionRecord] = field(default_factory=lambda: {})
     messages: list[MessageRecord] = field(default_factory=lambda: [])
     events: dict[str, list[SessionEvent]] = field(default_factory=lambda: {})
-    usage_events: list[UsageOutboxEvent] = field(default_factory=lambda: [])
+    usage_events: list[UsageEvent] = field(default_factory=lambda: [])
     commits: int = 0
 
     async def commit(self, commit: InteractionCommit) -> None:
@@ -188,62 +186,6 @@ class ScriptedModelGateway:
             usage=ModelUsage(prompt_tokens=11, completion_tokens=5),
             duration_ms=3,
         )
-
-
-@dataclass
-class InMemoryUsageOutbox:
-    records: list[OutboxRecord] = field(default_factory=lambda: [])
-    published: list[str] = field(default_factory=lambda: [])
-    failed: list[tuple[tuple[str, ...], str, bool]] = field(default_factory=lambda: [])
-
-    async def claim(self, limit: int, now: datetime) -> tuple[OutboxRecord, ...]:
-        pending = [
-            record
-            for record in self.records
-            if record.event_id not in self.published and record.available_at <= now
-        ]
-        return tuple(pending[:limit])
-
-    async def mark_published(self, event_ids: tuple[str, ...], now: datetime) -> None:
-        self.published.extend(event_ids)
-
-    async def mark_failed(
-        self,
-        event_ids: tuple[str, ...],
-        reason: str,
-        retry_at: datetime,
-        dead_letter: bool,
-    ) -> None:
-        self.failed.append((event_ids, reason, dead_letter))
-        if dead_letter:
-            self.published.extend(event_ids)
-        else:
-            for index, record in enumerate(self.records):
-                if record.event_id in event_ids:
-                    self.records[index] = OutboxRecord(
-                        event_id=record.event_id,
-                        event_type=record.event_type,
-                        tenant_id=record.tenant_id,
-                        payload=deepcopy(record.payload),
-                        attempts=record.attempts + 1,
-                        available_at=retry_at,
-                    )
-
-    async def backlog_size(self, now: datetime) -> int:
-        return len(await self.claim(1_000_000, now))
-
-
-@dataclass
-class RecordingUsageSink:
-    accepted: list[str] = field(default_factory=lambda: [])
-    failure: Exception | None = None
-
-    async def publish(self, records: tuple[OutboxRecord, ...]) -> tuple[str, ...]:
-        if self.failure is not None:
-            raise self.failure
-        ids = tuple(record.event_id for record in records)
-        self.accepted.extend(ids)
-        return ids
 
 
 @dataclass

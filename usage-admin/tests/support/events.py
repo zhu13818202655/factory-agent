@@ -1,41 +1,19 @@
-"""Test helpers for building valid v1 usage events."""
+"""Test helpers for building metering fact rows directly.
+
+usage-admin no longer ingests raw events (Story 11: factory-agent writes the
+metering tables in a separate transaction after its business commit), so these
+helpers construct
+the ``InteractionFact`` / ``LlmCallFact`` / ``MesCallFact`` rows that the
+in-memory store reads, mirroring what the removed ingest path used to produce.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
-SCHEMA_VERSION = "1.0"
+from usage_admin.events import InteractionFact, LlmCallFact, MesCallFact
 
-
-def _envelope(
-    event_id: str,
-    event_type: str,
-    *,
-    tenant_id: str = "tenant-a",
-    user_subject_id: str | None = None,
-    session_id: str = "session-1",
-    interaction_id: str = "interaction-1",
-    trace_id: str = "0" * 32,
-    occurred_at: datetime | str | None = None,
-) -> dict[str, object]:
-    if user_subject_id is None:
-        user_subject_id = "a" * 64
-    if isinstance(occurred_at, str):
-        occurred = occurred_at
-    else:
-        occurred = (occurred_at or datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)).isoformat()
-    return {
-        "event_id": event_id,
-        "schema_version": SCHEMA_VERSION,
-        "occurred_at": occurred,
-        "tenant_id": tenant_id,
-        "user_subject_id": user_subject_id,
-        "session_id": session_id,
-        "interaction_id": interaction_id,
-        "trace_id": trace_id,
-        "event_type": event_type,
-    }
+DEFAULT_OCCURRED_AT = datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)
 
 
 def interaction_started(
@@ -44,14 +22,35 @@ def interaction_started(
     capability: str | None = "FR-001",
     entrypoint: str = "api",
     role_category: str = "employee",
-    **kwargs: Any,
-) -> dict[str, object]:
-    return {
-        **_envelope(event_id, "interaction_started", **kwargs),
-        "capability": capability,
-        "entrypoint": entrypoint,
-        "role_category": role_category,
-    }
+    tenant_id: str = "tenant-a",
+    user_subject_id: str | None = None,
+    session_id: str = "session-1",
+    interaction_id: str = "interaction-1",
+    occurred_at: datetime | None = None,
+) -> InteractionFact:
+    if user_subject_id is None:
+        user_subject_id = "a" * 64
+    at = occurred_at or DEFAULT_OCCURRED_AT
+    return InteractionFact(
+        event_id=event_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        interaction_id=interaction_id,
+        event_type="interaction_started",
+        user_subject_id=user_subject_id,
+        occurred_at=at,
+        capability_id=capability,
+        entrypoint=entrypoint,
+        role_category=role_category,
+        status=None,
+        duration_ms=None,
+        mes_duration_ms=None,
+        llm_duration_ms=None,
+        local_duration_ms=None,
+        result_rows_bucket=None,
+        error_category=None,
+        received_at=at,
+    )
 
 
 def interaction_completed(
@@ -64,18 +63,35 @@ def interaction_completed(
     local_duration_ms: int = 100,
     result_rows_bucket: str = "1-10",
     error_category: str | None = None,
-    **kwargs: Any,
-) -> dict[str, object]:
-    return {
-        **_envelope(event_id, "interaction_completed", **kwargs),
-        "status": status,
-        "duration_ms": duration_ms,
-        "mes_duration_ms": mes_duration_ms,
-        "llm_duration_ms": llm_duration_ms,
-        "local_duration_ms": local_duration_ms,
-        "result_rows_bucket": result_rows_bucket,
-        "error_category": error_category,
-    }
+    tenant_id: str = "tenant-a",
+    user_subject_id: str | None = None,
+    session_id: str = "session-1",
+    interaction_id: str = "interaction-1",
+    occurred_at: datetime | None = None,
+) -> InteractionFact:
+    if user_subject_id is None:
+        user_subject_id = "a" * 64
+    at = occurred_at or DEFAULT_OCCURRED_AT
+    return InteractionFact(
+        event_id=event_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        interaction_id=interaction_id,
+        event_type="interaction_completed",
+        user_subject_id=user_subject_id,
+        occurred_at=at,
+        capability_id=None,
+        entrypoint=None,
+        role_category=None,
+        status=status,
+        duration_ms=duration_ms,
+        mes_duration_ms=mes_duration_ms,
+        llm_duration_ms=llm_duration_ms,
+        local_duration_ms=local_duration_ms,
+        result_rows_bucket=result_rows_bucket,
+        error_category=error_category,
+        received_at=at,
+    )
 
 
 def llm_call_completed(
@@ -94,24 +110,36 @@ def llm_call_completed(
     status: str = "completed",
     fallback_reason: str | None = None,
     error_category: str | None = None,
-    **kwargs: Any,
-) -> dict[str, object]:
-    return {
-        **_envelope(event_id, "llm_call_completed", **kwargs),
-        "logical_call_id": logical_call_id,
-        "stage": stage,
-        "model_alias": model_alias,
-        "actual_model": actual_model,
-        "attempt": attempt,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "cached_tokens": cached_tokens,
-        "reasoning_tokens": reasoning_tokens,
-        "duration_ms": duration_ms,
-        "status": status,
-        "fallback_reason": fallback_reason,
-        "error_category": error_category,
-    }
+    tenant_id: str = "tenant-a",
+    user_subject_id: str | None = None,
+    session_id: str = "session-1",
+    interaction_id: str = "interaction-1",
+    occurred_at: datetime | None = None,
+) -> LlmCallFact:
+    if user_subject_id is None:
+        user_subject_id = "a" * 64
+    at = occurred_at or DEFAULT_OCCURRED_AT
+    return LlmCallFact(
+        event_id=event_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        interaction_id=interaction_id,
+        occurred_at=at,
+        logical_call_id=logical_call_id,
+        stage=stage,
+        model_alias=model_alias,
+        actual_model=actual_model,
+        attempt=attempt,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens,
+        reasoning_tokens=reasoning_tokens,
+        duration_ms=duration_ms,
+        status=status,
+        fallback_reason=fallback_reason,
+        error_category=error_category,
+        received_at=at,
+    )
 
 
 def mes_call_completed(
@@ -123,14 +151,23 @@ def mes_call_completed(
     duration_ms: int = 200,
     status: str = "completed",
     error_category: str | None = None,
-    **kwargs: Any,
-) -> dict[str, object]:
-    return {
-        **_envelope(event_id, "mes_call_completed", **kwargs),
-        "operation_id": operation_id,
-        "page_count": page_count,
-        "row_count_bucket": row_count_bucket,
-        "duration_ms": duration_ms,
-        "status": status,
-        "error_category": error_category,
-    }
+    tenant_id: str = "tenant-a",
+    session_id: str = "session-1",
+    interaction_id: str = "interaction-1",
+    occurred_at: datetime | None = None,
+) -> MesCallFact:
+    at = occurred_at or DEFAULT_OCCURRED_AT
+    return MesCallFact(
+        event_id=event_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        interaction_id=interaction_id,
+        occurred_at=at,
+        operation_id=operation_id,
+        page_count=page_count,
+        row_count_bucket=row_count_bucket,
+        duration_ms=duration_ms,
+        status=status,
+        error_category=error_category,
+        received_at=at,
+    )

@@ -225,12 +225,13 @@ AppKey 仅作为查询入口参数，不进入统计明细链路，既满足产�
 
 | 归属方 | 表 | 另一方的使用方式 |
 |---|---|---|
-| **usage-admin** | `tenant_registry`、`admin_audit`、`platform_principal` | factory-agent 对 `tenant_registry` **只读**：解析 MES 调用的 AppKey、校验账户停用状态（D13）；其余两张表不触碰 |
+| **usage-admin** | `tenant_registry`、`admin_audit`、`platform_principal`、`usage_export` | factory-agent 对 `tenant_registry` **只读**：解析 MES 调用的 AppKey、校验账户停用状态（D13）；其余三张表不触碰 |
 | **factory-agent** | 业务表：`agent_interaction`、`agent_message`、`agent_interaction_event`、`agent_artifact`、`agent_favorite`、`agent_query_history`、`agent_user_mapping` | usage-admin 不使用 |
-| **factory-agent** | 计量表：`usage_event`（按月分区）、`interaction_fact`、`llm_call_fact`、`mes_call_fact`、`mes_operation_category`、`tenant_usage_hourly`、`tenant_usage_daily`、`usage_export` | usage-admin **只读查询**：看板、导出、明细与分类统计 |
+| **factory-agent** | 计量表：`usage_event`（按月分区）、`interaction_fact`、`llm_call_fact`、`mes_call_fact`、`mes_operation_category`、`tenant_usage_hourly`、`tenant_usage_daily` | usage-admin **只读查询**：看板、导出、明细与分类统计 |
 
-即：**由写入方拥有**——usage-admin 只拥有它自己写入的 `tenant_registry`、`admin_audit`
-与 `platform_principal`；其余全部（业务表与计量表）归 factory-agent。
+即：**由写入方拥有**——usage-admin 只拥有它自己写入的 `tenant_registry`、`admin_audit`、
+`platform_principal` 与 `usage_export`（导出任务记录）；其余全部（业务表与计量表）归
+factory-agent。
 
 方案二额外移除的表：`usage_event_outbox`、`usage_event_receipt`、`usage_event_dead_letter`
 （见 §4.4.3）。
@@ -239,20 +240,20 @@ AppKey 仅作为查询入口参数，不进入统计明细链路，既满足产�
 
 两个服务**都需要跑迁移**（usage-admin 要建 `tenant_registry`），且共库，因此必须隔离：
 
-1. **各自独立的 Alembic 版本表**（已完成）：
-   - factory-agent → `alembic_version_factory_agent`
+1. **各自的 Alembic 版本表**（已完成）：
+   - factory-agent → 默认 `alembic_version`（Story 11 已回退其一次性独立版本表）
    - usage-admin → `alembic_version_usage_admin`
 
    原因：Alembic 默认共用 `alembic_version` 表，而两组 revision 链互不相关，先跑一方再跑
    另一方会报 `Can't locate revision identified by ...`。**这是必然冲突，不是偶发。**
 2. **迁移目录按归属严格划分**：
    - `usage-admin/migrations/versions/` 只放 `tenant_registry`、`admin_audit`、
-     `platform_principal` 的建表与变更迁移；
+     `platform_principal`、`usage_export` 的建表与变更迁移；
    - `migrations/versions/`（factory-agent）放其余所有表的迁移。
 3. **同一张表不得同时出现在两边的迁移中**，否则后跑的一方建表失败。
 4. **执行顺序**：两边迁移互不依赖，可任意顺序执行；Compose 启动时两个迁移都要跑。
-5. **存量环境**：若已用旧的 `alembic_version` 跑过迁移，切换时需把已有版本号 `stamp` 到新
-   版本表，再清理旧表。
+5. **存量环境**：开发环境直接重建库覆盖，不适用；上线前在部署文档中核对默认
+   `alembic_version` 上无历史错位 stamp。
 6. **评审规则**：`tenant_registry` 是唯一被对方读取的表，其 schema 变更需两服务同步评审。
 
 #### 4.4.3 写入链路：采用方案二「同库直写」（已确认）
@@ -264,7 +265,7 @@ usage-admin ingest 落库」。按 4.4.1 的新归属，计量表由 factory-age
 | 方案 | 做法 | 结论 |
 |---|---|---|
 | 一：保留 HTTP ingest | usage-admin 仍通过 HTTP 接收事件，但写入 factory-agent 拥有的表 | 未采用。写入方不是 schema 拥有者，改字段需跨服务协调，链路冗余 |
-| 二：同库直写 | factory-agent 在业务事务内直接写计量表，移除 outbox + HTTP ingest，usage-admin 退化为「纯查询服务 + `tenant_registry` 管理方」 | **已采用** |
+| 二：同库直写 | factory-agent 同库直写计量表（业务提交后的独立事务，失败仅告警），移除 outbox + HTTP ingest，usage-admin 退化为「纯查询服务 + `tenant_registry` 管理方」 | **已采用** |
 
 **方案二的具体变化**
 
@@ -272,8 +273,9 @@ usage-admin ingest 落库」。按 4.4.1 的新归属，计量表由 factory-age
   `factory-agent-publish` 命令、HTTP sink、usage-admin 的
   `POST /internal/v1/usage-events:batch` 接口与 ingest 服务，以及 `usage_event_receipt`、
   `usage_event_dead_letter` 两张表（分别为 HTTP 重传与死信设计，直写后不再需要）。
-- **保留**：`contracts/usage-events/v1` 的 schema，但地位由「跨服务传输契约」改为
-  「`usage_event` 存档 payload 的格式规范」，校验在写入前完成。
+- **删除**：`contracts/usage-events/v1` 目录（含 `contracts/AGENTS.md` 中相关描述、
+  各 docstring 中的契约引用与 `CONTRACT_VERSION` 常量）；存档 payload 的格式由
+  factory-agent 本地维护（`SCHEMA_VERSION`），校验在写入前完成。
 - **幂等改为库级**：`usage_event` 以 `event_id` 为主键，写入用 `ON CONFLICT DO NOTHING`。
 - **死信改为告警**：非法计量数据不再入表，写入前校验失败即告警。
 - **rollup 归 factory-agent**，usage-admin 只读汇总结果。

@@ -51,6 +51,7 @@ def test_usage_admin_migration_creates_only_its_owned_tables() -> None:
     assert "CREATE TABLE tenant_registry" in sql
     assert "CREATE TABLE platform_principal" in sql
     assert "CREATE TABLE admin_audit" in sql
+    assert "CREATE TABLE usage_export" in sql
     # factory-agent-owned business and MES metering tables are never created
     # here (legacy metering DDL from Story 8 is moved to factory-agent in
     # Story 11 and is out of scope for this Story).
@@ -59,36 +60,38 @@ def test_usage_admin_migration_creates_only_its_owned_tables() -> None:
         "agent_message",
         "mes_call_fact",
         "mes_operation_category",
+        "interaction_fact",
+        "tenant_usage_hourly",
     ):
         assert foreign_table not in sql
 
 
-def test_new_tenant_migration_creates_only_story_nine_tables() -> None:
-    """The new revision adds exactly tenant_registry and platform_principal."""
-    migration = (
-        _REPO_ROOT / "usage-admin" / "migrations" / "versions" / "20260829_0002_tenant_registry.py"
-    ).read_text()
-    assert 'op.create_table(\n        "tenant_registry"' in migration
-    assert 'op.create_table(\n        "platform_principal"' in migration
-    assert "mes_call_fact" not in migration
-    assert "usage_event" not in migration
+# NOTE: the former test_new_tenant_migration_creates_only_story_nine_tables
+# asserted on the standalone ``20260829_0002_tenant_registry`` revision. The
+# development migration history was merged into a single baseline
+# (``20260827_0001_usage``, Story 11 5.4), so that revision no longer exists;
+# the single-baseline coverage (tenant_registry / platform_principal /
+# admin_audit / usage_export only, no metering tables) is provided above by
+# test_usage_admin_migration_creates_only_its_owned_tables.
 
 
 def test_factory_agent_migration_never_creates_shared_tables() -> None:
     """factory-agent's history must not create usage-admin-owned tables."""
     sql = _offline_sql(_REPO_ROOT / "migrations")
 
-    for shared_table in ("tenant_registry", "platform_principal", "admin_audit"):
+    for shared_table in ("tenant_registry", "platform_principal", "admin_audit", "usage_export"):
         assert shared_table not in sql
     assert "CREATE TABLE agent_interaction" in sql
 
 
 def test_version_tables_are_isolated_between_services() -> None:
-    """Each service pins its own Alembic version table (migration coexistence)."""
+    """usage-admin pins its own Alembic version table; factory-agent uses the
+    default ``alembic_version`` (Story 11 revert)."""
     usage_admin_env = (_REPO_ROOT / "usage-admin" / "migrations" / "env.py").read_text()
     factory_agent_env = (_REPO_ROOT / "migrations" / "env.py").read_text()
 
     assert "alembic_version_usage_admin" in usage_admin_env
-    assert "alembic_version_factory_agent" in factory_agent_env
+    assert "VERSION_TABLE" not in factory_agent_env
+    assert "alembic_version_factory_agent" not in factory_agent_env
     assert "alembic_version_usage_admin" not in factory_agent_env
     assert "alembic_version_factory_agent" not in usage_admin_env

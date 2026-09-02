@@ -31,6 +31,11 @@ DEFAULT_CATALOG_PATH = Path("configs/knowledge/apis.yaml")
 
 ParameterSource = Literal["credential", "scope", "filter", "clock"]
 PaginationKind = Literal["none", "list_total"]
+#: MES 调用统计的计费分类（D1/D5）。能力分类 ≠ API 分类（R2），该字段只在
+#: ``data_api`` 内部消费，绝不作为能力维度统计。
+UsageCategory = Literal["output", "payroll", "order", "other"]
+
+_USAGE_CATEGORIES: frozenset[str] = frozenset({"output", "payroll", "order", "other"})
 
 
 class CatalogOperation(BaseModel):
@@ -46,6 +51,7 @@ class CatalogOperation(BaseModel):
     required_params: tuple[str, ...] = ()
     parameter_sources: dict[str, ParameterSource]
     pagination: PaginationKind
+    usage_category: UsageCategory | None = None
     supports_footer: bool = False
     timeout_seconds: float
     sensitive_fields: tuple[str, ...] = ()
@@ -117,6 +123,14 @@ def load_catalog(path: Path | None = None) -> ApiCatalog:
                 raise InvalidRequestError(
                     f"{operation.operation_id}.{parameter} has an invalid credential source"
                 )
+        # Every reviewed operation must be archived to one of the four billing
+        # categories (D1/D5); a new operation without an archive blocks startup
+        # so the MES usage statistics never silently drop a call category.
+        if operation.usage_category not in _USAGE_CATEGORIES:
+            raise InvalidRequestError(
+                f"{operation.operation_id} is missing a reviewed usage_category "
+                f"(expected one of {sorted(_USAGE_CATEGORIES)})"
+            )
         operations[operation.operation_id] = operation
 
     return ApiCatalog(version=document.version, _operations=operations)

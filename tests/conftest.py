@@ -7,6 +7,8 @@ fixed test window are applied once per session.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -18,6 +20,47 @@ from mock_mes.testing import (
     reset_test_db,
     upgrade_test_db,
 )
+
+
+@pytest.fixture(autouse=True)
+def _loguru_forward_to_logging() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Bridge Loguru records back into stdlib ``logging`` so ``caplog`` works.
+
+    The application logs through Loguru (ADR-0004); tests assert on log
+    content via ``caplog``. This fixture forwards every Loguru record to the
+    stdlib logger named after its ``component``, then resets Loguru handlers
+    so a previous test's ``configure_logging`` sink cannot leak into the next.
+    """
+    from loguru import logger as loguru_logger
+
+    # A prior test may have installed the logging→Loguru bridge via
+    # ``configure_logging``; remove it so forwarded records do not loop back.
+    logging.root.handlers = [
+        handler
+        for handler in logging.root.handlers
+        if type(handler).__module__ != "factory_agent.observability.logging_adapter"
+    ]
+
+    def _forward(message: Any) -> None:
+        record = message.record
+        name = record["extra"].get("component", "app")
+        std_logger = logging.getLogger(name)
+        std_logger.handle(
+            logging.LogRecord(
+                name=name,
+                level=record["level"].no,
+                pathname=record["file"].path,
+                lineno=record["line"],
+                msg=record["message"],
+                args=(),
+                exc_info=record["exception"],
+                func=record["function"],
+            )
+        )
+
+    loguru_logger.remove()
+    loguru_logger.add(_forward, level=0)
+    yield
 
 
 @pytest.fixture(scope="session")

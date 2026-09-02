@@ -1,15 +1,16 @@
-"""Alert sink boundary for ingest conflicts and rollup anomalies.
+"""Alert sink boundary for metering write failures and retention anomalies.
 
 Alerts carry metadata only — never event payloads, prompts, or identities.
 """
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
-_LOGGER = logging.getLogger("usage_admin.alerts")
+from usage_admin.logging import get_logger
+
+_LOGGER = get_logger("usage_admin.alerts")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +34,7 @@ class LoggingAlertSink:
     async def alert(self, kind: str, detail: dict[str, object]) -> None:
         if self._capture:
             self.records.append(AlertRecord(kind=kind, detail=dict(detail), created_at=str(detail)))
-        _LOGGER.warning("usage.alert %s %s", kind, detail)
+        _LOGGER.warning("usage.alert {} {}", kind, detail)
 
 
 @dataclass

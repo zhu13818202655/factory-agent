@@ -23,10 +23,15 @@ from usage_admin.mes_categories import (
     MesCategoryResolver,
 )
 from usage_admin.platform import PlatformScope, PlatformScopeError
-from usage_admin.rollup import ROLLUP_VERSION
 from usage_admin.store import TenantRegistryRecord, UsageStore, hour_bucket
 
 Granularity = Literal["hour", "day"]
+
+#: Rollup rows are produced by factory-agent (Story 11 3, ``rollup-v2``); this
+#: service only reads the pre-aggregated tables. The label below mirrors
+#: ``factory_agent.application.rollup.ROLLUP_VERSION`` so report responses keep
+#: identifying which aggregation version produced the numbers.
+ROLLUP_VERSION = "rollup-v2"
 
 _DURATION_METRICS: tuple[str, ...] = (
     "e2e_duration_ms",
@@ -57,7 +62,8 @@ _ADDITIVE_METRICS: tuple[str, ...] = (
 )
 
 #: Successful MES calls by billing category (D1/D5), computed from
-#: ``mes_call_fact`` at query time (rollup adds these in Story 11).
+#: ``mes_call_fact`` at query time (factory-agent's rollup adds these in
+#: Story 11 3.2).
 _MES_METRICS: tuple[str, ...] = (
     "mes_output",
     "mes_payroll",
@@ -99,7 +105,6 @@ _LLM_DIMENSIONS: tuple[str, ...] = (
     "error_category",
 )
 
-CONTRACT_VERSION = "usage-events-v1"
 PERCENTILE_METHOD = "percentile-cont-v1"
 
 
@@ -782,7 +787,7 @@ class OpsService:
         )
 
     def _metric_version(self) -> str:
-        return f"rollup={ROLLUP_VERSION};contract={CONTRACT_VERSION};p={PERCENTILE_METHOD}"
+        return f"rollup={ROLLUP_VERSION};p={PERCENTILE_METHOD}"
 
     async def _candidate_tenant_keys(
         self,
@@ -895,7 +900,6 @@ def _bucket_start(occurred_at: datetime, granularity: str) -> datetime:
 __all__ = [
     "ByTenantItem",
     "ByTenantPage",
-    "CONTRACT_VERSION",
     "DurationStats",
     "ErrorsView",
     "MesCategoriesView",

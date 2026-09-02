@@ -10,11 +10,9 @@ from support.events import (
     interaction_started,
     llm_call_completed,
 )
-from usage_admin.ingest import IngestService
 from usage_admin.ops import OpsQueryError, OpsService
 from usage_admin.platform import PlatformRole, PlatformScope
-from usage_admin.rollup import RollupEngine
-from usage_admin.store import InMemoryUsageStore
+from usage_admin.store import InMemoryUsageStore, RollupRow
 
 NOW = datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)
 # The query window starts at the clock's own hour so the rollup-coverage check
@@ -27,46 +25,114 @@ SCOPED = PlatformScope("ops-2", PlatformRole.VIEWER, frozenset({"tenant-a"}))
 
 
 async def build_store() -> InMemoryUsageStore:
+    """Seed the facts and pre-aggregated rows factory-agent would have written.
+
+    Rollup rows mirror ``factory_agent.application.rollup.compute_bucket_metrics``
+    (rollup-v2); usage-admin only reads them.
+    """
     store = InMemoryUsageStore()
-    ingest = IngestService(store, clock=lambda: NOW)
-    await ingest.ingest(
-        [
-            interaction_started(
-                "s-1",
-                capability="FR-001",
-                tenant_id="tenant-a",
-                user_subject_id="u" * 64,
-            ),
-            interaction_completed(
-                "c-1",
-                status="completed",
-                duration_ms=1000,
-                tenant_id="tenant-a",
-                user_subject_id="u" * 64,
-            ),
-            interaction_started(
-                "s-2",
-                capability=None,
-                tenant_id="tenant-b",
-                user_subject_id="v" * 64,
-            ),
-            llm_call_completed(
-                "l-1",
-                logical_call_id="call-1",
-                prompt_tokens=120,
-                tenant_id="tenant-a",
-            ),
-            llm_call_completed(
-                "l-2",
-                logical_call_id="call-1",
-                attempt=2,
-                tenant_id="tenant-a",
-            ),
-        ]
-    )
-    await RollupEngine(store, clock=lambda: NOW).rollup_range(
-        frozenset({"tenant-a", "tenant-b"}), START, END
-    )
+    store.interaction_facts = [
+        interaction_started(
+            "s-1",
+            capability="FR-001",
+            tenant_id="tenant-a",
+            user_subject_id="u" * 64,
+        ),
+        interaction_completed(
+            "c-1",
+            status="completed",
+            duration_ms=1000,
+            tenant_id="tenant-a",
+            user_subject_id="u" * 64,
+        ),
+        interaction_started(
+            "s-2",
+            capability=None,
+            tenant_id="tenant-b",
+            user_subject_id="v" * 64,
+        ),
+    ]
+    store.llm_call_facts = [
+        llm_call_completed(
+            "l-1",
+            logical_call_id="call-1",
+            prompt_tokens=120,
+            tenant_id="tenant-a",
+        ),
+        llm_call_completed(
+            "l-2",
+            logical_call_id="call-1",
+            attempt=2,
+            prompt_tokens=120,
+            tenant_id="tenant-a",
+        ),
+    ]
+    store.rollup_rows = [
+        RollupRow(
+            tenant_id="tenant-a",
+            bucket_start=START,
+            metric="questions",
+            value=1,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
+        ),
+        RollupRow(
+            tenant_id="tenant-a",
+            bucket_start=START,
+            metric="valid_questions",
+            value=1,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
+        ),
+        RollupRow(
+            tenant_id="tenant-a",
+            bucket_start=START,
+            metric="status.completed",
+            value=1,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
+        ),
+        RollupRow(
+            tenant_id="tenant-a",
+            bucket_start=START,
+            metric="llm_physical_attempts",
+            value=2,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
+        ),
+        RollupRow(
+            tenant_id="tenant-a",
+            bucket_start=START,
+            metric="prompt_tokens",
+            value=240,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
+        ),
+        RollupRow(
+            tenant_id="tenant-a",
+            bucket_start=START,
+            metric="e2e_duration_ms",
+            value=1000,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
+        ),
+        RollupRow(
+            tenant_id="tenant-a",
+            bucket_start=START,
+            metric="e2e_duration_ms.count",
+            value=1,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
+        ),
+        RollupRow(
+            tenant_id="tenant-b",
+            bucket_start=START,
+            metric="questions",
+            value=1,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
+        ),
+    ]
     return store
 
 

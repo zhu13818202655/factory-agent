@@ -18,12 +18,7 @@ class UsageAdminSettings(BaseSettings):
     #: Base URL clients use to reach this service's download endpoint.
     download_base_url: str = "http://127.0.0.1:8020"
     export_presign_expires_seconds: int = Field(default=900, ge=60, le=3600)
-    #: Optional bearer token guarding the internal ingest endpoint. When unset
-    #: the endpoint accepts requests in development mode only.
-    ingest_api_key: SecretStr | None = None
     timezone_name: str = "Asia/Shanghai"
-    ingest_batch_max_events: int = Field(default=1000, ge=1)
-    ingest_batch_max_bytes: int = Field(default=1_000_000, ge=1024)
     #: Secret signing platform-principal login tokens (D15); from env in prod.
     token_signing_secret: SecretStr | None = None
     #: Front-end API token (D16): configured on the front end and accepted as a

@@ -7,16 +7,15 @@ USAGE_ADMIN_ROOT = REPOSITORY_ROOT / "usage-admin" / "src" / "usage_admin"
 
 ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     "api": {"application", "bootstrap", "config", "domain", "observability", "ports"},
-    "application": {"domain", "ports"},
+    "application": {"domain", "observability", "ports"},
     "domain": set(),
     "ports": {"domain"},
-    "data_api": {"domain", "ports"},
+    "data_api": {"domain", "observability", "ports"},
     "execution": {"domain", "ports"},
-    "persistence": {"config", "domain", "ports"},
+    "persistence": {"config", "domain", "observability", "ports"},
     "llm": {"domain", "ports"},
     "export": {"domain", "ports"},
     "observability": {"config", "domain", "ports"},
-    "usage": {"config", "domain", "observability", "persistence", "ports"},
     "infrastructure": {"domain", "ports"},
 }
 

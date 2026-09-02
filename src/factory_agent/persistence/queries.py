@@ -20,7 +20,6 @@ from factory_agent.persistence.tables import (
     event_table,
     interaction_table,
     message_table,
-    usage_outbox_table,
 )
 
 
@@ -143,31 +142,6 @@ def delete_session(tenant_id: str, user_id: str, session_id: str) -> sa.Delete:
     )
 
 
-def claim_outbox(limit: int, now: datetime) -> Select[Any]:
-    return (
-        sa.select(usage_outbox_table)
-        .where(
-            usage_outbox_table.c.published_at.is_(None),
-            usage_outbox_table.c.dead_lettered.is_(False),
-            usage_outbox_table.c.available_at <= now,
-        )
-        .order_by(usage_outbox_table.c.available_at.asc(), usage_outbox_table.c.event_id.asc())
-        .limit(limit)
-    )
-
-
-def count_backlog(now: datetime) -> Select[Any]:
-    return (
-        sa.select(sa.func.count())
-        .select_from(usage_outbox_table)
-        .where(
-            usage_outbox_table.c.published_at.is_(None),
-            usage_outbox_table.c.dead_lettered.is_(False),
-            usage_outbox_table.c.available_at <= now,
-        )
-    )
-
-
 #: Statement builders that must always carry the ownership predicate.
 OWNERSHIP_SCOPED_BUILDERS: tuple[str, ...] = (
     "select_interaction",
@@ -183,8 +157,6 @@ __all__ = [
     "OWNERSHIP_SCOPED_BUILDERS",
     "CursorError",
     "claim_interaction_run",
-    "claim_outbox",
-    "count_backlog",
     "decode_cursor",
     "delete_session",
     "encode_cursor",

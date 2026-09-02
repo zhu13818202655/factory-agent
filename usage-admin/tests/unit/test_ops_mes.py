@@ -151,18 +151,16 @@ async def test_mes_operations_break_down_by_operation_id() -> None:
 async def test_by_tenant_returns_registry_names_statuses_and_counts() -> None:
     store = build_store()
     from support.events import interaction_started
-    from usage_admin.ingest import IngestService
     from usage_admin.store import RollupRow
 
-    ingest = IngestService(store, clock=lambda: NOW)
-    await ingest.ingest([interaction_started("s-1", tenant_id="fac-01")])
+    store.interaction_facts = [interaction_started("s-1", tenant_id="fac-01", occurred_at=START)]
     store.rollup_rows.append(
         RollupRow(
             tenant_id="fac-01",
             bucket_start=START,
             metric="prompt_tokens",
             value=100,
-            rollup_version="rollup-v1",
+            rollup_version="rollup-v2",
             rolled_up_at=NOW,
         )
     )
@@ -172,7 +170,7 @@ async def test_by_tenant_returns_registry_names_statuses_and_counts() -> None:
             bucket_start=START,
             metric="questions",
             value=1,
-            rollup_version="rollup-v1",
+            rollup_version="rollup-v2",
             rolled_up_at=NOW,
         )
     )
@@ -234,34 +232,30 @@ async def test_by_tenant_paginates() -> None:
 async def test_models_aggregate_calls_and_tokens() -> None:
     store = InMemoryUsageStore()
     from support.events import llm_call_completed
-    from usage_admin.ingest import IngestService
 
-    ingest = IngestService(store, clock=lambda: NOW)
-    await ingest.ingest(
-        [
-            llm_call_completed(
-                "l-1",
-                actual_model="qwen3-32b",
-                prompt_tokens=100,
-                tenant_id="fac-01",
-                occurred_at=START,
-            ),
-            llm_call_completed(
-                "l-2",
-                actual_model="qwen3-32b",
-                prompt_tokens=50,
-                tenant_id="fac-01",
-                occurred_at=START,
-            ),
-            llm_call_completed(
-                "l-3",
-                actual_model="deepseek-v3",
-                prompt_tokens=10,
-                tenant_id="fac-02",
-                occurred_at=START,
-            ),
-        ]
-    )
+    store.llm_call_facts = [
+        llm_call_completed(
+            "l-1",
+            actual_model="qwen3-32b",
+            prompt_tokens=100,
+            tenant_id="fac-01",
+            occurred_at=START,
+        ),
+        llm_call_completed(
+            "l-2",
+            actual_model="qwen3-32b",
+            prompt_tokens=50,
+            tenant_id="fac-01",
+            occurred_at=START,
+        ),
+        llm_call_completed(
+            "l-3",
+            actual_model="deepseek-v3",
+            prompt_tokens=10,
+            tenant_id="fac-02",
+            occurred_at=START,
+        ),
+    ]
     service = ops(store)
 
     view = await service.models(VIEWER, START, END)
@@ -275,15 +269,11 @@ async def test_models_aggregate_calls_and_tokens() -> None:
 async def test_capabilities_delegates_to_dimensions() -> None:
     store = InMemoryUsageStore()
     from support.events import interaction_started
-    from usage_admin.ingest import IngestService
 
-    ingest = IngestService(store, clock=lambda: NOW)
-    await ingest.ingest(
-        [
-            interaction_started("s-1", capability="FR-001", tenant_id="fac-01", occurred_at=START),
-            interaction_started("s-2", capability="FR-002", tenant_id="fac-01", occurred_at=START),
-        ]
-    )
+    store.interaction_facts = [
+        interaction_started("s-1", capability="FR-001", tenant_id="fac-01", occurred_at=START),
+        interaction_started("s-2", capability="FR-002", tenant_id="fac-01", occurred_at=START),
+    ]
     service = ops(store)
 
     view = await service.capabilities(VIEWER, START, END)
@@ -296,27 +286,25 @@ async def test_capabilities_delegates_to_dimensions() -> None:
 async def test_errors_break_down_across_fact_types() -> None:
     store = InMemoryUsageStore()
     from support.events import interaction_completed, llm_call_completed
-    from usage_admin.ingest import IngestService
 
-    ingest = IngestService(store, clock=lambda: NOW)
-    await ingest.ingest(
-        [
-            interaction_completed(
-                "c-1",
-                status="failed",
-                error_category="llm_5xx",
-                tenant_id="fac-01",
-                occurred_at=START,
-            ),
-            llm_call_completed(
-                "l-1",
-                status="failed",
-                error_category="llm_timeout",
-                tenant_id="fac-01",
-                occurred_at=START,
-            ),
-        ]
-    )
+    store.interaction_facts = [
+        interaction_completed(
+            "c-1",
+            status="failed",
+            error_category="llm_5xx",
+            tenant_id="fac-01",
+            occurred_at=START,
+        )
+    ]
+    store.llm_call_facts = [
+        llm_call_completed(
+            "l-1",
+            status="failed",
+            error_category="llm_timeout",
+            tenant_id="fac-01",
+            occurred_at=START,
+        )
+    ]
     service = ops(store)
 
     view = await service.errors(VIEWER, START, END)

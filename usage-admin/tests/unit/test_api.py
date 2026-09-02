@@ -1,4 +1,4 @@
-"""API-level tests for the ingest and admin endpoints."""
+"""API-level tests for the admin endpoints."""
 
 from __future__ import annotations
 
@@ -12,10 +12,8 @@ from usage_admin.api.server import create_app
 from usage_admin.config import UsageAdminSettings
 from usage_admin.container import build_container
 from usage_admin.events import MesCallFact
-from usage_admin.ingest import IngestService
 from usage_admin.platform import PRINCIPAL_HEADER, ROLE_HEADER
-from usage_admin.rollup import RollupEngine
-from usage_admin.store import InMemoryUsageStore, TenantRegistryRecord
+from usage_admin.store import InMemoryUsageStore, RollupRow, TenantRegistryRecord
 
 NOW = datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)
 START = datetime(2026, 8, 27, 0, 0, tzinfo=timezone.utc)
@@ -24,14 +22,12 @@ END = datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
 
 def make_app(
     *,
-    api_key: str | None = None,
     api_token: str | None = None,
     token_signing_secret: str | None = None,
 ):
     store = InMemoryUsageStore()
     settings = UsageAdminSettings(
         database_url=None,
-        ingest_api_key=SecretStr(api_key) if api_key else None,
         export_signing_secret=SecretStr("test-secret"),
         download_base_url="http://usage-admin.test",
         api_token=SecretStr(api_token) if api_token else None,
@@ -46,34 +42,19 @@ def make_app(
     return create_app(settings, container=container), store
 
 
-@pytest.mark.asyncio
-async def test_ingest_endpoint_accepts_and_reports_outcomes() -> None:
-    app, store = make_app()
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/internal/v1/usage-events:batch",
-            json={"events": [interaction_started("e-1"), interaction_started("e-1")]},
+def _seed_summary_data(store: InMemoryUsageStore) -> None:
+    """Seed one interaction fact plus the matching rollup row."""
+    store.interaction_facts = [interaction_started("s-1", user_subject_id="u" * 64)]
+    store.rollup_rows = [
+        RollupRow(
+            tenant_id="tenant-a",
+            bucket_start=START,
+            metric="questions",
+            value=1,
+            rollup_version="rollup-v2",
+            rolled_up_at=NOW,
         )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["accepted"] == ["e-1"]
-    assert body["duplicate"] == ["e-1"]
-    assert len(store.raw_events) == 1
-
-
-@pytest.mark.asyncio
-async def test_ingest_requires_bearer_key_when_configured() -> None:
-    app, _ = make_app(api_key="secret-key")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/internal/v1/usage-events:batch",
-            json={"events": [interaction_started("e-1")]},
-        )
-
-    assert response.status_code == 401
+    ]
 
 
 @pytest.mark.asyncio
@@ -92,10 +73,7 @@ async def test_admin_endpoints_require_platform_headers() -> None:
 @pytest.mark.asyncio
 async def test_summary_endpoint_returns_metrics() -> None:
     app, store = make_app()
-    await IngestService(store, clock=lambda: NOW).ingest(
-        [interaction_started("s-1", user_subject_id="u" * 64)]
-    )
-    await RollupEngine(store, clock=lambda: NOW).rollup_range(frozenset({"tenant-a"}), START, END)
+    _seed_summary_data(store)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
@@ -128,7 +106,7 @@ async def test_exports_require_analyst_role() -> None:
 @pytest.mark.asyncio
 async def test_export_download_roundtrip() -> None:
     app, store = make_app()
-    await IngestService(store, clock=lambda: NOW).ingest([interaction_started("s-1")])
+    _seed_summary_data(store)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(

@@ -94,7 +94,7 @@ introduces result rendering and artifact download.
 | `src/report_agent/permissions.py` | Reject | `AllowAllPermissionGate` is prohibited; replace with reviewed identity and scope semantics. |
 | `src/report_agent/dikong_sql/*` | Reject | MES access is Canonical HTTP through `factory_agent.data_api` only. |
 | `src/report_agent/text2sql/*` | Reject | No unrestricted SQL or Vanna runtime dependency. |
-| `src/report_agent/models/event.py` | Adapt | Versioned allowlist usage-event envelope. |
+| `src/report_agent/models/event.py` | Adapt | `UsageEvent` archive payload in `ports/session.py`, versioned by `SCHEMA_VERSION`, written directly to the metering tables (no cross-service contract). |
 | `src/report_agent/models/table.py` | Adapt | Approved `ResultTable` contract in its owning Story. |
 | `libs/vanna/*` | Reject dependency | No direct, indirect, editable, or path-based dependency. |
 

@@ -57,13 +57,6 @@ class FactoryAgentSettings(BaseSettings):
     session_history_max_chars: int = Field(default=8192, gt=0)
     session_heartbeat_seconds: float = Field(default=15.0, gt=0.0)
 
-    # Usage outbox publisher placeholders; Story 8 fixes them after load testing.
-    usage_admin_base_url: AnyHttpUrl | None = None
-    usage_admin_api_key: SecretStr | None = None
-    usage_outbox_batch_size: int = Field(default=100, gt=0)
-    usage_outbox_poll_seconds: float = Field(default=5.0, gt=0.0)
-    usage_outbox_max_attempts: int = Field(default=8, ge=1)
-
 
 @lru_cache
 def get_settings() -> FactoryAgentSettings:

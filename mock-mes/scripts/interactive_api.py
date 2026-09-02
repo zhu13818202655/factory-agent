@@ -7,7 +7,8 @@ Usage (start the service first, then in another terminal):
 
 Optionally override the base URL:
 
-    MOCK_MES_URL=http://127.0.0.1:8010 uv run --package mock-mes python mock-mes/scripts/interactive_api.py
+    MOCK_MES_URL=http://127.0.0.1:8010 uv run --package mock-mes \
+    python mock-mes/scripts/interactive_api.py
 
 Flow:
     1) On startup it asks for a uid (identity), derives the app_key, and calls
@@ -55,29 +56,53 @@ ENDPOINTS: list[tuple[str, dict[str, object], str]] = [
     ("/api/NetYf/Baseinfo/HuohaoFormQuery", {"page": 1, "size": 50, "huohao": "HH001"}, "货号表单"),
     ("/api/NetYf/Baseinfo/ScTypeQuery", {"page": 1, "size": 50}, "色号类型"),
     ("/api/NetYf/Baseinfo/RfidWorktypeQuery", {"page": 1, "size": 50}, "工序定义"),
-    ("/api/NetYf/Baseinfo/HuohaoWorktypeQuery", {"page": 1, "size": 50, "huohao": "HH001"}, "货号工序"),
+    (
+        "/api/NetYf/Baseinfo/HuohaoWorktypeQuery",
+        {"page": 1, "size": 50, "huohao": "HH001"},
+        "货号工序",
+    ),
     ("/api/NetYf/Baseinfo/EmployeeQuery", {"page": 1, "size": 50}, "员工列表"),
     ("/api/NetYf/Baseinfo/DeptQuery", {"page": 1, "size": 50}, "部门列表"),
     ("/api/NetYf/Plan/GridPageList", {"page": 1, "size": 50, **WINDOW}, "生产计划"),
     ("/api/NetYf/Sclzd/GridPageList", {"page": 1, "size": 50, **WINDOW}, "制单列表"),
-    ("/api/NetYf/Sclzd/SclzdWorktypeQuery", {"page": 1, "size": 50, "dh": "ZD-2607-001"}, "制单工序"),
+    (
+        "/api/NetYf/Sclzd/SclzdWorktypeQuery",
+        {"page": 1, "size": 50, "dh": "ZD-2607-001"},
+        "制单工序",
+    ),
     (
         "/api/NetYf/Sclzd/SclzdBarcodeQuery",
         {"page": 1, "size": 50, "dh": "ZD-2607-001", "detailId": "1001", **WINDOW},
         "制单扫码",
     ),
-    ("/api/NetYf/Sclzd/BarcodeClQuery", {"page": 1, "size": 50, "userid": "1001", **WINDOW}, "扫码产量明细"),
+    (
+        "/api/NetYf/Sclzd/BarcodeClQuery",
+        {"page": 1, "size": 50, "userid": "1001", **WINDOW},
+        "扫码产量明细",
+    ),
     (
         "/api/NetYf/Sclzd/HuohaoWtCLQuery",
         {"page": 1, "size": 50, "scheme": "货号工序", **WINDOW},
         "款号工序产量",
     ),
     ("/api/NetYf/PinFeng/GridPageList", {"page": 1, "size": 50, **WINDOW}, "手工账"),
-    ("/api/NetYf/Sclzd/WorktypeProgressQuery", {"page": 1, "size": 50, "userid": "1001", "uid": ""}, "工序进度"),
+    (
+        "/api/NetYf/Sclzd/WorktypeProgressQuery",
+        {"page": 1, "size": 50, "userid": "1001", "uid": ""},
+        "工序进度",
+    ),
     ("/api/NetYf/Sclzd/YskQuery", {"page": 1, "size": 50, **WINDOW}, "已扫产量"),
     ("/api/NetYf/Sclzd/WskQuery", {"page": 1, "size": 50, **WINDOW}, "未扫余量"),
-    ("/api/NetYf/Sclzd/GongziMxQuery", {"page": 1, "size": 50, "Uid": "{uid}", "Type": "0,1,2", "scheme": "", **WINDOW}, "工资明细"),
-    ("/api/NetYf/Sclzd/GongziJeOrderQuery", {"page": 1, "size": 50, "Uid": "{uid}", **WINDOW}, "工资排名"),
+    (
+        "/api/NetYf/Sclzd/GongziMxQuery",
+        {"page": 1, "size": 50, "Uid": "{uid}", "Type": "0,1,2", "scheme": "", **WINDOW},
+        "工资明细",
+    ),
+    (
+        "/api/NetYf/Sclzd/GongziJeOrderQuery",
+        {"page": 1, "size": 50, "Uid": "{uid}", **WINDOW},
+        "工资排名",
+    ),
     ("/api/NetYf/Dg/GridPageList", {"page": 1, "size": 50}, "吊挂线"),
     ("/api/NetYf/Dg/DgZuGridPageList", {"page": 1, "size": 50}, "吊挂组"),
     ("/api/NetYf/Dg/DgClQuery", {"page": 1, "size": 50, "uid": "01001", **WINDOW}, "吊挂产量"),
@@ -101,7 +126,9 @@ ALL_ENDPOINTS = ENDPOINTS + PRINT_ENDPOINTS
 # ---------------------------------------------------------------------------
 
 
-def post_json(path: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> tuple[int, object]:
+def post_json(
+    path: str, payload: dict[str, object], headers: dict[str, str] | None = None
+) -> tuple[int, object]:
     """POST JSON to the running service; return (http_status, parsed_body)."""
     req = urllib.request.Request(
         BASE_URL + path,
@@ -118,7 +145,9 @@ def post_json(path: str, payload: dict[str, object], headers: dict[str, str] | N
         except (ValueError, UnicodeDecodeError):
             return exc.code, exc.reason
     except urllib.error.URLError as exc:
-        raise ConnectionError(f"无法连接 {BASE_URL}，请先启动服务：uv run --package mock-mes mock-mes") from exc
+        raise ConnectionError(
+            f"无法连接 {BASE_URL}，请先启动服务：uv run --package mock-mes mock-mes"
+        ) from exc
 
 
 def as_json_dict(value: object) -> dict[str, Any] | None:
@@ -144,11 +173,16 @@ def authenticate(app_key: str) -> dict[str, object]:
     status, body = post_json("/api/system/token", {"app_key": app_key})
     data = as_json_dict(body)
     if data is None or data.get("code") != 1:
-        raise SystemExit(f"获取 token 失败（HTTP {status}）：{json.dumps(body, ensure_ascii=False)}")
+        raise SystemExit(
+            f"获取 token 失败（HTTP {status}）：{json.dumps(body, ensure_ascii=False)}"
+        )
     result = as_json_dict(data.get("result"))
     if result is None:
         raise SystemExit(f"获取 token 失败（HTTP {status}）：result 缺失或非对象")
-    print(f"鉴权 OK：appkey={result['appkey']}  timestamp={result['timestamp']}  sign={result['sign']}")
+    print(
+        f"鉴权 OK：appkey={result['appkey']}  timestamp={result['timestamp']}  "
+        f"sign={result['sign']}"
+    )
     #: The token endpoint returns ``appkey`` but requests must send ``app_key``.
     return {
         "app_key": result["appkey"],
@@ -159,7 +193,10 @@ def authenticate(app_key: str) -> dict[str, object]:
 
 def print_sign(app_key: str, timestamp: int, uid: str) -> str:
     """Fetch the movepassword-style sign via /api/print/query-sign."""
-    _, body = post_json("/api/print/query-sign", {"app_key": app_key, "timestamp": timestamp, "uid": uid})
+    _, body = post_json(
+        "/api/print/query-sign",
+        {"app_key": app_key, "timestamp": timestamp, "uid": uid},
+    )
     data = as_json_dict(body)
     if data is not None and data.get("code") == 1:
         return str(data["result"])
@@ -307,7 +344,11 @@ def main() -> int:
             for i, (path, _params, label) in enumerate(ALL_ENDPOINTS):
                 try:
                     body = build_body(i, bundle, uid)
-                    headers = None if i >= len(ENDPOINTS) else {"Authorization": f"Bearer MOCK-TOKEN-{uid}"}
+                    headers = (
+                        None
+                        if i >= len(ENDPOINTS)
+                        else {"Authorization": f"Bearer MOCK-TOKEN-{uid}"}
+                    )
                     status, resp = post_json(path, body, headers)
                     if not summarize(path, label, status, resp, max_rows=0):
                         failures += 1
@@ -315,7 +356,10 @@ def main() -> int:
                     print(f"  !! {label} {path} -> EXC {exc}")
                     failures += 1
             total = len(ALL_ENDPOINTS)
-            print(f"\n结果：{total - failures}/{total} 通过" + (f"，失败 {failures} 个" if failures else "，全部通过"))
+            summary = f"{total - failures}/{total} 通过"
+            if failures:
+                summary += f"，失败 {failures} 个"
+            print(f"\n结果：{summary}")
         elif choice in ("i", "identity"):
             uid = ask_uid()
             app_key = "APPKEY-B" if uid.startswith("02") else "APPKEY-A"

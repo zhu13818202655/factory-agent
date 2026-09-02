@@ -1,8 +1,9 @@
-"""SQLAlchemy implementations of the session store and the usage outbox.
+"""SQLAlchemy implementations of the session store.
 
-``commit`` writes the interaction state, its messages, its SSE events, and the
-usage outbox rows in one transaction, so a usage-admin outage can never change
-an answer outcome. Publication happens later in a separate process.
+``commit`` writes the interaction state, its messages, and its SSE events in
+one business transaction, then hands the usage events to the metering store.
+Metering writes happen in a separate transaction whose failures are isolated
+(Story 11 1.6): they are alerted and never roll back or block the answer.
 """
 
 from __future__ import annotations
@@ -30,26 +31,26 @@ from factory_agent.domain import (
     UserId,
 )
 from factory_agent.persistence import queries
+from factory_agent.persistence.metering import SqlMeteringStore
 from factory_agent.persistence.tables import (
     event_table,
     interaction_table,
     message_table,
-    usage_outbox_table,
 )
 from factory_agent.ports import (
     InteractionCommit,
     InteractionOwner,
     InteractionPage,
     MessagePage,
-    OutboxRecord,
 )
 
 
 class SqlInteractionStore:
     """Durable session store; every query is ownership-filtered."""
 
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(self, engine: AsyncEngine, metering: SqlMeteringStore | None = None) -> None:
         self._engine = engine
+        self._metering = metering or SqlMeteringStore(engine)
 
     async def commit(self, commit: InteractionCommit) -> None:
         record = commit.interaction
@@ -79,22 +80,9 @@ class SqlInteractionStore:
                         (event_table.c.interaction_id, event_table.c.sequence),
                     )
                 )
-            for usage_event in commit.usage_events:
-                await connection.execute(
-                    _upsert(
-                        usage_outbox_table,
-                        {
-                            "event_id": usage_event.event_id,
-                            "event_type": usage_event.event_type,
-                            "tenant_id": str(usage_event.tenant_id),
-                            "payload": dict(usage_event.payload),
-                            "created_at": usage_event.created_at,
-                            "available_at": usage_event.created_at,
-                            "attempts": 0,
-                        },
-                        (usage_outbox_table.c.event_id,),
-                    )
-                )
+        # Metering is a separate transaction so a write failure can never roll
+        # back the business data above (Story 11 1.6 / R1).
+        await self._metering.write_usage_events(commit.usage_events)
 
     async def claim_run(
         self, owner: InteractionOwner, interaction_id: InteractionId, now: datetime
@@ -264,64 +252,6 @@ class SqlInteractionStore:
         )
 
 
-class SqlUsageOutbox:
-    """Outbox reader used only by the independent publisher process."""
-
-    def __init__(self, engine: AsyncEngine) -> None:
-        self._engine = engine
-
-    async def claim(self, limit: int, now: datetime) -> tuple[OutboxRecord, ...]:
-        async with self._engine.connect() as connection:
-            rows = (await connection.execute(queries.claim_outbox(limit, now))).mappings().all()
-        return tuple(
-            OutboxRecord(
-                event_id=str(row["event_id"]),
-                event_type=str(row["event_type"]),
-                tenant_id=TenantId(str(row["tenant_id"])),
-                payload=dict(row["payload"]),
-                attempts=int(row["attempts"]),
-                available_at=row["available_at"],
-            )
-            for row in rows
-        )
-
-    async def mark_published(self, event_ids: tuple[str, ...], now: datetime) -> None:
-        if not event_ids:
-            return
-        async with self._engine.begin() as connection:
-            await connection.execute(
-                sa.update(usage_outbox_table)
-                .where(usage_outbox_table.c.event_id.in_(event_ids))
-                .values(published_at=now)
-            )
-
-    async def mark_failed(
-        self,
-        event_ids: tuple[str, ...],
-        reason: str,
-        retry_at: datetime,
-        dead_letter: bool,
-    ) -> None:
-        if not event_ids:
-            return
-        async with self._engine.begin() as connection:
-            await connection.execute(
-                sa.update(usage_outbox_table)
-                .where(usage_outbox_table.c.event_id.in_(event_ids))
-                .values(
-                    attempts=usage_outbox_table.c.attempts + 1,
-                    available_at=retry_at,
-                    dead_lettered=dead_letter,
-                    dead_letter_reason=reason[:200] if dead_letter else None,
-                )
-            )
-
-    async def backlog_size(self, now: datetime) -> int:
-        async with self._engine.connect() as connection:
-            value = await connection.scalar(queries.count_backlog(now))
-        return int(value or 0)
-
-
 def _upsert(
     table: sa.Table,
     values: dict[str, Any],
@@ -396,4 +326,4 @@ def _message_from_row(row: RowMapping) -> MessageRecord:
     )
 
 
-__all__ = ["SqlInteractionStore", "SqlUsageOutbox"]
+__all__ = ["SqlInteractionStore"]

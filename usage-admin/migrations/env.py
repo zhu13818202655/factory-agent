@@ -7,7 +7,10 @@ from sqlalchemy import engine_from_config, pool
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # ``disable_existing_loggers=False`` keeps pre-existing loggers (e.g.
+    # factory-agent's) alive when alembic runs inside a test process;
+    # the fileConfig default of True would disable them for the whole session.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 #: Migrations are hand-written; autogenerate is intentionally unavailable.
 target_metadata = None

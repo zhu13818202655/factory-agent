@@ -13,7 +13,6 @@ services:
       FACTORY_AGENT_CANONICAL_MES_BASE_URL: http://mock-mes:8010
       FACTORY_AGENT_POSTGRES_URL: ${FACTORY_AGENT_POSTGRES_URL:-postgresql://factory_agent:factory_agent_dev@postgres:5432/factory_agent}
       FACTORY_AGENT_REDIS_URL: ${FACTORY_AGENT_REDIS_URL:-redis://redis:6379/0}
-      FACTORY_AGENT_USAGE_ADMIN_BASE_URL: http://usage-admin:8020
     ports:
       - "${FACTORY_AGENT_PORT:-8000}:8000"
     read_only: true
@@ -111,31 +110,6 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
-
-  usage-publisher:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    image: factory-agent:dev
-    command:
-      - factory-agent-publish
-    environment:
-      FACTORY_AGENT_ENV: development
-      FACTORY_AGENT_POSTGRES_URL: ${FACTORY_AGENT_POSTGRES_URL:-postgresql://factory_agent:factory_agent_dev@postgres:5432/factory_agent}
-      FACTORY_AGENT_USAGE_ADMIN_BASE_URL: http://usage-admin:8020
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    depends_on:
-      postgres:
-        condition: service_healthy
-      usage-admin:
-        condition: service_healthy
-    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine

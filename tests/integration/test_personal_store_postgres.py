@@ -11,6 +11,7 @@ import os
 from datetime import datetime, timezone
 
 import pytest
+import pytest_asyncio
 
 from factory_agent.domain import CapabilityId, TenantId, UserId
 from factory_agent.persistence.engine import create_session_engine
@@ -19,6 +20,7 @@ from factory_agent.persistence.personal_store import (
     SqlHistoryRepository,
     SqlUserMappingRepository,
 )
+from factory_agent.persistence.tables import METADATA
 from factory_agent.ports.personal import (
     Favorite,
     HistoryEntry,
@@ -31,6 +33,24 @@ pytestmark = pytest.mark.skipif(
     DATABASE_URL is None,
     reason="set FACTORY_AGENT_TEST_POSTGRES_URL to a disposable database to run these tests",
 )
+
+
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def _schema() -> None:  # pyright: ignore[reportUnusedFunction]
+    """Rebuild the flat test schema so this module is order-independent.
+
+    The metering suite drops every table in this database between runs; a
+    stale state must never leak into the personal-store assertions.
+    """
+    assert DATABASE_URL is not None
+    engine = create_session_engine(str(DATABASE_URL))
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(METADATA.drop_all)
+            await connection.run_sync(METADATA.create_all)
+    finally:
+        await engine.dispose()
+
 
 TENANT = TenantId("tenant-a")
 USER = UserId("u-1")

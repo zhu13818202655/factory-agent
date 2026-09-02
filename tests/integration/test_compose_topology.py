@@ -22,7 +22,6 @@ def test_application_compose_contains_all_services() -> None:
         "postgres",
         "redis",
         "usage-admin",
-        "usage-publisher",
     }
     assert services["agent-api"]["depends_on"] == {
         "mock-mes": {"condition": "service_healthy"},
@@ -32,11 +31,6 @@ def test_application_compose_contains_all_services() -> None:
     assert services["mock-mes"]["build"]["dockerfile"] == "mock-mes/Dockerfile"
     assert services["usage-admin"]["depends_on"] == {"postgres": {"condition": "service_healthy"}}
     assert services["usage-admin"]["build"]["dockerfile"] == "usage-admin/Dockerfile"
-    assert services["usage-publisher"]["command"] == ["factory-agent-publish"]
-    assert services["usage-publisher"]["depends_on"] == {
-        "postgres": {"condition": "service_healthy"},
-        "usage-admin": {"condition": "service_healthy"},
-    }
 
 
 def test_middleware_compose_contains_only_local_dependencies() -> None:
@@ -46,5 +40,5 @@ def test_middleware_compose_contains_only_local_dependencies() -> None:
     assert set(services) == {"postgres", "redis"}
     assert services["postgres"]["image"] == "postgres:16-alpine"
     assert services["redis"]["image"] == "redis:7-alpine"
-    assert services["postgres"]["ports"] == ["127.0.0.1:${POSTGRES_PORT:-5432}:5432"]
-    assert services["redis"]["ports"] == ["127.0.0.1:${REDIS_PORT:-6379}:6379"]
+    assert services["postgres"]["ports"] == ["127.0.0.1:${POSTGRES_PORT:-3432}:5432"]
+    assert services["redis"]["ports"] == ["127.0.0.1:${REDIS_PORT:-3379}:6379"]

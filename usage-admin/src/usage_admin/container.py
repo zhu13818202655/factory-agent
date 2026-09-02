@@ -8,11 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from usage_admin.alerts import LoggingAlertSink
 from usage_admin.auth import AuthService
 from usage_admin.config import UsageAdminSettings
 from usage_admin.exports import ExportFileStore, ExportService
-from usage_admin.ingest import IngestLimits, IngestService
 from usage_admin.ops import OpsLimits, OpsService
 from usage_admin.store import InMemoryUsageStore, PostgresUsageStore, UsageStore
 from usage_admin.tenants import TenantRegistryService
@@ -46,7 +44,6 @@ class InMemoryExportFileStore:
 class AdminContainer:
     settings: UsageAdminSettings
     store: UsageStore
-    ingest: IngestService
     ops: OpsService
     exports: ExportService
     files: ExportFileStore
@@ -75,16 +72,6 @@ def build_container(
         active_store = InMemoryUsageStore()
 
     active_files = files or InMemoryExportFileStore()
-    ingest_limits = IngestLimits(
-        max_events=settings.ingest_batch_max_events,
-        max_bytes=settings.ingest_batch_max_bytes,
-    )
-    ingest = IngestService(
-        active_store,
-        clock=active_clock,
-        limits=ingest_limits,
-        alerts=LoggingAlertSink(),
-    )
     ops = OpsService(
         active_store,
         clock=active_clock,
@@ -127,7 +114,6 @@ def build_container(
     return AdminContainer(
         settings=settings,
         store=active_store,
-        ingest=ingest,
         ops=ops,
         exports=exports,
         files=active_files,

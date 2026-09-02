@@ -122,14 +122,15 @@ async def test_fr005_order_progress_golden(mock_mes_app: Any) -> None:
             None,
             Decimal("93"),
         )
-        # PLAN-2608-001: 50 计划, 3 完成, 1/3 工序, 当前工序=手工钉扣, 无在制数据.
+        # PLAN-2608-001: 50 计划, 3 完成, 1/3 工序, 当前工序=钉扣, 无在制数据.
+        # (工序名按 7281024 拆掉车种语义，仅保留工序维度「钉扣」)
         assert rows["PLAN-2608-001"] == (
             "PLAN-2608-001",
             "HH001",
             Decimal("50"),
             Decimal("3"),
             "0.3333333333333333",
-            "手工钉扣",
+            "钉扣",
             UNAVAILABLE_VALUE,
         )
     finally:

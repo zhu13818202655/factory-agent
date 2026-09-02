@@ -6,6 +6,9 @@
 #   DataScope）/ filter / clock。凭据参数绝不可来自 filter 或模型输出。
 # - pagination: none 或 list_total（result.list/result.total，累计到 total 结束，M13）。
 # - MoveMenuQuery 登记为 enabled: false（K7）：加载器允许存在但运行时拒绝调用。
+# - usage_category: MES 调用统计的计费分类（D1/D5，产品文档 §2.1）：
+#   output（产量）/ payroll（工资）/ order（订单）/ other（其他：认证3+基础数据9+吊挂3）。
+#   能力分类 ≠ API 分类，不得以 dimensions=capability 顶替（R2）。
 version: 2
 operations:
   # ------------------------------------------------------------ 认证与凭证 (3)
@@ -16,6 +19,7 @@ operations:
     parameter_sources:
       app_key: credential
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: [access_token, sign, app_key]
     related_keys: []
@@ -28,6 +32,7 @@ operations:
       app_key: credential
       timestamp: credential
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: [sign, app_key]
     related_keys: []
@@ -41,6 +46,7 @@ operations:
       timestamp: credential
       sign: credential
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: [sign, app_key]
     related_keys: []
@@ -57,6 +63,7 @@ operations:
       sign: credential
       USERNAME: filter
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [username]
@@ -71,6 +78,7 @@ operations:
       timestamp: credential
       sign: credential
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [uid]
@@ -84,6 +92,7 @@ operations:
       timestamp: credential
       sign: credential
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [huohao]
@@ -99,6 +108,7 @@ operations:
       sign: credential
       huohao: filter
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [huohao]
@@ -112,6 +122,7 @@ operations:
       timestamp: credential
       sign: credential
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: []
@@ -125,6 +136,7 @@ operations:
       timestamp: credential
       sign: credential
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [worktype]
@@ -140,6 +152,7 @@ operations:
       sign: credential
       huohao: filter
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [huohao, worktype]
@@ -154,6 +167,7 @@ operations:
       sign: credential
       uid: scope
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: [movepassword, mobile, uname]
     related_keys: [uid, dept]
@@ -167,6 +181,7 @@ operations:
       timestamp: credential
       sign: credential
     pagination: none
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [dept]
@@ -186,6 +201,7 @@ operations:
       dates: filter
       datee: filter
     pagination: list_total
+    usage_category: order
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [dh, jhdh, huohao]
@@ -204,6 +220,7 @@ operations:
       dates: filter
       datee: filter
     pagination: list_total
+    usage_category: order
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [dh, dddh, huohao, id]
@@ -219,6 +236,7 @@ operations:
       sign: credential
       dh: filter
     pagination: none
+    usage_category: order
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [dh, wt]
@@ -235,6 +253,7 @@ operations:
       dh: filter
       detailId: filter
     pagination: none
+    usage_category: order
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [dh, id, uid]
@@ -254,6 +273,7 @@ operations:
       dates: filter
       datee: filter
     pagination: list_total
+    usage_category: output
     timeout_seconds: 10.0
     sensitive_fields: [price, je, sl, sssl]
     related_keys: [uid, dept, id, huohao, worktype]
@@ -275,6 +295,7 @@ operations:
       datee: filter
     pagination: list_total
     supports_footer: true
+    usage_category: output
     timeout_seconds: 10.0
     sensitive_fields: [sssl]
     related_keys: [huohao, worktype]
@@ -293,6 +314,7 @@ operations:
       dates: filter
       datee: filter
     pagination: list_total
+    usage_category: output
     timeout_seconds: 10.0
     sensitive_fields: [price, je, sl, cp]
     related_keys: [uid, dept, dh, worktype]
@@ -314,6 +336,7 @@ operations:
       userid: filter
       uid: scope
     pagination: list_total
+    usage_category: output
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [userid, uid, worktype]
@@ -336,6 +359,7 @@ operations:
       datee: filter
     pagination: list_total
     supports_footer: true   # 无 queryFooter 入参但返回 footer
+    usage_category: output
     timeout_seconds: 10.0
     sensitive_fields: [price, je, sl]
     related_keys: [uid, dept, id, huohao, worktype]
@@ -355,6 +379,7 @@ operations:
       datee: filter
     pagination: list_total
     supports_footer: true   # 无 queryFooter 入参但返回 footer
+    usage_category: output
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [id, huohao, worktype]
@@ -384,6 +409,7 @@ operations:
       datee: filter
     pagination: list_total
     supports_footer: true
+    usage_category: payroll
     timeout_seconds: 10.0
     sensitive_fields: [price, je, sl, fhsl]
     related_keys: [uid, dept, id, huohao, worktype]
@@ -404,6 +430,7 @@ operations:
       datee: filter
     pagination: list_total
     supports_footer: true
+    usage_category: payroll
     timeout_seconds: 10.0
     sensitive_fields: [je, bs, uname]
     related_keys: [uid, dept]
@@ -420,6 +447,7 @@ operations:
       page: filter
       size: filter
     pagination: list_total
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: [dg_Pwd, dg_Uid]
     related_keys: []
@@ -435,6 +463,7 @@ operations:
       page: filter
       size: filter
     pagination: list_total
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: []
@@ -453,6 +482,7 @@ operations:
       dates: filter
       datee: filter
     pagination: list_total
+    usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: [price, je, sl]
     related_keys: [uid, dept, id, huohao, worktype]
