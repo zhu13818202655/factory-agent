@@ -78,6 +78,12 @@ class KernelSettings:
     #: their progress ratio becomes the structured ``unavailable`` state — a
     #: number is never fabricated for the uncovered remainder.
     max_api_calls: int = 500
+    #: Delivery-warning threshold as a percent of the total order duration
+    #: (交期预警默认阈值 = max(1, ⌈总工期 × 10%⌉)，客户口径默认值，Story 3
+    #: 双跑复核；见 ``docs/product/需求及方案整理.md`` 老板功能表).
+    delivery_warning_ratio_percent: int = 10
+    #: Fallback fixed window (days) when the order has no usable start date.
+    delivery_warning_fallback_days: int = 7
 
 
 class KernelCapabilityRunner:
@@ -114,8 +120,10 @@ class KernelCapabilityRunner:
         time_range = request.time_range
 
         with InteractionSandbox(allowed_tables=tuple(self._allowed_tables(recipe))) as sandbox:
-            self._register_meta(sandbox, time_range)
-            fetches, call_count = await self._fetch_api_steps(sandbox, recipe, filters, time_range)
+            self._register_meta(sandbox, time_range, filters)
+            fetches, call_count = await self._fetch_api_steps(
+                sandbox, recipe, filters, time_range, request.role
+            )
             render_table = self._build_table(sandbox, recipe, fetches, filters, time_range)
         result = self._to_run_result(render_table, time_range, fetches, call_count, started)
         return result
@@ -133,14 +141,34 @@ class KernelCapabilityRunner:
         tables.add(_METADATA_TABLE)
         return frozenset(tables)
 
-    def _register_meta(self, sandbox: InteractionSandbox, time_range: TimeRange) -> None:
+    def _register_meta(
+        self, sandbox: InteractionSandbox, time_range: TimeRange, filters: Any
+    ) -> None:
         days = _natural_days(time_range.start, time_range.end)
         today = self._clock().date().isoformat()
+        self_uid = _single_value(getattr(filters, "employee_ids", None))
+        self_dept = _single_value(getattr(filters, "dept_ids", None))
         sandbox.register_table(
             SandboxTable(
                 name=_METADATA_TABLE,
-                rows=({"days": days, "today": today},),
-                columns=(("days", "INTEGER"), ("today", "VARCHAR")),
+                rows=(
+                    {
+                        "days": days,
+                        "today": today,
+                        "self_uid": self_uid,
+                        "self_dept": self_dept,
+                        "warning_ratio_pct": self._settings.delivery_warning_ratio_percent,
+                        "warning_fallback_days": self._settings.delivery_warning_fallback_days,
+                    },
+                ),
+                columns=(
+                    ("days", "INTEGER"),
+                    ("today", "VARCHAR"),
+                    ("self_uid", "VARCHAR"),
+                    ("self_dept", "VARCHAR"),
+                    ("warning_ratio_pct", "INTEGER"),
+                    ("warning_fallback_days", "INTEGER"),
+                ),
             )
         )
 
@@ -150,6 +178,7 @@ class KernelCapabilityRunner:
         recipe: CapabilityRecipe,
         filters: Any,
         time_range: TimeRange,
+        role: Any | None = None,
     ) -> tuple[dict[str, ResourceFetchResult], int]:
         """Execute every API step in recipe order and return fetches + call count.
 
@@ -171,12 +200,12 @@ class KernelCapabilityRunner:
             static_params = self._reviewed_params(step.params)
             if step.param_bindings:
                 fetched = await self._fetch_fanned(
-                    sandbox, step, static_params, filters, time_range, call_count
+                    sandbox, step, static_params, filters, time_range, call_count, role
                 )
                 call_count += fetched.pages_fetched
             else:
                 fetched = await self._fetch_one(
-                    step.operation_id, filters, time_range, static_params
+                    step.operation_id, filters, time_range, static_params, role
                 )
                 call_count += 1
             columns = self._table_columns_for(step, fetched.rows, recipe)
@@ -213,6 +242,7 @@ class KernelCapabilityRunner:
         filters: Any,
         time_range: TimeRange,
         call_count: int,
+        role: Any | None = None,
     ) -> ResourceFetchResult:
         """Fan out over distinct bound-column values with the call budget."""
         bindings = cast("dict[str, ParamBinding]", step.param_bindings)
@@ -247,7 +277,7 @@ class KernelCapabilityRunner:
                 reason = "call_budget_exhausted"
                 break
             params = {**static_params, **combo}
-            fetch = await self._fetch_one(step.operation_id, filters, time_range, params)
+            fetch = await self._fetch_one(step.operation_id, filters, time_range, params, role)
             pages_fetched += 1
             if fetch.footer is not None:
                 footer = fetch.footer
@@ -271,6 +301,7 @@ class KernelCapabilityRunner:
         filters: Any,
         time_range: TimeRange,
         extra_params: Mapping[str, str] | None = None,
+        role: Any | None = None,
     ) -> ResourceFetchResult:
         return await self._executor.execute_full_step(
             filters,
@@ -278,6 +309,7 @@ class KernelCapabilityRunner:
                 operation_id=operation_id,
                 time_range=(time_range.start, time_range.end),
                 pagination_size=self._settings.page_size,
+                role=role,
             ),
             extra_params=dict(extra_params) if extra_params else None,
         )
@@ -600,6 +632,21 @@ def _distinct_values_sql(from_step: str, column: str) -> str:
 def _natural_days(start: Any, end: Any) -> int:
     days = (end.date() - start.date()).days
     return max(days, 1)
+
+
+def _single_value(values: Any) -> str:
+    """Return the sole member of a scope ID set, or '' when not exactly one.
+
+    Used to expose the caller's own uid/dept to local compute SQL through the
+    ``_meta`` table; anything other than a single value stays unbound so a
+    compute step can never reference an ambiguous identity.
+    """
+    if values is None:
+        return ""
+    items = tuple(values)
+    if len(items) != 1:
+        return ""
+    return str(items[0])
 
 
 def _table_columns(

@@ -1,17 +1,20 @@
 # API Catalog: reviewed registry of approved MES operations.
 # File changes are permission/semantics changes and require human review.
 #
-# - operation_id 采用客户接口名（M13/M15 契约形态）。
+# 口径来源：``docs/product/AI问答对外接口-整理.md``（客户接口契约）与
+# ``docs/product/需求及方案整理.md``（功能与确认结论）。
+#
+# - operation_id 采用客户接口名（契约形态）。
 # - parameter_sources: credential（只能来自 MesCredentialBundle）/ scope（只能来自
 #   DataScope）/ filter / clock。凭据参数绝不可来自 filter 或模型输出。
-# - pagination: none 或 list_total（result.list/result.total，累计到 total 结束，M13）。
-# - MoveMenuQuery 登记为 enabled: false（K7）：加载器允许存在但运行时拒绝调用。
-# - usage_category: MES 调用统计的计费分类（D1/D5，口径见 usage-admin/API.md）：
-#   output（产量）/ payroll（工资）/ order（订单）/ other（其他：认证3+基础数据9+吊挂3）。
-#   能力分类 ≠ API 分类，不得以 dimensions=capability 顶替（R2）。
+# - pagination: none 或 list_total（result.list/result.total，累计到 total 结束）。
+# - MoveMenuQuery 登记为 enabled: false：加载器允许存在但运行时拒绝调用。
+# - usage_category: MES 调用统计的计费分类（口径见 usage-admin/API.md）：
+#   output（产量）/ payroll（工资）/ order（订单）/ other（其他：认证2+基础数据9+吊挂3）。
+#   能力分类 ≠ API 分类，不得以 dimensions=capability 顶替。
 version: 2
 operations:
-  # ------------------------------------------------------------ 认证与凭证 (3)
+  # ------------------------------------------------------------ 认证与凭证 (2)
   - operation_id: SystemToken
     path: /api/system/token
     kind: identity
@@ -22,19 +25,6 @@ operations:
     usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: [access_token, sign, app_key]
-    related_keys: []
-
-  - operation_id: QuerySign
-    path: /api/print/query-sign
-    kind: identity
-    enabled: true
-    parameter_sources:
-      app_key: credential
-      timestamp: credential
-    pagination: none
-    usage_category: other
-    timeout_seconds: 10.0
-    sensitive_fields: [sign, app_key]
     related_keys: []
 
   - operation_id: TestPermissions
@@ -72,7 +62,7 @@ operations:
     path: /api/NetYf/Baseinfo/MoveMenuQuery
     kind: resource
     resource: move_menu
-    enabled: false   # K7: 当前版本不使用；运行时拒绝调用
+    enabled: false   # 当前版本不使用；运行时拒绝调用
     parameter_sources:
       app_key: credential
       timestamp: credential
@@ -402,7 +392,7 @@ operations:
       size: filter
       queryFooter: filter
       Uid: scope
-      Flag: filter        # C.12 未定默认口径；本期默认 "0"
+      Flag: filter        # 日期口径：0 按扫描日期 / 1 按审核日期；默认 "0"（客户公共参数约定）
       Type: filter
       scheme: filter
       dates: filter

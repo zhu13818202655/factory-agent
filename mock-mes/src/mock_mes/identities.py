@@ -1,69 +1,40 @@
-"""Deterministic test identities (moved out of the removed seed.py).
+"""Tenant mapping for the mock MES (identity itself comes from PostgreSQL).
 
-Covers the four customer role tiers confirmed for row-level filtering (M19):
-``99`` boss (whole factory), ``02`` manager and ``01`` group leader (own
-department), and ``00`` worker (own rows only). These are development
-fixtures, never real customer identities.
+Customer contract (`docs/product/需求及方案整理.md`「用户角色定义」): the four
+roles 00 员工 / 01 组长 / 02 管理 / 99 老板 come back from ``/api/system/token``
+with ``dept`` (and a manager's bound 车间/部门 list). The mock resolves every
+Bearer token against the **generated employee master** (``mock_employee``), so
+each generated account — ≥1 boss, one manager per department (one of them bound
+across workshops), group leaders and workers — can log in at factory scale.
+There is no static identity fixture any more; ``APP_KEY_TO_COMPANY`` only maps
+the plaintext AppKey to its tenant.
+
+All values are deterministic development fixtures, never real customer
+identities.
 """
 
 from __future__ import annotations
 
 Record = dict[str, object]
 
-#: Deterministic test identities covering the four filter tiers (M19):
-#: 99 boss / 02 manager / 01 group leader / 00 worker (own data only).
-IDENTITIES: dict[str, Record] = {
-    # Factory boss (99): sees every row of the company, all departments.
-    "boss-a": {
-        "app_key": "APPKEY-A",
-        "user": "01009",
-        "uname": "模拟厂长",
-        "company": "COMPANY-A",
-        "dept": "dept-a1",
-        "move_admin_role": "99",
-    },
-    # Workshop manager (02): sees only their workshop's rows.
-    "manager-a": {
-        "app_key": "APPKEY-A",
-        "user": "01008",
-        "uname": "模拟车间主任",
-        "company": "COMPANY-A",
-        "dept": "dept-a1",
-        "move_admin_role": "02",
-    },
-    # Group leader (01): same department scope as the manager. 01012 is a
-    # generated group leader of dept-a1 (see fixtures.ROLE_GROUP_LEADER).
-    "leader-a": {
-        "app_key": "APPKEY-A",
-        "user": "01012",
-        "uname": "模拟组长",
-        "company": "COMPANY-A",
-        "dept": "dept-a1",
-        "move_admin_role": "01",
-    },
-    # Own-data-only worker (00).
-    "worker-a1": {
-        "app_key": "APPKEY-A",
-        "user": "01001",
-        "uname": "模拟员工甲",
-        "company": "COMPANY-A",
-        "dept": "dept-a1",
-        "move_admin_role": "00",
-    },
-    # Second company: proves company-level isolation.
-    "worker-b1": {
-        "app_key": "APPKEY-B",
-        "user": "02001",
-        "uname": "乙厂员工",
-        "company": "COMPANY-B",
-        "dept": "dept-b1",
-        "move_admin_role": "00",
-    },
-}
-
+#: Plaintext AppKey -> tenant (company). One factory, one AppKey.
 APP_KEY_TO_COMPANY = {
     "APPKEY-A": "COMPANY-A",
     "APPKEY-B": "COMPANY-B",
 }
 
-__all__ = ["APP_KEY_TO_COMPANY", "IDENTITIES", "Record"]
+#: Role tiers mirrored on ``mock_employee.move_admin_role``; kept here for
+#: request handling (99 boss / 02 manager / 01 group leader / 00 worker).
+ROLE_BOSS = "99"
+ROLE_MANAGER = "02"
+ROLE_GROUP_LEADER = "01"
+ROLE_WORKER = "00"
+
+__all__ = [
+    "APP_KEY_TO_COMPANY",
+    "ROLE_BOSS",
+    "ROLE_GROUP_LEADER",
+    "ROLE_MANAGER",
+    "ROLE_WORKER",
+    "Record",
+]

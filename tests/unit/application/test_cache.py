@@ -8,6 +8,7 @@ import pytest
 
 from factory_agent.application.cache import (
     AuthAwareCache,
+    CachedDirectorySource,
     UnknownCacheDomainError,
 )
 from factory_agent.domain import (
@@ -154,9 +155,73 @@ def test_unknown_domain_is_rejected() -> None:
         cache.build_key("sql", TENANT, "fp", {})
 
 
-def test_ttls_are_short_and_per_domain() -> None:
+def test_ttls_are_per_domain() -> None:
     cache, _ = make_cache()
-    assert cache.ttl_seconds("identity_org") == 300
+    # Base-data domain refreshes daily (role-independent full roster); business
+    # domains stay short.
+    assert cache.ttl_seconds("identity_org") == 86400
     assert cache.ttl_seconds("order_progress") == 120
     assert cache.ttl_seconds("output") == 60
     assert cache.ttl_seconds("payroll") == 60
+
+
+class _FakeDirectory:
+    """Recording directory source wrapping ports.directory records."""
+
+    def __init__(self) -> None:
+        from factory_agent.ports.directory import DeptRecord, EmployeeRecord
+
+        self.dept_fetches = 0
+        self.employee_fetches = 0
+        self._dept = (DeptRecord("dept-a1", "一车间", "YCJ"),)
+        self._employee = (EmployeeRecord("01001", "模拟员工甲", "MNYGJ"),)
+
+    async def list_depts(self, scope: DataScope) -> tuple[object, ...]:
+        self.dept_fetches += 1
+        return self._dept
+
+    async def list_employees(self, scope: DataScope) -> tuple[object, ...]:
+        self.employee_fetches += 1
+        return self._employee
+
+    async def list_current_depts(
+        self, tenant_id: TenantId, employee_id: object
+    ) -> tuple[object, ...]:
+        return ()
+
+
+@pytest.mark.asyncio
+async def test_base_data_cache_key_is_scope_free_and_reused_across_roles() -> None:
+    """基础数据缓存键不含 scope：任一角色首查后，其他角色直接命中共享缓存."""
+    cache, store = make_cache()
+    directory = _FakeDirectory()
+    source = CachedDirectorySource(directory, cache)
+
+    # Two different role scopes share the one full-roster line (no scope
+    # fingerprint in the key) so the underlying source is fetched once.
+    await source.list_employees(make_scope("scope-a"))
+    await source.list_employees(make_scope("scope-b"))
+    assert directory.employee_fetches == 1
+    assert len(store.values) == 1
+
+    # The cached key really is the shared scope-free fingerprint.
+    key = next(iter(store.values))
+    assert cache.scope_fingerprint(make_scope("scope-a")) not in key
+
+
+@pytest.mark.asyncio
+async def test_invalidate_base_data_evicts_shared_roster_after_rebuild() -> None:
+    """Mock PG 重建/主数据版本变化后可主动失效，二次问答重新拉取."""
+    cache, store = make_cache()
+    directory = _FakeDirectory()
+    source = CachedDirectorySource(directory, cache)
+
+    await source.list_employees(make_scope("scope-a"))
+    await source.list_depts(make_scope("scope-a"))
+    assert len(store.values) == 2
+
+    await cache.invalidate_base_data(TENANT)
+
+    assert store.values == {}
+    await source.list_employees(make_scope("scope-a"))
+    assert directory.employee_fetches == 2  # re-fetched after invalidation

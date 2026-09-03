@@ -26,7 +26,7 @@ def test_smoke_recipe_loads_against_catalog() -> None:
     recipe = registry.get("smoke_piecework_summary")
     # The smoke recipe runs against the customer EmployeeQuery/DeptQuery surfaces.
     assert recipe.metric_versions["output_personal"] == "customer-output-v1"
-    assert recipe.metric_versions["org_headcount"] == "unavailable-c7"
+    assert recipe.metric_versions["org_headcount"] == "employee-registered-v1"
     api_operations = {step.operation_id for step in recipe.steps if step.kind == "api"}
     assert api_operations <= _operations()
 

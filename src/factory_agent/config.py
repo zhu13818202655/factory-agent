@@ -24,7 +24,7 @@ class FactoryAgentSettings(BaseSettings):
     artifact_secret_key: SecretStr | None = None
     #: Presigned download links default to a short 15-minute lifetime.
     artifact_presign_expires_seconds: int = Field(default=900, ge=60, le=3600)
-    #: Exported artifacts are retained for 3 months and then cleaned up (K5).
+    #: Exported artifacts are retained for 3 months and then cleaned up.
     artifact_cleanup_after_days: int = Field(default=90, ge=1)
     artifact_max_size_bytes: int = Field(default=50 * 1024 * 1024, ge=1024)
     #: Object keys are unguessable UUIDs; no employee IDs or question text.
@@ -32,6 +32,26 @@ class FactoryAgentSettings(BaseSettings):
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     request_id_header: str = "X-Request-ID"
+
+    # MES credential contract (docs/product/AI问答对外接口-整理.md §2). The
+    # caller presents an encrypted app_key in this header; the agent exchanges
+    # it at /api/system/token. Identity never arrives via any other header.
+    credential_header: str = "X-Factory-Credential"
+    #: Proactive accessToken refresh threshold inside the 2h validity window.
+    mes_token_refresh_threshold_seconds: int = Field(default=5400, ge=60)
+    #: The customer ``timestamp`` validity window (default 60 s); a stale
+    #: bundle is re-exchanged before the next business call.
+    mes_timestamp_ttl_seconds: int = Field(default=60, ge=5)
+
+    # Time-range policy. The customer confirms queries span at most the past
+    # year; wider requests terminate with a friendly notice before any MES call.
+    time_range_max_days: int = Field(default=366, ge=1)
+
+    # Delivery-warning defaults (docs/product/需求及方案整理.md 老板功能表).
+    # Threshold = max(1, ceil(total_duration * ratio%)); a missing order start
+    # date falls back to a fixed window. Reviewed again in Story 3 dry-runs.
+    delivery_warning_ratio_percent: int = Field(default=10, ge=1, le=100)
+    delivery_warning_fallback_days: int = Field(default=7, ge=1)
 
     # LLM boundary (ADR-0006). Deployments and fallback order come from the
     # reviewed registry; provider keys come from the environment variables that

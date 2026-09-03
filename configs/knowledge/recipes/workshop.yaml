@@ -1,14 +1,18 @@
 # Reviewed L1 workshop recipes. File changes are semantics changes
 # and require human review.
 #
-# FR-007 车间产量对比 and FR-010 车间产量总览 aggregate over the MES-filtered
-# visible range (M3/M19). 车间清单/名称来自 DeptQuery（单层车间，M5）。产量口径：
-# BarcodeCl 语境 sssl = 产量（扫码）；制单语境完成量 = sssl；计划量 = Plan.zsl。
+# 口径来源：``docs/product/需求及方案整理.md`` 功能表与「客户确认结论」、
+# ``docs/product/AI问答对外接口-整理.md``。
 #
-# 未确认口径一律列级 unavailable：达成率（C.9）与量产状态（C.8）无数据源；
-# 零人数车间的人均输出 unavailable（我方定义规则，不伪造 0）。可选
-# requested_dept_ids 业务过滤只收窄（与 DataScope 求交由 FilterNarrower 完成，
-# 空交集零业务调用）。
+# FR-007 车间产量对比 and FR-010 车间产量总览 aggregate over the MES-filtered
+# visible range (业务接口按角色过滤，客户确认 3)。车间与部门平级（客户确认 1），
+# 车间清单/名称来自 DeptQuery。产量口径：BarcodeCl 语境 sssl = 产量（扫码）；
+# 制单语境完成量 = sssl；计划量 = Plan.zsl。
+#
+# 无数据源口径一律列级 unavailable：达成率无数据源（未确认口径）；
+# 车间产量总览按客户口径不含量产状态字段。零人数车间的人均输出
+# unavailable（我方定义规则，不伪造 0）。可选 requested_dept_ids 业务过滤
+# 只收窄（与 DataScope 求交由 FilterNarrower 完成，空交集零业务调用）。
 version: 1
 capabilities:
   - capability_id: fr007_workshop_output_comparison
@@ -86,7 +90,7 @@ capabilities:
       workshop_effective_headcount: factory-effective-headcount-v1
       workshop_output_per_capita: factory-per-capita-v1
       workshop_rank: factory-rank-v1
-      plan_target_output: unavailable-c9
+      plan_target_output: unavailable-target-v1
     degradation: incomplete_marker
 
   - capability_id: fr010_workshop_output_overview
@@ -118,7 +122,6 @@ capabilities:
             p.huohao,
             CAST(SUM(CAST(p.zsl AS DECIMAL)) AS VARCHAR) AS plan_qty,
             CAST(COALESCE(SUM(CAST(s.sssl AS DECIMAL)), 0) AS VARCHAR) AS completed_qty,
-            'unavailable' AS production_stage,
             'unavailable' AS achievement_rate
           FROM fetch_plan p
           LEFT JOIN fetch_sclzd s ON s.dddh = p.jhdh
@@ -142,9 +145,6 @@ capabilities:
         metric: output_order_completed
         column_type: quantity
         unit: 件
-      - name: production_stage
-        source_step: compute
-        metric: production_stage
       - name: achievement_rate
         source_step: compute
         metric: plan_target_output
@@ -152,6 +152,5 @@ capabilities:
     metric_versions:
       output_order_plan_qty: customer-plan-v1
       output_order_completed: customer-completed-v1
-      production_stage: unavailable-c8
-      plan_target_output: unavailable-c9
+      plan_target_output: unavailable-target-v1
     degradation: incomplete_marker

@@ -1,16 +1,28 @@
 # Reviewed L1 progress recipes. File changes are semantics changes
 # and require human review.
 #
+# 口径来源：``docs/product/需求及方案整理.md`` 功能表与「客户确认结论」、
+# ``docs/product/AI问答对外接口-整理.md``。
+#
 # FR-005 订单/款号进度 and FR-009 全厂订单进度总览 share the same chain:
 #   Plan/GridPageList (locate order) -> Sclzd/GridPageList (dddh <-> jhdh to get
 #   the material id) -> WorktypeProgressQuery (userid = material id, fan-out).
-# 进度% is computed locally as 已完成工序数（uid 非空）/ 总工序数 (M6/M18);
+# 进度% is computed locally as 已完成工序数（uid 非空）/ 总工序数;
 # 当前工序 = 最大已完成 wsort 的下一道; 完工数量取 Sclzd.sssl; 在制数量取
-# WskQuery.sl (缺失输出 unavailable); 交期状态按 K4 降级为 finish_date 与当前
-# 日期直接比较（已逾期/未逾期），不实现预警阈值。
+# WskQuery.sl (缺失输出 unavailable).
 #
-# 订单检索只支持精确编号：dh / jhdh / khddh 与货号 huohao 精确匹配（C.6 未答
-# 复前不做模糊/简拼）。注意 Plan 响应模型不含 bbreed，货号匹配以 huohao 为准。
+# 交期预警（FR-009 输出列，与通用功能"异常数据自动高亮"共用，前端消费标记、
+# 后端不输出 UI 样式）:
+#   预警 = 订单未完工（完工量 < 订单数量）且 距交期剩余天数 ≤ 预警阈值；
+#   阈值默认 = max(1, ⌈总工期 × 10%⌉)，总工期 = 交期（finish_date）−
+#   下单日期（PlanGridPageList.zhdate）；无可用开始日期时回退固定窗口
+#   （默认 7 天）。阈值与回退窗口为可配置默认值（见 KernelSettings /
+#   FactoryAgentSettings），Story 3 双跑用真实数据复核。
+#   示例：总工期 10 天 → 剩余 ≤1 天预警；总工期 30 天 → 剩余 ≤3 天预警。
+#
+# 订单检索只支持精确编号：dh / jhdh / khddh 与货号 huohao 精确匹配（客户未
+# 确认模糊/简拼口径前不做模糊）。注意 Plan 响应模型不含 bbreed，货号匹配以
+# huohao 为准。
 #
 # fetch_progress 的 userid 通过 param_bindings 从 fetch_sclzd.id 派生，内核按
 # 去重值 fan-out，调用数受 KernelSettings.max_api_calls 预算约束；超预算时产生
@@ -189,6 +201,9 @@ capabilities:
               s.sssl,
               p.dh AS plan_dh,
               p.zsl,
+              p.ddsl,
+              p.khname,
+              p.zhdate AS start_date,
               p.finish_date,
               p.huohao AS plan_huohao
             FROM fetch_sclzd s
@@ -200,30 +215,62 @@ capabilities:
               m.sssl,
               m.plan_dh,
               m.zsl,
+              m.ddsl,
+              m.khname,
+              m.start_date,
               m.finish_date,
               m.plan_huohao,
               COUNT(g.worktype) AS total_wt,
               SUM(CASE WHEN g.uid IS NOT NULL AND g.uid <> '' THEN 1 ELSE 0 END) AS done_wt
             FROM material m
             LEFT JOIN fetch_progress g ON g.userid = m.material_id
-            GROUP BY m.material_id, m.sssl, m.plan_dh, m.zsl, m.finish_date, m.plan_huohao
+            GROUP BY m.material_id, m.sssl, m.plan_dh, m.zsl, m.ddsl, m.khname,
+                     m.start_date, m.finish_date, m.plan_huohao
+          ),
+          dated AS (
+            SELECT
+              per_material.*,
+              TRY_CAST(finish_date AS DATE) AS finish_day,
+              TRY_CAST(start_date AS DATE) AS start_day
+            FROM per_material
+          ),
+          warned AS (
+            SELECT
+              dated.*,
+              DATE_DIFF('day', TRY_CAST((SELECT today FROM _meta) AS DATE), finish_day) AS days_left,
+              GREATEST(1, CASE
+                WHEN start_day IS NULL OR finish_day IS NULL
+                  THEN (SELECT warning_fallback_days FROM _meta)
+                ELSE CAST(CEIL(
+                    DATE_DIFF('day', start_day, finish_day)
+                    * (SELECT warning_ratio_pct FROM _meta) / 100.0) AS INTEGER)
+              END) AS warning_threshold
+            FROM dated
           )
           SELECT
             plan_dh AS order_code,
             plan_huohao AS huohao,
+            khname AS customer_name,
             CAST(CAST(zsl AS DECIMAL) AS VARCHAR) AS plan_qty,
             CAST(CAST(sssl AS DECIMAL) AS VARCHAR) AS completed_qty,
             CASE WHEN total_wt > 0
                  THEN CAST(CAST(done_wt AS DECIMAL) / CAST(total_wt AS DECIMAL) AS VARCHAR)
                  ELSE 'unavailable' END AS progress_ratio,
-            CASE WHEN finish_date < (SELECT today FROM _meta)
-                 THEN '已逾期' ELSE '未逾期' END AS overdue_status
-          FROM per_material
+            CASE
+              WHEN finish_day IS NULL THEN '0'
+              WHEN CAST(sssl AS DECIMAL) >= CAST(ddsl AS DECIMAL) THEN '0'
+              WHEN days_left <= warning_threshold THEN '1'
+              ELSE '0'
+            END AS delivery_warning,
+            CAST(days_left AS VARCHAR) AS days_remaining
+          FROM warned
           ORDER BY order_code
     result_columns:
       - name: order_code
         source_step: compute
       - name: huohao
+        source_step: compute
+      - name: customer_name
         source_step: compute
       - name: plan_qty
         source_step: compute
@@ -239,12 +286,18 @@ capabilities:
         source_step: compute
         metric: progress_ratio
         column_type: percent
-      - name: overdue_status
+      - name: delivery_warning
         source_step: compute
-        metric: order_overdue_status
+        metric: delivery_warning
+      - name: days_remaining
+        source_step: compute
+        metric: delivery_days_remaining
+        column_type: quantity
+        unit: 天
     metric_versions:
       output_order_plan_qty: customer-plan-v1
       output_order_completed: customer-completed-v1
       progress_ratio: customer-progress-v1
-      order_overdue_status: factory-overdue-v1
+      delivery_warning: factory-warning-v1
+      delivery_days_remaining: factory-warning-v1
     degradation: incomplete_marker

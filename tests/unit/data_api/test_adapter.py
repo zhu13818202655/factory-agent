@@ -80,16 +80,16 @@ def test_disabled_operation_is_rejected_before_http() -> None:
         asyncio.run(adapter.execute(MesRequest("MoveMenuQuery", {})))
 
 
-def test_catalog_whitelist_covers_the_27_customer_operations() -> None:
+def test_catalog_whitelist_covers_the_26_customer_operations() -> None:
     ids = _catalog().operation_ids
     assert "SystemToken" in ids
     assert "YskQuery" in ids
     assert "GongziMxQuery" in ids
-    assert "MoveMenuQuery" in ids  # registered but disabled (K7)
+    assert "MoveMenuQuery" in ids  # registered but disabled
     assert "A1_getTenantMembership" not in ids
     assert "C1_listPieceworkRecords" not in ids
-    # All 27 customer operations are present.
-    assert len(ids) == 27
+    # All 26 customer operations are present.
+    assert len(ids) == 26
 
 
 @pytest.mark.asyncio

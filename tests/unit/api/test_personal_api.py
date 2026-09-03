@@ -1,4 +1,9 @@
-"""Personalization API endpoints over an in-memory container."""
+"""Personalization API endpoints over an in-memory container.
+
+Identity is token-based: the caller presents the encrypted credential in the
+configured credential header and the (fake) token gateway resolves the
+principal. Quick questions are role-aware, asserted per role below.
+"""
 
 from __future__ import annotations
 
@@ -9,22 +14,26 @@ import pytest
 
 from factory_agent.api.personal import personal_router
 from factory_agent.api.server import create_app
-from factory_agent.api.sessions import TENANT_HEADER, USER_HEADER
 from factory_agent.application.personal import PersonalizationService
 from factory_agent.bootstrap import DependencyOverrides
 from factory_agent.config import FactoryAgentSettings
+from factory_agent.domain import Role
 from tests.support.personal import (
     InMemoryFavoriteRepository,
     InMemoryHistoryRepository,
     InMemoryUserMappingRepository,
 )
 from tests.support.session import FrozenClock
+from tests.support.token import FakeCredentialExchange, principal
 
 NOW = datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)
-HEADERS = {TENANT_HEADER: "tenant-a", USER_HEADER: "user-a"}
+CREDENTIAL_HEADER = "X-Factory-Credential"
+CREDENTIAL = "enc-tenant-a-user-a"
+CREDENTIAL_B = "enc-tenant-a-user-b"
+HEADERS = {CREDENTIAL_HEADER: CREDENTIAL}
 
 
-def make_client() -> httpx.AsyncClient:
+def make_client(role: Role = Role.EMPLOYEE) -> httpx.AsyncClient:
     personalization = PersonalizationService(
         InMemoryHistoryRepository(),
         InMemoryFavoriteRepository(),
@@ -32,9 +41,18 @@ def make_client() -> httpx.AsyncClient:
         new_id=lambda: "id-1",
         clock=lambda: NOW,
     )
+    exchange = FakeCredentialExchange(
+        {
+            CREDENTIAL: principal(tenant_id="tenant-a", user_id="user-a", role=role),
+            CREDENTIAL_B: principal(
+                tenant_id="tenant-a", user_id="user-b", display_name="模拟员工乙", role=role
+            ),
+        }
+    )
     overrides = DependencyOverrides(
         clock=FrozenClock(NOW),
         personalization=personalization,
+        credential_exchange=exchange,
     )
     app = create_app(FactoryAgentSettings(environment="test"), overrides)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test.invalid")
@@ -49,20 +67,31 @@ async def test_quick_questions_require_identity_and_return_registered_capabiliti
 
 
 @pytest.mark.asyncio
-async def test_quick_questions_return_registered_capabilities() -> None:
-    async with make_client() as http:
+async def test_employee_quick_questions_are_personal() -> None:
+    async with make_client(Role.EMPLOYEE) as http:
         response = await http.get("/v1/quick-questions", headers=HEADERS)
 
     assert response.status_code == 200
     body = response.json()
     assert 4 <= len(body) <= 6
-    assert {item["capability_id"] for item in body} <= {
-        "FR-001",
-        "FR-002",
-        "FR-007",
-        "FR-009",
-        "FR-011",
-    }
+    capability_ids = {item["capability_id"] for item in body}
+    # Employees only see personal capabilities (FR-001..FR-004).
+    assert capability_ids <= {"FR-001", "FR-002", "FR-003", "FR-004"}
+    assert "FR-009" not in capability_ids
+
+
+@pytest.mark.asyncio
+async def test_owner_quick_questions_are_factory_wide() -> None:
+    async with make_client(Role.OWNER) as http:
+        response = await http.get("/v1/quick-questions", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert 4 <= len(body) <= 6
+    capability_ids = {item["capability_id"] for item in body}
+    # Owners see factory-wide capabilities (FR-009..FR-012) plus personal.
+    assert capability_ids <= {"FR-001", "FR-002", "FR-003", "FR-004", "FR-009", "FR-010", "FR-011"}
+    assert "FR-009" in capability_ids
 
 
 @pytest.mark.asyncio
@@ -118,7 +147,8 @@ async def test_cross_user_favorite_is_not_visible() -> None:
         )
         favorite_id = created.json()["favorite_id"]
 
-        other = {TENANT_HEADER: "tenant-a", USER_HEADER: "user-b"}
+        # A different (authenticated) user cannot see the favorite.
+        other = {CREDENTIAL_HEADER: CREDENTIAL_B}
         reasked = await http.post(f"/v1/favorites/{favorite_id}/re-ask", headers=other)
 
     assert reasked.status_code == 404

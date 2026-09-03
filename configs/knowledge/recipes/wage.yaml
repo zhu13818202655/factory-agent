@@ -1,12 +1,16 @@
 # Reviewed L1 wage capability recipes. File changes are semantics
 # changes and require human review.
 #
+# 口径来源：``docs/product/需求及方案整理.md`` 功能表与「客户确认结论」、
+# ``docs/product/AI问答对外接口-整理.md`` §8。
+#
 # FR-002 个人工资汇总 and FR-003 个人工资明细 share the same operation
 # `GongziMxQuery` and differ only in `scheme` and result columns:
 #   - scheme empty = 明细 (FR-003), scheme "hz" = 汇总 (FR-002).
-# The `Type=0,1,2` three-source merge (扫码/吊挂/手工账) is confirmed by M18.
-# `Flag` defaults to "0" (扫描日期, C.12) and is labelled 待确认 on card/Excel.
-# `Uid` is scope-sourced (M10) and never accepts user input.
+# The `Type=0,1,2` three-source merge covers 扫码/吊挂/手工账 (客户口径).
+# `Flag` defaults to "0" (扫描日期；客户公共参数约定).
+# `Uid` is scope-sourced and never accepts user input; 传空查全部仅限老板角色
+# （客户确认），由执行器在调用前强制。
 #
 # Local compute runs inside the per-interaction read-only DuckDB sandbox. The
 # kernel registers a `_meta` table with the natural-day count; `daily_avg`

@@ -1,14 +1,23 @@
 """Read-only data access over PostgreSQL.
 
 Every endpoint query maps to SQL over the ``mock_*`` tables: row-level
-filtering (M3/M19) is pushed into the ``WHERE``
-clause (company → dept → ``move_admin_role="00"`` own-data), pagination and
-footers use SQL COUNT/SUM, and the returned rows keep the exact customer-shaped
-``Record`` shapes so ``api/customer.py`` application logic barely changes.
+filtering is pushed into the ``WHERE`` clause (company → role scope),
+pagination and footers use SQL COUNT/SUM, and the returned rows keep the exact
+customer-shaped ``Record`` shapes so ``api/customer.py`` application logic
+barely changes.
+
+Role scope (contract: ``docs/product/需求及方案整理.md``「角色权限与数据校验
+策略」): ``99`` boss sees the whole company, ``02`` manager sees every bound
+车间/部门 (a manager may bind several workshops), ``01`` group leader sees their
+bound 小组 on personal rows (uid-attributed tables) and their department on
+organisational tables (mock simplification; real-MES group binding is a joint-
+debug item), and ``00`` worker sees own rows only. **Base-data interfaces do not
+filter by role** (``role_scoped=False``) — 员工/部门 etc. return the full
+company set for any authenticated caller.
 
 The three piecework sources are still merged in Python because the customer
 contract normalises them into a single wage row set (Type 0/1/2); the SQL
-side always filters by tenant/dept/uid/date first so whole tables are never
+side always filters by tenant/role/uid/date first so whole tables are never
 loaded into memory.
 """
 
@@ -17,10 +26,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, cast
 
 from mock_mes.db import MockMesDb
-from mock_mes.generator.fixtures import ROLE_BOSS, ROLE_WORKER
+from mock_mes.generator.fixtures import ROLE_BOSS, ROLE_GROUP_LEADER, ROLE_WORKER
 from mock_mes.identities import Record
 
 #: (date_column) for windowed tables; others are filtered by day-less columns.
@@ -73,6 +82,25 @@ def _d(value: object) -> Decimal:
     return Decimal(str(value))
 
 
+def _bound_depts(identity: Record) -> list[str]:
+    """Dept codes the caller may see: ``dept`` plus any manager ``boundDepts``.
+
+    02 管理 may bind several 车间/部门 (cross-workshop); every other role
+    carries at most its own ``dept``. The primary dept is always first.
+    """
+    dept = identity.get("dept")
+    if not dept:
+        return []
+    codes: list[str] = [str(dept)]
+    bound = identity.get("boundDepts")
+    if isinstance(bound, (list, tuple)):
+        for code in cast("list[object]", bound):
+            text = str(code)
+            if text and text not in codes:
+                codes.append(text)
+    return codes
+
+
 @dataclass(frozen=True, slots=True)
 class Page:
     """SQL-paginated result with total."""
@@ -99,17 +127,17 @@ class MockMesStore:
         identity: Record,
         *,
         tenant_scoped: bool = True,
+        role_scoped: bool = True,
         extra: Sequence[tuple[str, str, object]] = (),
         date_field: str | None = None,
         start: date | None = None,
         end: date | None = None,
     ) -> tuple[str, dict[str, object]]:
-        """Build the row-level filtering WHERE (M3/M19) plus extra clauses.
+        """Build the row-level filtering WHERE plus extra clauses.
 
-        Four customer role tiers decide the visible range:
-        ``99`` boss sees the whole company, ``02`` manager and ``01`` group
-        leader see their own department (the customer filters 小组 through the
-        same ``dept`` column), and ``00`` worker sees own rows only.
+        Company isolation always applies (except tenant-neutral tables). Role
+        scope applies only when ``role_scoped`` is true — base-data endpoints
+        pass ``role_scoped=False`` because 员工/部门等基础数据接口不按权限过滤.
 
         Extra clauses are ``(column, operator, value)`` triples.
         """
@@ -120,20 +148,30 @@ class MockMesStore:
         if tenant_scoped and table not in _TENANT_NEUTRAL:
             clauses.append("company = %(company)s")
             params["company"] = str(identity["company"])
-            role = str(identity.get("move_admin_role", ROLE_WORKER))
-            dept = identity.get("dept")
-            if role != ROLE_BOSS:
-                # Boss (99) is company-wide; every other tier is dept-scoped
-                # when the table has a dept column.
-                if dept is not None and "dept" in available:
-                    clauses.append("(dept IS NULL OR dept = %(dept)s)")
-                    params["dept"] = str(dept)
-                # Own-data filtering applies only to tables that carry a uid
-                # column (personal output); organisational tables are
-                # dept-scoped for workers instead.
-                if role == ROLE_WORKER and "uid" in available:
-                    clauses.append("(uid IS NULL OR uid = %(uid)s)")
-                    params["uid"] = str(identity["user"])
+            if role_scoped:
+                role = str(identity.get("move_admin_role", ROLE_WORKER))
+                if role != ROLE_BOSS:
+                    # Boss (99) is company-wide; every other tier is narrower.
+                    if role == ROLE_GROUP_LEADER and identity.get("group") and "uid" in available:
+                        # 01 组长 sees their bound 小组: rows attributed to the
+                        # group's member uids (employee-master group_id).
+                        clauses.append(
+                            "(uid IS NULL OR uid IN (SELECT uid FROM mock_employee "
+                            "WHERE company = %(company)s AND group_id = %(group)s))"
+                        )
+                        params["group"] = str(identity["group"])
+                    else:
+                        # 02 管理 sees every bound 车间/部门 (possibly several,
+                        # incl. cross-workshop). 01 组长 on organisational
+                        # tables (no uid) and 00 员工 are dept-scoped.
+                        bound_depts = _bound_depts(identity)
+                        if bound_depts and "dept" in available:
+                            clauses.append("(dept IS NULL OR dept = ANY(%(dept_ids)s))")
+                            params["dept_ids"] = bound_depts
+                    if role == ROLE_WORKER and "uid" in available:
+                        # 00 worker sees own rows only on personal tables.
+                        clauses.append("(uid IS NULL OR uid = %(uid)s)")
+                        params["uid"] = str(identity["user"])
 
         for column, operator, value in extra:
             clauses.append(f"{column} {operator} %({column})s")
@@ -156,6 +194,7 @@ class MockMesStore:
         identity: Record,
         *,
         tenant_scoped: bool = True,
+        role_scoped: bool = True,
         extra: Sequence[tuple[str, str, object]] = (),
         date_field: str | None = None,
         start: date | None = None,
@@ -165,6 +204,7 @@ class MockMesStore:
             table,
             identity,
             tenant_scoped=tenant_scoped,
+            role_scoped=role_scoped,
             extra=extra,
             date_field=date_field,
             start=start,
@@ -182,6 +222,7 @@ class MockMesStore:
         identity: Record,
         *,
         tenant_scoped: bool = True,
+        role_scoped: bool = True,
         extra: Sequence[tuple[str, str, object]] = (),
         date_field: str | None = None,
         start: date | None = None,
@@ -194,6 +235,7 @@ class MockMesStore:
             table,
             identity,
             tenant_scoped=tenant_scoped,
+            role_scoped=role_scoped,
             extra=extra,
             date_field=date_field,
             start=start,
@@ -203,6 +245,7 @@ class MockMesStore:
             table,
             identity,
             tenant_scoped=tenant_scoped,
+            role_scoped=role_scoped,
             extra=extra,
             date_field=date_field,
             start=start,
@@ -224,6 +267,7 @@ class MockMesStore:
         identity: Record,
         *,
         tenant_scoped: bool = True,
+        role_scoped: bool = True,
         extra: Sequence[tuple[str, str, object]] = (),
         date_field: str | None = None,
         start: date | None = None,
@@ -235,6 +279,7 @@ class MockMesStore:
             table,
             identity,
             tenant_scoped=tenant_scoped,
+            role_scoped=role_scoped,
             extra=extra,
             date_field=date_field,
             start=start,
@@ -318,6 +363,34 @@ class MockMesStore:
     # Endpoint-specific queries.
     # ------------------------------------------------------------------
 
+    async def employee_by_uid(self, company: str, uid: str) -> Record | None:
+        """The generated employee master row for one account (identity source)."""
+        rows = await self._db.fetch(
+            "SELECT payload FROM mock_employee WHERE company = %(company)s "
+            "AND uid = %(uid)s ORDER BY id LIMIT 1",
+            {"company": company, "uid": uid},
+        )
+        return Record(rows[0]["payload"]) if rows else None
+
+    async def login_employee(self, company: str, uid: str | None = None) -> Record | None:
+        """Pick the login account for a company.
+
+        With ``uid``, the named generated employee; without one, the company's
+        boss (99) — or its first employee when the company has no boss — so
+        ``/api/system/token`` stays usable with only the AppKey.
+        """
+        if uid:
+            return await self.employee_by_uid(company, uid)
+        for role in (ROLE_BOSS, ROLE_WORKER):
+            rows = await self._db.fetch(
+                "SELECT payload FROM mock_employee WHERE company = %(company)s "
+                "AND payload->>'move_admin_role' = %(role)s ORDER BY uid LIMIT 1",
+                {"company": company, "role": role},
+            )
+            if rows:
+                return Record(rows[0]["payload"])
+        return None
+
     async def user_info(self, username: str) -> list[Record]:
         rows = await self._db.fetch(
             "SELECT payload FROM mock_user_info WHERE username = %(username)s ORDER BY id",
@@ -381,7 +454,7 @@ class MockMesStore:
         start: date,
         end: date,
     ) -> list[Record]:
-        """SQL-filter the three sources, then normalise to wage rows (M18)."""
+        """SQL-filter the three sources, then normalise to wage rows."""
         merged: list[Record] = []
         if "0" in types:
             for row in await self.list_rows(

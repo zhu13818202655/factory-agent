@@ -13,8 +13,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from factory_agent.application.permission_matrix import REGISTERED_CAPABILITIES
-from factory_agent.domain import CapabilityId, TenantId
+from factory_agent.application.permission_matrix import (
+    REGISTERED_CAPABILITIES,
+    capabilities_for_role,
+)
+from factory_agent.domain import CapabilityId, Role, TenantId
 from factory_agent.ports import InteractionOwner, TrustedCredential
 from factory_agent.ports.personal import (
     Favorite,
@@ -53,19 +56,135 @@ class QuickQuestion:
     slots: dict[str, object]
 
 
-#: Reviewed quick questions derived from the registered capability registry.
-#: No role hardcoding (M11/A.1): every authenticated caller may use any
-#: registered L1 capability, and MES row-level filtering decides the visible
-#: range. Capabilities that need an extra mandatory slot (e.g. FR-012 employee
-#: names) are intentionally not one-click quick questions.
-_QUICK_QUESTIONS: tuple[QuickQuestion, ...] = (
-    QuickQuestion(
-        "qq-own-output", "FR-001", "我这个月的个人产量是多少？", {"time_expression": "本月"}
+#: Reviewed role-aware quick questions (角色化快捷问题，见
+#: ``docs/product/需求及方案整理.md`` 通用功能表). Each role sees 4–6 common
+#: phrasings drawn from the capabilities its matrix allows; capabilities that
+#: need an extra mandatory slot (e.g. FR-012 employee names) are intentionally
+#: not one-click quick questions.
+_QUICK_QUESTIONS: tuple[tuple[Role, QuickQuestion], ...] = (
+    # 员工（本人维度，四角色通用）
+    (
+        Role.EMPLOYEE,
+        QuickQuestion(
+            "qq-own-output", "FR-001", "我这个月的个人产量是多少？", {"time_expression": "本月"}
+        ),
     ),
-    QuickQuestion("qq-own-wage", "FR-002", "我这个月的工资汇总", {"time_expression": "本月"}),
-    QuickQuestion("qq-workshop-compare", "FR-007", "本月车间产量对比", {"time_expression": "本月"}),
-    QuickQuestion("qq-factory-order", "FR-009", "全厂订单进度总览", {"time_expression": "本月"}),
-    QuickQuestion("qq-factory-payroll", "FR-011", "全厂工资统计", {"time_expression": "本月"}),
+    (
+        Role.EMPLOYEE,
+        QuickQuestion("qq-own-wage", "FR-002", "我这个月的工资汇总", {"time_expression": "本月"}),
+    ),
+    (
+        Role.EMPLOYEE,
+        QuickQuestion(
+            "qq-own-wage-detail",
+            "FR-003",
+            "我这个月的工资明细是怎么算的？",
+            {"time_expression": "本月"},
+        ),
+    ),
+    (
+        Role.EMPLOYEE,
+        QuickQuestion("qq-own-rank", "FR-004", "我在小组里排第几？", {"time_expression": "本月"}),
+    ),
+    # 组长（本人 + 管理面）
+    (
+        Role.GROUP_LEADER,
+        QuickQuestion(
+            "qq-leader-own-wage", "FR-002", "我这个月的工资汇总", {"time_expression": "本月"}
+        ),
+    ),
+    (
+        Role.GROUP_LEADER,
+        QuickQuestion(
+            "qq-leader-order-progress",
+            "FR-005",
+            "这个订单现在做到哪道工序了？",
+            {"time_expression": "本月"},
+        ),
+    ),
+    (
+        Role.GROUP_LEADER,
+        QuickQuestion(
+            "qq-leader-order-output",
+            "FR-006",
+            "这个款这周做了多少产量？",
+            {"time_expression": "本周"},
+        ),
+    ),
+    (
+        Role.GROUP_LEADER,
+        QuickQuestion(
+            "qq-leader-team-payroll",
+            "FR-008",
+            "这个月我们组每人工资清单",
+            {"time_expression": "本月"},
+        ),
+    ),
+    # 管理（绑定车间/部门）
+    (
+        Role.MANAGER,
+        QuickQuestion(
+            "qq-manager-order-progress",
+            "FR-005",
+            "这个订单现在做到哪道工序了？",
+            {"time_expression": "本月"},
+        ),
+    ),
+    (
+        Role.MANAGER,
+        QuickQuestion(
+            "qq-manager-order-output",
+            "FR-006",
+            "这个款这周做了多少产量？",
+            {"time_expression": "本周"},
+        ),
+    ),
+    (
+        Role.MANAGER,
+        QuickQuestion(
+            "qq-manager-workshop-compare",
+            "FR-007",
+            "各小组这个月产量对比一下",
+            {"time_expression": "本月"},
+        ),
+    ),
+    (
+        Role.MANAGER,
+        QuickQuestion(
+            "qq-manager-team-payroll",
+            "FR-008",
+            "这个月我们车间每人工资清单",
+            {"time_expression": "本月"},
+        ),
+    ),
+    # 老板（全厂）
+    (
+        Role.OWNER,
+        QuickQuestion(
+            "qq-owner-orders", "FR-009", "所有订单现在进度怎么样？", {"time_expression": "本月"}
+        ),
+    ),
+    (
+        Role.OWNER,
+        QuickQuestion(
+            "qq-owner-workshop-output",
+            "FR-010",
+            "整个车间这个月产量情况",
+            {"time_expression": "本月"},
+        ),
+    ),
+    (
+        Role.OWNER,
+        QuickQuestion(
+            "qq-owner-payroll", "FR-011", "这个月整个厂工资发多少？", {"time_expression": "本月"}
+        ),
+    ),
+    (
+        Role.OWNER,
+        QuickQuestion(
+            "qq-owner-own-wage", "FR-002", "我这个月的工资汇总", {"time_expression": "本月"}
+        ),
+    ),
 )
 
 
@@ -97,16 +216,27 @@ class PersonalizationService:
         self._favorite_ttl_days = favorite_ttl_days
 
     # -- Quick questions -----------------------------------------------------
-    def quick_questions(self, credential: TrustedCredential) -> list[QuickQuestion]:
-        """Registered-capability quick questions available to this credential.
+    def quick_questions(
+        self, credential: TrustedCredential, role: Role | None = None
+    ) -> list[QuickQuestion]:
+        """Role-aware quick questions available to this credential.
 
-        Availability is credential presence plus the reviewed capability
-        registry; it never depends on an unconfirmed role enumeration (A.1).
+        Availability is the reviewed capability-role matrix intersected with
+        the registered capability registry. Without a role (degraded fixtures)
+        no questions are returned — a roleless list would violate the
+        role-aware presentation contract.
         """
-        registered = {capability.value for capability in REGISTERED_CAPABILITIES}
-        if not credential.tenant_id or not credential.user_id:
+        if not credential.tenant_id or not credential.user_id or role is None:
             return []
-        return [question for question in _QUICK_QUESTIONS if question.capability_id in registered]
+        registered = {capability.value for capability in REGISTERED_CAPABILITIES}
+        allowed = {capability.value for capability in capabilities_for_role(role)}
+        return [
+            question
+            for question_role, question in _QUICK_QUESTIONS
+            if question_role is role
+            and question.capability_id in registered
+            and question.capability_id in allowed
+        ]
 
     # -- History -------------------------------------------------------------
     async def record_history(
@@ -201,7 +331,7 @@ class PersonalizationService:
             raise FavoriteNotFoundError("favorite has expired")
         return favorite
 
-    # -- Minimal user mapping (M20) -----------------------------------------
+    # -- Minimal user mapping (uid ↔ uname display convenience) -------------
     async def save_mapping(
         self,
         *,

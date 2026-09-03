@@ -1,8 +1,9 @@
 """Product capability id (FR-001…) to recipe capability id mapping.
 
 The permission matrix and the session authorizer work with the product-facing
-``Capability`` enum values (FR-001…FR-012; FR-004 is not mapped below yet — its
-restoration is tracked in Story #1). The capability runner executes reviewed
+``Capability`` enum values (FR-001…FR-012, 12 functions = employee 4 /
+management 4 / boss 4, mapped 1:1 from the function tables in
+``docs/product/需求及方案整理.md``). The capability runner executes reviewed
 *recipes* with descriptive ids (e.g.
 ``fr002_personal_wage_summary``). This module is the single place that maps
 between the two; a product id can own several recipes (FR-002/FR-003 share the
@@ -20,6 +21,7 @@ RECIPE_BY_FR: dict[str, str] = {
     "FR-001": "fr001_personal_output",
     "FR-002": "fr002_personal_wage_summary",
     "FR-003": "fr003_personal_wage_detail",
+    "FR-004": "fr004_group_income_rank",
     "FR-005": "fr005_order_progress",
     "FR-006": "fr006_order_output",
     "FR-007": "fr007_workshop_output_comparison",
@@ -39,6 +41,7 @@ REQUIRED_SLOTS_BY_FR: dict[str, tuple[str, ...]] = {
     "FR-001": ("time_range",),
     "FR-002": ("time_range",),
     "FR-003": ("time_range",),
+    "FR-004": ("time_range",),
     "FR-005": ("time_range",),
     "FR-006": ("time_range",),
     "FR-007": ("time_range",),

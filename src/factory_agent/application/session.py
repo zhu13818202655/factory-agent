@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
+from datetime import timedelta
 
 from factory_agent.application.authorization import (
     AuthorizationService,
@@ -27,7 +29,11 @@ from factory_agent.application.capability_map import fr_id_for
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.filters import FilterNarrower, FilterRejectionError
 from factory_agent.application.intent import CapabilityIntentParser, clarification_for
-from factory_agent.application.permission_matrix import Capability, authorize_capability
+from factory_agent.application.permission_matrix import (
+    ROLE_DATA_RANGE,
+    Capability,
+    authorize_capability,
+)
 from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.structured import StructuredOutputError
 from factory_agent.application.usage import (
@@ -55,6 +61,7 @@ from factory_agent.domain import (
     MessageKind,
     MessageRecord,
     MessageRole,
+    Role,
     SessionEvent,
     SessionId,
     SessionState,
@@ -62,6 +69,7 @@ from factory_agent.domain import (
     TimeRange,
     terminal_event_name,
 )
+from factory_agent.domain.errors import ForbiddenError
 from factory_agent.ports import (
     CapabilityRunRequest,
     CapabilityRunResult,
@@ -75,9 +83,14 @@ from factory_agent.ports import (
     UsageEvent,
 )
 from factory_agent.ports.artifacts import ArtifactExporter
+from factory_agent.ports.contracts import CredentialBinder
 from factory_agent.ports.session import CapabilityRunner
 
 IdFactory = Callable[[], str]
+
+#: Customer-confirmed time-range ceiling: at most the past year. Requests
+#: beyond it are terminated with a friendly notice before any MES call.
+DEFAULT_TIME_RANGE_MAX_DAYS = 366
 
 
 class InteractionNotFoundError(LookupError):
@@ -127,6 +140,8 @@ class SessionService:
         sleep: Callable[[float], Awaitable[None]] | None = None,
         exporter: ArtifactExporter | None = None,
         personalization: PersonalizationService | None = None,
+        credential_binder: CredentialBinder | None = None,
+        time_range_max_days: int = DEFAULT_TIME_RANGE_MAX_DAYS,
     ) -> None:
         self._store = store
         self._authorization = authorization
@@ -140,6 +155,8 @@ class SessionService:
         self._sleep = sleep or asyncio.sleep
         self._exporter = exporter
         self._personalization = personalization
+        self._credential_binder = credential_binder
+        self._time_range_max_days = time_range_max_days
 
     async def start(
         self, credential: TrustedCredential, request: StartRequest
@@ -236,7 +253,9 @@ class SessionService:
 
         claimed = await self._store.claim_run(owner, interaction_id, self._clock.now())
         if claimed is not None:
-            async for event in self._run(owner, authorization, claimed, history, after_sequence):
+            async for event in self._run(
+                owner, authorization, claimed, history, after_sequence, credential
+            ):
                 yield event
             return
 
@@ -296,6 +315,7 @@ class SessionService:
         record: InteractionRecord,
         history: tuple[ConversationTurn, ...],
         after_sequence: int,
+        credential: TrustedCredential,
     ) -> AsyncIterator[SessionEvent]:
         state = _RunState(
             record=record,
@@ -304,39 +324,43 @@ class SessionService:
         )
         # The adapter meters every MES call at its ``_send`` exit; the active
         # usage context is bound for the duration of this run so business-data
-        # calls carry the interaction identifiers.
+        # calls carry the interaction identifiers. The credential binder scopes
+        # every MES call in this run to the caller's own token bundle.
         set_usage_context(self._usage_context(record))
+        binder = self._credential_binder
+        binding = binder.bind_for(credential) if binder is not None else nullcontext()
         try:
-            started = SessionEvent(
-                sequence=state.next_sequence(),
-                name=INTERACTION_STARTED,
-                data={
-                    "interaction_id": str(record.interaction_id),
-                    "session_id": str(record.session_id),
-                    "state": SessionState.PARSING.value,
-                    "stage": "接收",
-                    "status": "accepted",
-                },
-            )
-            state.record = replace(
-                state.record,
-                status=InteractionStatus.RUNNING,
-                last_event_sequence=started.sequence,
-                updated_at=self._clock.now(),
-            )
-            await self._store.commit(
-                InteractionCommit(
-                    interaction=state.record,
-                    events=(started,),
-                    usage_events=drain_mes_events(),
+            with binding:
+                started = SessionEvent(
+                    sequence=state.next_sequence(),
+                    name=INTERACTION_STARTED,
+                    data={
+                        "interaction_id": str(record.interaction_id),
+                        "session_id": str(record.session_id),
+                        "state": SessionState.PARSING.value,
+                        "stage": "接收",
+                        "status": "accepted",
+                    },
                 )
-            )
-            yield started
+                state.record = replace(
+                    state.record,
+                    status=InteractionStatus.RUNNING,
+                    last_event_sequence=started.sequence,
+                    updated_at=self._clock.now(),
+                )
+                await self._store.commit(
+                    InteractionCommit(
+                        interaction=state.record,
+                        events=(started,),
+                        usage_events=drain_mes_events(),
+                    )
+                )
+                yield started
 
-            async for event in self._pipeline(owner, authorization, state, history):
-                yield event
-            if state.record.status in _TERMINAL_STATUSES:
-                await self._record_history(owner, state)
+                async for event in self._pipeline(owner, authorization, state, history):
+                    yield event
+                if state.record.status in _TERMINAL_STATUSES:
+                    await self._record_history(owner, state)
         finally:
             set_usage_context(None)
 
@@ -359,7 +383,6 @@ class SessionService:
                 yield event
             return
 
-        state.last_intent = intent
         state.last_intent = intent
         if intent.needs_clarification:
             if state.record.clarification_rounds + 1 >= self._limits.max_clarification_rounds:
@@ -393,7 +416,9 @@ class SessionService:
 
         decision = authorize_capability(capability, decision_context, scope)
         if not decision.allowed:
-            async for event in self._reject(state, "forbidden", usage_events):
+            async for event in self._reject(
+                state, "forbidden", usage_events, role=decision_context.role
+            ):
                 yield event
             return
 
@@ -418,15 +443,16 @@ class SessionService:
 
         # FR-012 resolves the target employee in-tenant through the MES-filtered
         # EmployeeQuery; the employee enters the interaction with mes_filtered
-        # trust and MES decides actual visibility on the wage call (M12).
-        # Personal capabilities (FR-001/002/003) bind the caller's own uid;
+        # trust and MES decides actual visibility on the wage call.
+        # Personal capabilities (FR-001/002/003/004) bind the caller's own uid;
         # management/boss capabilities leave employee_ids unset so MES row-level
-        # filtering (M3/M19) decides the visible range.
+        # filtering decides the visible range.
         is_any_employee = capability == Capability.ANY_EMPLOYEE_PAYROLL
         is_personal = capability in {
             Capability.OWN_OUTPUT,
             Capability.OWN_PAYROLL_SUMMARY,
             Capability.OWN_PAYROLL_DETAIL,
+            Capability.GROUP_INCOME_RANK,
         }
         try:
             if is_any_employee:
@@ -466,6 +492,17 @@ class SessionService:
             async for event in self._fail(state, "time_range_missing", usage_events):
                 yield event
             return
+        if _exceeds_time_range_limit(time_range, self._time_range_max_days):
+            # Customer-confirmed ceiling: at most the past year. Terminate with
+            # a friendly notice before any MES call.
+            notice = (
+                f"时间范围超出上限（近一年）：请查询最近 {self._time_range_max_days} 天以内的数据。"
+            )
+            async for event in self._reject_message(
+                state, "time_range_exceeds_limit", notice, usage_events
+            ):
+                yield event
+            return
 
         yield await self._phase(state, SessionState.AUTHORIZING, "intent_complete")
         yield await self._phase(state, SessionState.EXECUTING, "authorized")
@@ -473,9 +510,20 @@ class SessionService:
         try:
             result = await self._runner.run(
                 CapabilityRunRequest(
-                    capability_id=capability_id, filters=filters, time_range=time_range
+                    capability_id=capability_id,
+                    filters=filters,
+                    time_range=time_range,
+                    role=decision_context.role,
                 )
             )
+        except ForbiddenError as exc:
+            # Executor-level scope rule (e.g. GongziMxQuery 传空查全部仅限老板):
+            # surface as a friendly denial, never a generic failure.
+            async for event in self._reject_message(
+                state, f"forbidden_{exc.code.value}", exc.message, usage_events
+            ):
+                yield event
+            return
         except Exception:
             async for event in self._fail(state, "execution_failed", usage_events):
                 yield event
@@ -698,10 +746,15 @@ class SessionService:
             yield event
 
     async def _reject(
-        self, state: _RunState, category: str, usage_events: list[UsageEvent]
+        self,
+        state: _RunState,
+        category: str,
+        usage_events: list[UsageEvent],
+        *,
+        role: Role | None = None,
     ) -> AsyncIterator[SessionEvent]:
         async for event in self._reject_message(
-            state, category, "当前角色无权执行该查询。", usage_events
+            state, category, _friendly_rejection(role), usage_events
         ):
             yield event
 
@@ -948,6 +1001,21 @@ def _time_range(intent: CapabilityIntent) -> TimeRange | None:
 
 def _time_range_label(time_range: TimeRange) -> str:
     return f"{time_range.start.date().isoformat()}_{time_range.end.date().isoformat()}"
+
+
+def _exceeds_time_range_limit(time_range: TimeRange, max_days: int) -> bool:
+    """The customer-confirmed ceiling: queries span at most the past year."""
+    return (time_range.end - time_range.start) > timedelta(days=max_days)
+
+
+def _friendly_rejection(role: Role | None) -> str:
+    """Friendly denial naming the caller's actual data range (权限不足友好提示)."""
+    if role is None:
+        return "当前角色暂不支持该查询。"
+    data_range = ROLE_DATA_RANGE.get(role)
+    if data_range is None:
+        return "当前角色暂不支持该查询。"
+    return f"当前角色暂不支持该查询。您可查询的范围：{data_range}。"
 
 
 #: Human-readable stage labels carried on phase events.

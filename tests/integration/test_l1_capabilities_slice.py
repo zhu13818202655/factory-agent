@@ -3,9 +3,9 @@
 Runs FR-001, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010, FR-011 and
 FR-012 through the same recipe -> executor -> sandbox -> ResultTable path
 used by the wage slice (FR-002/FR-003), locking the deterministic golden
-numbers. A boss
-identity (move_admin_role=01) sees the whole COMPANY-A range via MES row-level
-filtering; employee_ids=None on management capabilities lets MES decide.
+numbers. A boss identity (role 99, `MOCK-TOKEN-01009`) sees the whole
+COMPANY-A range via MES row-level filtering; employee_ids=None on management
+capabilities lets MES decide.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ async def test_fr001_personal_output_worker_golden(mock_mes_app: Any) -> None:
         # Factory-scale window — 01001 records ~70 output rows.
         assert len(result.rows) == 70
         assert result.totals["output_qty"] == Decimal("559")
-        # 合格/次品无统一数据源（C.5）：列级 unavailable，绝不渲染为数字。
+        # 合格/次品无统一数据源：列级 unavailable，绝不渲染为数字。
         for row in result.rows:
             assert row[4] == UNAVAILABLE_VALUE
         assert result.incomplete is True
@@ -155,7 +155,7 @@ async def test_fr005_order_progress_exact_order_filter(mock_mes_app: Any) -> Non
         )
         assert len(result.rows) == 1
         assert result.rows[0][0] == "PLAN-2607-001"
-        # 未知/跨租户订单精确匹配返回空（M12：无数据），不伪造。
+        # 未知/跨租户订单精确匹配返回空（无数据），不伪造。
         empty = await _run(
             runner,
             "fr005_order_progress",
@@ -200,7 +200,7 @@ async def test_fr007_workshop_comparison_golden(mock_mes_app: Any) -> None:
         assert by_name["一车间"][2] == Decimal("97")
         assert by_name["一车间"][4] == Decimal("5")
         assert by_name["二车间"][4] == Decimal("4")
-        # 达成率按 C.9 输出 unavailable.
+        # 达成率无客户口径：列级输出 unavailable。
         assert all(row[5] == UNAVAILABLE_VALUE for row in result.rows)
     finally:
         await adapter.aclose()
@@ -212,7 +212,7 @@ async def test_fr008_payroll_ranking_golden(mock_mes_app: Any) -> None:
     runner, adapter, client = _runner(mock_mes_app)
     try:
         result = await _run(runner, "fr008_payroll_ranking", _management_filters())
-        # 位次按返回顺序编号（M7）；规模下排名覆盖全部 494 名计件员工。
+        # 位次按返回顺序编号；规模下排名覆盖全部计件员工。
         # Factory-scale numbers: ranking now includes rolling wage rows.
         assert result.rows[0] == (
             "01273",
@@ -242,9 +242,13 @@ async def test_fr009_factory_order_overview_golden(mock_mes_app: Any) -> None:
     try:
         result = await _run(runner, "fr009_factory_order_overview", _management_filters())
         rows = {row[0]: row for row in result.rows}
-        # K4 交期状态：finish_date 早于当前日期 → 已逾期（无预警阈值）。
-        assert rows["PLAN-2607-001"][5] == "已逾期"
-        assert rows["PLAN-2608-001"][5] == "已逾期"
+        # 交期预警（数据侧判定，客户口径默认阈值 = max(1, ⌈总工期×10%⌉)）：
+        # PLAN-2607-001 未完工且交期已过（-21 天）→ 预警 '1'；完工单不预警 '0'。
+        assert rows["PLAN-2607-001"][5] == "0.6666666666666666"  # progress
+        assert rows["PLAN-2607-001"][6] == "1"  # delivery_warning
+        assert rows["PLAN-2607-001"][7] == Decimal("-21")  # days_remaining
+        assert rows["PLAN-26070100"][5] == "1.0"  # finished
+        assert rows["PLAN-26070100"][6] == "0"
         # Totals cover the full in-production order book.
         assert result.totals["plan_qty"] == Decimal("35877")
         assert result.totals["completed_qty"] == Decimal("35743")
@@ -263,9 +267,8 @@ async def test_fr010_workshop_output_overview_golden(mock_mes_app: Any) -> None:
         assert rows[("一车间", "HH001")][2] == Decimal("12531")
         assert rows[("一车间", "HH001")][3] == Decimal("12444")
         assert rows[("一车间", "HH002")][2] == Decimal("11646")
-        # 量产状态（C.8）与达成率（C.9）均 unavailable。
+        # 达成率无客户口径：列级 unavailable。
         assert rows[("一车间", "HH001")][4] == UNAVAILABLE_VALUE
-        assert rows[("一车间", "HH001")][5] == UNAVAILABLE_VALUE
     finally:
         await adapter.aclose()
         await client.aclose()
@@ -273,18 +276,24 @@ async def test_fr010_workshop_output_overview_golden(mock_mes_app: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_fr011_factory_payroll_stats_golden(mock_mes_app: Any) -> None:
+    """FR-011 修订：在册人数 = EmployeeQuery 全员（基础数据不过滤），人均工资 =
+    应发合计 ÷ 在册人数，均输出已确认数值。"""
     runner, adapter, client = _runner(mock_mes_app)
     try:
         result = await _run(runner, "fr011_factory_payroll_stats", _management_filters())
+        assert result.column_names == ("dept_name", "gross_total", "headcount", "avg_wage")
         by_name = {row[0]: row for row in result.rows}
-        # Rolling wage rows extend the dept gross.
-        assert by_name["一车间"][1] == Decimal("52203.55")
-        assert by_name["一车间"][2] == Decimal("97")
-        assert by_name["二车间"][1] == Decimal("53921.80")
-        # 在册人数（C.7）与人均工资均 unavailable。
-        assert by_name["一车间"][3] == UNAVAILABLE_VALUE
-        assert by_name["一车间"][4] == UNAVAILABLE_VALUE
+        # Rolling wage rows extend the dept gross; headcount from the full roster.
+        a1 = by_name["一车间"]
+        assert a1[1] == Decimal("52203.550")
+        assert a1[2] == Decimal("99")  # 一车间在册（01002 挂在二车间）
+        assert a1[3] == Decimal("527.31")  # 52203.55 ÷ 99
+        a2 = by_name["二车间"]
+        assert a2[1] == Decimal("53921.800")
+        assert a2[2] == Decimal("101")
+        assert a2[3] == Decimal("533.88")
         assert result.totals["gross_total"] == Decimal("264029.20")
+        assert result.totals["headcount"] == Decimal("500")
     finally:
         await adapter.aclose()
         await client.aclose()

@@ -40,7 +40,7 @@ from mock_mes.generator.fixtures import (
 #: Table -> mirrored filter/aggregate columns extracted from the payload.
 _COLUMN_MAP: dict[str, tuple[str, ...]] = {
     "mock_dept": ("dept", "name"),
-    "mock_employee": ("uid", "dept", "uname"),
+    "mock_employee": ("uid", "dept", "uname", "group_id"),
     "mock_huohao": ("bh", "huohaoname"),
     "mock_sc_type": ("bh", "name"),
     "mock_rfid_worktype": ("bh", "name", "wt_sort"),
@@ -60,7 +60,7 @@ _COLUMN_MAP: dict[str, tuple[str, ...]] = {
     "mock_wsk": ("worktype", "huohao", "dept", "sl", "baohao"),
 }
 
-#: Price per worktype (确定性计件单价, M9/M18).
+#: Price per worktype (确定性计件单价).
 _PRICE: dict[str, str] = {"WT01": "1.2500", "WT02": "0.8000", "WT03": "1.0000"}
 _WTNAME: dict[str, str] = {"WT01": "裁剪", "WT02": "钉扣", "WT03": "验布"}
 _CHIMA = ("M", "L", "S", "XL", "XXL")
@@ -538,6 +538,7 @@ def _replace(row: RowInsert, payload: dict[str, object]) -> RowInsert:
 _PAYLOAD_KEY_ALIAS: dict[tuple[str, str], str] = {
     ("mock_barcode", "detail_id"): "detailId",
     ("mock_barcode_cl", "sl"): "sssl",  # scanned qty lives in sssl, not sl (fhsl)
+    ("mock_employee", "group_id"): "group",
 }
 
 

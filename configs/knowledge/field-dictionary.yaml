@@ -1,7 +1,15 @@
 # 客户 MES 字段字典与产量分语境口径表。
 # 来源口径：docs/product/AI问答对外接口-整理.md 与 docs/product/需求及方案整理.md（客户确认结论）。
 # 本 YAML 为唯一载体（评审 Markdown 已不再维护双份）。
-version: 1
+#
+# 口径状态约定：
+#   confirmed_metrics  —— 已确认口径，可直接参与计算与展示（附确认来源与日期）。
+#   unconfirmed_metrics —— 无数据源/未确认口径；被能力引用时必须产生显式
+#                          unavailable 列状态，禁止渲染为数字。
+# 2026-09-02 客户答复后完成口径关闭（Story 1）：角色枚举、在册人数、Flag 默认、
+# GongziMxQuery Uid 规则、基础数据接口不过滤、交期预警规则均已确认并登记。
+version: 2
+
 common_fields:
   uid: 员工工号
   uname: 姓名
@@ -27,8 +35,8 @@ common_fields:
   check_time: 审核时间
   ischeck: 是否审核（工资明细）
   price: 工价/单价
-  je: 金额（je = sl × price，M9）
-  cp: 次品数（仅手工账，C.5 未确认）
+  je: 金额（je = sl × price）
+  cp: 次品数（仅手工账接口提供，无统一数据源）
   dh: 单号（计划）
   jhdh: 计划单号（计划）
   dddh: 计划单号（制单/吊挂/手工账）
@@ -40,8 +48,8 @@ common_fields:
   ddsl: 订单数量（计划）
   zsl: 总数量（计划）
   paol: 抛量（计划）
-  finish_date: 交货日期
-  zhdate: 下单/制单日期
+  finish_date: 交货日期（交期）
+  zhdate: 下单/制单日期（订单开始日期，交期预警总工期起点）
   state: 单据状态（1=审核）
   cid: 条码 ID
   sffb: 是否分包
@@ -61,17 +69,32 @@ common_fields:
   zhgx: 最后工序
   sfxs: 是否线上
   using_state: 使用中
-  move_admin_role: 移动管理员（01是/02否；「00」限查本人，M19）
-  employeeRule: 分配角色 JSON 数组字符串（展示用途，A.1 待确认）
+  move_admin_role: 移动管理岗位角色（00 员工/01 组长/02 管理/99 老板）
+  employeeRule: 分配角色 JSON 数组字符串（展示用途）
   move_Login: 移动登录权限
   movepassword: 移动登录密码（敏感字段）
   loginUserName: 登录用户绑定
   lpinpai: 品牌（货号）
   jst_huohao: 聚水潭货号（货号）
-  pid: 部门上级
+  pid: 部门上级（车间与部门平级，车间下挂小组）
   sysdept: 系统部门（本厂）
   company: 公司编码
   js: 件数（手工账）
+
+# 角色与权限口径（客户确认，2026-09-02）。
+roles:
+  enumeration:
+    "00": 员工
+    "01": 组长
+    "02": 管理
+    "99": 老板
+  source: /api/system/token 返回 roles 字段（AI问答对外接口 §2.1）；四角色范围见需求及方案整理「客户确认结论」
+  data_range:
+    "00": 本人
+    "01": 所属绑定组
+    "02": 绑定的部门/车间（可跨车间多绑定，登录后由 token 接口返回）
+    "99": 全部
+  note: 业务接口按角色返回已过滤数据；基础数据接口（员工/部门等）不按权限过滤，返回全部数据。
 
 # 同一字段在不同接口语境下的含义；能力实现按此取数，禁止跨语境混用。
 quantity_contexts:
@@ -101,73 +124,96 @@ quantity_contexts:
 confirmed_metrics:
   payroll.amount:
     formula: sl × price
-    source: M9/M18
+    source: 需求及方案整理·实体对应关系（工资=数量×单价）
   payroll.gross_total:
     formula: footer.je_total
-    source: M9/M13
+    source: AI问答对外接口 §8（工资接口 footer 合计）
+  payroll.piece_count:
+    formula: sum(sl)（工资明细窗口内）
+    source: 需求及方案整理·员工功能表（计件件数）
   output.personal:
-    formula: sum(sl)
-    source: M18/C.10 暂定
+    formula: sum(sl)（实收/合格数，次品不计）
+    source: 需求及方案整理「客户确认结论」（个人产量即最终实收数）
   output.order_completed:
     formula: sum(sssl)
-    source: M18/C.10 暂定
+    source: AI问答对外接口 §6.1（制单产量 sssl）
   progress.ratio:
     formula: 已扫码工序数（uid 非空）/ 总工序数
-    source: M6/M18
+    source: 需求及方案整理·管理取数方式（工序进度）
   output.order_plan_qty:
     formula: Plan.zsl / ddsl
-    source: M18 计划量
+    source: AI问答对外接口 §5.1（计划数量）
   output.order_in_progress:
     formula: WskQuery.sl 合计（待扫数量）
-    source: M18/1.5 分语境表
+    source: AI问答对外接口 §9.2（未扫描接口）
   output.participant_count:
     formula: 窗口内有产出的去重 uid 数
     source: 我方定义（口径登记）
   workshop.output_total:
     formula: 按 dept 分组汇总产量
-    source: M16/单层车间 M5
+    source: 需求及方案整理·管理功能表（车间与部门平级，客户确认结论 1）
   workshop.effective_headcount:
     formula: 各车间有产出去重 uid 数
-    source: 我方定义；C.7 在册人数无数据源
+    source: 我方定义（报工人数口径）
   workshop.output_per_capita:
     formula: 车间产量合计 ÷ 有效人数
     source: 我方定义（分母为我方口径）
   workshop.rank:
     formula: 按车间产量倒序编号（1 起）
-    source: 我方定义；M16 聚合
+    source: 我方定义（名次按总产量排序，需求及方案整理·管理功能表）
   payroll.rank_position:
-    formula: 按 GongziJeOrderQuery 返回顺序编号位次
-    source: M7（接口已倒序）
+    formula: 按 GongziJeOrderQuery 返回顺序编号位次（接口已按金额倒序）
+    source: AI问答对外接口 §8.2；客户确认结论·接口与字段口径 3
+  payroll.group_rank:
+    formula: 本人 uid 定位后，按本人所在小组（dept）过滤得到的组内位次
+    source: 需求及方案整理·员工功能表（收入排名）；客户确认结论·接口与字段口径 3
+  payroll.group_size:
+    formula: 按本人所在小组（dept）过滤后的可见列表计数（组内总人数）
+    source: 需求及方案整理·员工功能表（收入排名）
   payroll.package_count:
-    formula: GongziJeOrderQuery 返回的 bs（包数）
-    source: 客户接口返回字段
+    formula: GongziJeOrderQuery 返回的 bs（包数，计件件数口径）
+    source: AI问答对外接口 §8.2
   payroll.gross_by_dept:
     formula: 按 dept 分组的 je 合计
-    source: M9
-  payroll.output_headcount:
-    formula: 工资行内有产出去重 uid 数
-    source: 我方定义；C.7 在册人数无数据源
-  order.overdue_status:
-    formula: finish_date 与当前日期直接比较（已逾期/未逾期）
-    source: K4（不实现预警阈值与等级）
+    source: 需求及方案整理·老板全厂工资取数（应发合计）
+  org.headcount:
+    formula: EmployeeQuery 不传 uid 全量返回，按 dept 汇总计数（在册人数）
+    source: 需求及方案整理·老板全厂工资取数；客户确认结论 4（基础数据接口不按权限过滤，返回全部数据）
+    note: 在职/离职判断字段待真实环境联调复核；当前以全量员工为在册口径。
+  payroll.avg_by_dept:
+    formula: 应发合计 ÷ 在册人数（gross_by_dept ÷ org.headcount）
+    source: 需求及方案整理·老板全厂工资取数（人均工资）
+  time.flag_default:
+    formula: GongziMxQuery Flag 默认 0（按扫描日期），1 为按审核日期
+    source: 需求及方案整理·公共参数约定（工资接口 Flag 口径）
   worktype.current:
     formula: 最大已完成 wsort 的下一道工序
-    source: M6/M18
+    source: 需求及方案整理·管理取数方式（当前工序）
+  delivery.warning:
+    formula: 订单未完工 且 距交期剩余天数 ≤ 预警阈值
+    threshold: max(1, ⌈总工期 × 10%⌉)；总工期 = finish_date − zhdate（订单开始日期）；无可用开始日期时回退固定窗口 7 天（可配置）
+    examples: 总工期 10 天 → 剩余 ≤1 天预警；总工期 30 天 → 剩余 ≤3 天预警
+    source: 需求及方案整理·老板功能表（交期预警）与通用功能（异常数据自动高亮）；阈值默认值经 Story 3 真实数据双跑复核
+    note: fr009 输出 delivery_warning（布尔）与 days_remaining（剩余天数）两列；视觉标红由前端消费，后端不输出 UI 样式。
+
+# 已确认的业务规则（非数值口径）。
+confirmed_rules:
+  gongzi_mx.uid:
+    rule: GongziMxQuery 的 Uid 传空查全部仅限老板（99）权限；管理传空不允许
+    source: 需求及方案整理「客户确认结论」；AI问答对外接口 §8.1（Uid 必填）
+    enforcement: 执行器在业务调用前强制（老板可传空，其余角色必须绑定单一员工）
+  base_data.no_filter:
+    rule: 基础数据接口（员工/部门/货号等）不按权限过滤，返回全部数据；业务数据接口按角色返回已过滤数据
+    source: 需求及方案整理「客户确认结论」（组织与角色权限 4）
+  time_range.max:
+    rule: 时间范围上限近一年，超范围友好提示并终止，不进 MES 调用
+    source: 需求及方案整理「客户确认结论」（API 压力 1）
 
 # 未确认口径：被能力引用时必须产生显式 unavailable 列状态，禁止渲染为数字。
 unconfirmed_metrics:
   quality.defective:
     gap: 仅手工账有 cp 字段，无统一合格/次品数据源
-    source: 第五章 C.5
+    source: 需求及方案整理·未直接映射接口表（次品字段仅手工账提供）
   plan.target_output:
-    gap: 目标产量无数据源（zsl/ddsl/sl 以哪个为准未答复）
-    source: 第五章 C.9
-  org.headcount:
-    gap: 在册人数在职/离职判断字段未答复
-    source: 第五章 C.7
-  production.stage:
-    gap: 量产状态（试产/量产）无数据源
-    source: 第五章 C.8
-  time.flag_default:
-    gap: GongziMxQuery Flag 默认值未定；本期默认 0 并在卡片标注口径
-    source: 第五章 C.12
+    gap: 目标产量/达成率无数据源（功能表未给出取数口径）
+    source: 需求及方案整理 功能表未确认

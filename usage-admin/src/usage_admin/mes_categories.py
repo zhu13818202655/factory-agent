@@ -1,4 +1,4 @@
-"""MES API classification for usage reporting (D1/D5).
+"""MES API classification for usage reporting.
 
 The billing-relevant statistic is the number of customer MES API calls grouped
 by API business category — not by agent capability. The authoritative
@@ -8,8 +8,8 @@ carries the reviewed default mapping so the service behaves correctly when that
 table is not yet migrated, and so tests can run offline.
 
 Categories: ``output`` (产量查询) / ``payroll`` (工资查询) / ``order`` (订单进度)
-/ ``other`` (其余 15 个：认证 3 + 基础数据 9 + 吊挂 3, D5). The four values sum
-to the total MES call count and are displayed side by side (D11).
+/ ``other`` (其余 14 个：认证 2 + 基础数据 9 + 吊挂 3). The four values sum
+to the total MES call count and are displayed side by side.
 """
 
 from __future__ import annotations
@@ -31,9 +31,9 @@ CATEGORY_ORDERING: tuple[str, ...] = (
     CATEGORY_OTHER,
 )
 
-#: Reviewed default mapping (product doc 2.1, from configs/knowledge/apis.yaml).
+#: Reviewed default mapping (from configs/knowledge/apis.yaml).
 #: 产量与进度 (6) -> output; 工资与排名 (2) -> payroll; 生产计划与制单 (4) -> order;
-#: 认证与凭证 (3) + 基础数据 (9) + 吊挂 (3) -> other.
+#: 认证与凭证 (2) + 基础数据 (9) + 吊挂 (3) -> other.
 DEFAULT_OPERATION_CATEGORIES: dict[str, str] = {
     # 产量查询（产量与进度 6）
     "BarcodeClQuery": CATEGORY_OUTPUT,
@@ -50,9 +50,8 @@ DEFAULT_OPERATION_CATEGORIES: dict[str, str] = {
     "SclzdGridPageList": CATEGORY_ORDER,
     "SclzdWorktypeQuery": CATEGORY_ORDER,
     "SclzdBarcodeQuery": CATEGORY_ORDER,
-    # 其他：认证与凭证 (3)
+    # 其他：认证与凭证 (2)
     "SystemToken": CATEGORY_OTHER,
-    "QuerySign": CATEGORY_OTHER,
     "TestPermissions": CATEGORY_OTHER,
     # 其他：基础数据 (9)
     "UserInfoQuery": CATEGORY_OTHER,

@@ -11,7 +11,7 @@ from factory_agent.application.personal import (
     PersonalizationService,
     sanitize_slots,
 )
-from factory_agent.domain import CapabilityId, TenantId, UserId
+from factory_agent.domain import CapabilityId, Role, TenantId, UserId
 from factory_agent.ports import InteractionOwner, TrustedCredential
 from tests.support.personal import (
     InMemoryFavoriteRepository,
@@ -39,24 +39,36 @@ def make_service() -> PersonalizationService:
 def test_quick_questions_derive_from_registered_capabilities() -> None:
     service = make_service()
 
-    questions = service.quick_questions(CREDENTIAL)
+    questions = service.quick_questions(CREDENTIAL, Role.EMPLOYEE)
 
     assert 4 <= len(questions) <= 6
     capabilities = {question.capability_id for question in questions}
-    assert capabilities <= {"FR-001", "FR-002", "FR-007", "FR-009", "FR-011"}
+    # Employees see personal capabilities only.
+    assert capabilities <= {"FR-001", "FR-002", "FR-003", "FR-004"}
     # FR-012 needs an employee name slot, so it must not be a one-click question.
     assert "FR-012" not in capabilities
     assert all(question.capability_id for question in questions)
 
 
-def test_quick_questions_are_not_role_hardcoded() -> None:
+def test_quick_questions_are_role_aware() -> None:
     service = make_service()
-    boss = TrustedCredential(tenant_id=TENANT, user_id=UserId("boss"))
+    owner = TrustedCredential(tenant_id=TENANT, user_id=UserId("boss"))
     employee = TrustedCredential(tenant_id=TENANT, user_id=UserId("worker"))
 
-    assert {q.capability_id for q in service.quick_questions(boss)} == {
-        q.capability_id for q in service.quick_questions(employee)
+    owner_capabilities = {q.capability_id for q in service.quick_questions(owner, Role.OWNER)}
+    employee_capabilities = {
+        q.capability_id for q in service.quick_questions(employee, Role.EMPLOYEE)
     }
+
+    assert owner_capabilities != employee_capabilities
+    assert "FR-009" in owner_capabilities
+    assert "FR-009" not in employee_capabilities
+
+
+def test_quick_questions_without_role_return_empty() -> None:
+    service = make_service()
+
+    assert service.quick_questions(CREDENTIAL, None) == []
 
 
 def test_sanitize_slots_keeps_only_non_sensitive_fields() -> None:
@@ -194,5 +206,8 @@ async def test_user_mapping_roundtrip_and_tenant_scoping() -> None:
 
 def test_quick_questions_require_an_authenticated_credential() -> None:
     service = make_service()
-    assert service.quick_questions(TrustedCredential(tenant_id=TENANT, user_id=USER))
-    assert service.quick_questions(TrustedCredential(tenant_id=TENANT, user_id=USER)) != []
+    assert service.quick_questions(TrustedCredential(tenant_id=TENANT, user_id=USER), Role.EMPLOYEE)
+    assert (
+        service.quick_questions(TrustedCredential(tenant_id=TENANT, user_id=USER), Role.EMPLOYEE)
+        != []
+    )

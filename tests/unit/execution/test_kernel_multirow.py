@@ -15,7 +15,7 @@ import pytest
 
 from factory_agent.application.filters import NarrowedFilters
 from factory_agent.data_api.catalog import load_catalog
-from factory_agent.domain import CapabilityId, EmployeeId, TenantId, TimeRange
+from factory_agent.domain import CapabilityId, DeptId, EmployeeId, TenantId, TimeRange
 from factory_agent.execution.executor import ExecutionRequest
 from factory_agent.execution.kernel import KernelCapabilityRunner, KernelSettings
 from factory_agent.execution.recipes import load_recipes
@@ -30,7 +30,10 @@ _PLAN_ROWS: tuple[dict[str, Any], ...] = (
         "khddh": "KHDD-1",
         "huohao": "HH001",
         "huohaoname": "模拟款A",
+        "khname": "客户甲",
         "zsl": "100",
+        "ddsl": "100",
+        "zhdate": "2026-07-01",
         "finish_date": "2026-07-31",
         "dept": "dept-a1",
     },
@@ -40,7 +43,10 @@ _PLAN_ROWS: tuple[dict[str, Any], ...] = (
         "khddh": "KHDD-2",
         "huohao": "HH001",
         "huohaoname": "模拟款A",
+        "khname": "客户乙",
         "zsl": "50",
+        "ddsl": "50",
+        "zhdate": "2026-09-01",
         "finish_date": "2026-09-30",
         "dept": "dept-a2",
     },
@@ -128,15 +134,21 @@ class FakeMultiRowExecutor:
                     "uname": "模拟员工甲",
                     "dept": "dept-a1",
                     "bs": "5",
-                    "je": "21.65",
+                    "je": "20.00",
                 },
                 {
                     "uid": "01002",
-                    "uname": "模拟员工甲",
+                    "uname": "模拟员工乙",
                     "dept": "dept-a2",
                     "bs": "1",
                     "je": "3.75",
                 },
+            )
+        elif operation == "EmployeeQuery":
+            rows = (
+                {"uid": "01001", "uname": "模拟员工甲", "dept": "dept-a1"},
+                {"uid": "01003", "uname": "模拟员工丙", "dept": "dept-a1"},
+                {"uid": "01002", "uname": "模拟员工乙", "dept": "dept-a2"},
             )
         else:
             rows = ()
@@ -214,7 +226,7 @@ async def test_fr005_binds_order_filter_into_local_compute() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fr009_overdue_status_uses_today() -> None:
+async def test_fr009_delivery_warning_uses_today_and_threshold() -> None:
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
@@ -225,9 +237,16 @@ async def test_fr009_overdue_status_uses_today() -> None:
         )
     )
     rows = {row[0]: row for row in result.rows}
-    # PLAN-1 finish 2026-07-31 < today 2026-08-21 -> 已逾期; PLAN-2 -> 未逾期.
-    assert rows["PLAN-1"][5] == "已逾期"
-    assert rows["PLAN-2"][5] == "未逾期"
+    # Columns: order_code, huohao, customer_name, plan_qty, completed_qty,
+    # progress_ratio, delivery_warning, days_remaining.
+    # PLAN-1: finish 2026-07-31 already passed (today 2026-08-21), unfinished
+    # (13 < 100) -> warning '1', days_remaining negative.
+    assert rows["PLAN-1"][6] == "1"
+    assert int(str(rows["PLAN-1"][7])) < 0
+    # PLAN-2: finish 2026-09-30 is 40 days away, beyond the 3-day threshold
+    # (总工期 29 天 -> max(1, ceil(2.9)) = 3) -> no warning.
+    assert rows["PLAN-2"][6] == "0"
+    assert int(str(rows["PLAN-2"][7])) == 40
 
 
 @pytest.mark.asyncio
@@ -254,7 +273,7 @@ async def test_fr009_fanout_call_budget_exhausted_is_structured() -> None:
     # the compute still runs against an empty progress table and reports
     # unavailable progress rather than fabricating a number.
     assert len(result.rows) >= 1
-    assert all(row[4] == UNAVAILABLE_VALUE for row in result.rows)
+    assert all(row[5] == UNAVAILABLE_VALUE for row in result.rows)
 
 
 def _resource_columns() -> dict[str, tuple[str, ...]]:
@@ -290,7 +309,14 @@ async def test_unavailable_metric_columns_surface_sentinel_not_number() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fr011_groups_payroll_by_dept_with_unavailable_headcount() -> None:
+async def test_fr011_groups_payroll_by_dept_with_confirmed_headcount() -> None:
+    """FR-011 修订：在册人数来自 EmployeeQuery 全量，人均工资 = 应发合计 ÷ 在册.
+
+    The fake executor returns two dept-a1 employees (01001, 01003) and one
+    dept-a2 employee (01002) for EmployeeQuery, and je 20.00 / 3.75 for the
+    two departments — so headcount and avg_wage are confirmed numbers, never
+    the ``unavailable`` sentinel.
+    """
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
@@ -300,10 +326,51 @@ async def test_fr011_groups_payroll_by_dept_with_unavailable_headcount() -> None
             time_range=_range(),
         )
     )
-    for row in result.rows:
-        # headcount (C.7) and avg_wage are unavailable, never zeros.
-        assert row[3] == UNAVAILABLE_VALUE
-        assert row[4] == UNAVAILABLE_VALUE
+    by_dept = {row[0]: dict(zip(result.column_names, row)) for row in result.rows}
+    assert set(by_dept) == {"一车间", "二车间"}
+    a1 = by_dept["一车间"]
+    assert a1["gross_total"] == Decimal("20.00")
+    assert a1["headcount"] == Decimal("2")  # 在册人数 = EmployeeQuery 全员口径
+    assert a1["avg_wage"] == Decimal("10.00")  # 20.00 ÷ 2
+    a2 = by_dept["二车间"]
+    assert a2["gross_total"] == Decimal("3.75")
+    assert a2["headcount"] == Decimal("1")
+    assert a2["avg_wage"] == Decimal("3.75")
+
+
+@pytest.mark.asyncio
+async def test_fr004_group_income_rank_locates_own_row_and_group() -> None:
+    """FR-004 收入排名：MES 返回可见列表后按本人工号定位、按组过滤组内名次.
+
+    Fake visible ranking: 01001 (dept-a1, 20.00) above 01002 (dept-a2, 3.75).
+    The caller 01001 self_dept=dept-a1 → group_size counts dept-a1 peers only;
+    only the caller's own result row is emitted.
+    """
+    executor = FakeMultiRowExecutor()
+    runner = _runner(executor)
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr004_group_income_rank"),
+            filters=NarrowedFilters(
+                tenant_id=TenantId("APPKEY-A"),
+                employee_ids=frozenset({EmployeeId("01001")}),
+                dept_ids=frozenset({DeptId("dept-a1")}),
+            ),
+            time_range=_range(),
+        )
+    )
+    assert result.column_names == (
+        "rank_position",
+        "amount",
+        "group_rank",
+        "group_size",
+    )
+    assert len(result.rows) == 1  # 仅展示本人结果
+    own = dict(zip(result.column_names, result.rows[0]))
+    assert str(own["rank_position"]) == "1"
+    assert Decimal(str(own["amount"])) == Decimal("20.00")
+    assert str(own["group_rank"]) == "1"
+    assert str(own["group_size"]) == "1"
 
 
 @pytest.mark.asyncio

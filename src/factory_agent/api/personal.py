@@ -1,43 +1,30 @@
 """Quick questions, history, favorites, and minimal user-mapping endpoints.
 
-Identity never comes from the request body; the trusted gateway headers are the
-only credential source (same as the session endpoints). History and favorites
-are ownership-filtered by the trusted ``(tenant_id, user_id)`` pair.
+Identity never comes from the request body; it is resolved by the token
+exchange (see ``factory_agent.api.identity``). History and favorites are
+ownership-filtered by the trusted ``(tenant_id, user_id)`` pair. Quick
+questions are role-aware: the role is the authoritative token role.
 """
 
 from __future__ import annotations
 
 from typing import cast
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from factory_agent.api.identity import resolve_credential
+from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.application.personal import (
     FavoriteNotFoundError,
     PersonalizationService,
 )
 from factory_agent.bootstrap import ApplicationContainer
-from factory_agent.domain import CapabilityId, TenantId, UserId
+from factory_agent.domain import CapabilityId
 from factory_agent.ports import InteractionOwner, TrustedCredential
 from factory_agent.ports.personal import Favorite
 
 personal_router = APIRouter(prefix="/v1", tags=["personal"])
-
-TENANT_HEADER = "X-Factory-Tenant-Id"
-USER_HEADER = "X-Factory-User-Id"
-
-
-def _credential(tenant_id: str | None, user_id: str | None) -> TrustedCredential:
-    if not tenant_id or not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="trusted identity headers are missing"
-        )
-    try:
-        return TrustedCredential(tenant_id=TenantId(tenant_id), user_id=UserId(user_id))
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="trusted identity headers are invalid"
-        ) from exc
 
 
 def _owner(credential: TrustedCredential) -> InteractionOwner:
@@ -113,13 +100,21 @@ def _not_found() -> HTTPException:
 
 
 @personal_router.get("/quick-questions", response_model=list[QuickQuestionView])
-async def quick_questions(
-    request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias="X-Factory-Tenant-Id"),
-    x_factory_user_id: str | None = Header(default=None, alias="X-Factory-User-Id"),
-) -> list[QuickQuestionView]:
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
-    questions = _personal(request).quick_questions(credential)
+async def quick_questions(request: Request) -> list[QuickQuestionView]:
+    container = _container(request)
+    credential, principal = await resolve_credential(request)
+    # The role is authoritative: prefer the token principal, and fall back to
+    # resolving authorization (degraded header mode) when no principal exists.
+    role = principal.role if principal is not None else None
+    if role is None:
+        try:
+            authorization = await container.authorization.authorize(
+                credential, container.clock.now()
+            )
+            role = authorization.tenant_context.role
+        except IdentityRejectionError:
+            role = None
+    questions = _personal(request).quick_questions(credential, role)
     return [
         QuickQuestionView(
             id=question.id,
@@ -136,10 +131,8 @@ async def list_history(
     request: Request,
     limit: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
-    x_factory_tenant_id: str | None = Header(default=None, alias="X-Factory-Tenant-Id"),
-    x_factory_user_id: str | None = Header(default=None, alias="X-Factory-User-Id"),
 ) -> HistoryPageView:
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     page = await _personal(request).list_history(_owner(credential), limit, cursor)
     return HistoryPageView(
         items=[
@@ -160,10 +153,8 @@ async def list_history(
 async def delete_history(
     history_id: str,
     request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias="X-Factory-Tenant-Id"),
-    x_factory_user_id: str | None = Header(default=None, alias="X-Factory-User-Id"),
 ) -> None:
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     deleted = await _personal(request).delete_history(_owner(credential), history_id)
     if not deleted:
         raise _not_found()
@@ -175,10 +166,8 @@ async def delete_history(
 async def create_favorite(
     body: FavoriteCreateRequest,
     request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias="X-Factory-Tenant-Id"),
-    x_factory_user_id: str | None = Header(default=None, alias="X-Factory-User-Id"),
 ) -> FavoriteView:
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     now = _container(request).clock.now()
     try:
         favorite = await _personal(request).create_favorite(
@@ -197,10 +186,8 @@ async def create_favorite(
 async def list_favorites(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
-    x_factory_tenant_id: str | None = Header(default=None, alias="X-Factory-Tenant-Id"),
-    x_factory_user_id: str | None = Header(default=None, alias="X-Factory-User-Id"),
 ) -> list[FavoriteView]:
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     favorites = await _personal(request).list_favorites(_owner(credential), limit)
     return [_favorite_view(favorite) for favorite in favorites]
 
@@ -209,10 +196,8 @@ async def list_favorites(
 async def delete_favorite(
     favorite_id: str,
     request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias="X-Factory-Tenant-Id"),
-    x_factory_user_id: str | None = Header(default=None, alias="X-Factory-User-Id"),
 ) -> None:
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     deleted = await _personal(request).delete_favorite(_owner(credential), favorite_id)
     if not deleted:
         raise _not_found()
@@ -222,10 +207,8 @@ async def delete_favorite(
 async def reask_favorite(
     favorite_id: str,
     request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias="X-Factory-Tenant-Id"),
-    x_factory_user_id: str | None = Header(default=None, alias="X-Factory-User-Id"),
 ) -> FavoriteView:
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     try:
         favorite = await _personal(request).reask_favorite(_owner(credential), favorite_id)
     except FavoriteNotFoundError as exc:
@@ -237,10 +220,8 @@ async def reask_favorite(
 async def save_user_mapping(
     body: UserMappingRequest,
     request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias="X-Factory-Tenant-Id"),
-    x_factory_user_id: str | None = Header(default=None, alias="X-Factory-User-Id"),
 ) -> UserMappingView:
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     now = _container(request).clock.now()
     await _personal(request).save_mapping(
         uid=str(credential.user_id),

@@ -1,10 +1,20 @@
 """Authorization-aware cache with scope fingerprints and versioned keys.
 
-Redis is only an optimization. Every key carries the tenant, an irreversible
-scope fingerprint (consuming ``DataScope.scope_version``), the canonical
-parameters, and the contract/metric/data versions. A cache line is returned
-only when the caller can prove the exact same scope; on store errors, unknown
-versions, or unprovable scopes the cache falls back to the source of truth.
+Redis is only an optimization. Every business key carries the tenant, an
+irreversible scope fingerprint (consuming ``DataScope.scope_version``), the
+canonical parameters, and the contract/metric/data versions. A cache line is
+returned only when the caller can prove the exact same scope; on store errors,
+unknown versions, or unprovable scopes the cache falls back to the source of
+truth.
+
+Base-data exception (Story 1): the master-data interfaces (employee /
+department / huohao …) return the full roster regardless of the calling role
+(customer confirmation 4), so their cache lines live in the ``identity_org``
+domain under a single shared fingerprint — no scope fingerprint in the key.
+Any role's first query populates the shared line and every later role reuses
+it; no super-account or dedicated channel is required. Bumping the data
+version (Mock rebuild / master-data change) or calling
+``invalidate_base_data`` evicts the shared lines.
 """
 
 from __future__ import annotations
@@ -13,22 +23,31 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import asdict, dataclass, field
+from typing import Any, cast
 
 from factory_agent.domain import DataScope, TenantId
 from factory_agent.ports import CacheStore
 
-#: Cache domains and their short TTLs (seconds). All TTLs are conservative
-#: placeholders to be confirmed by load testing; performance is not a gate.
+#: Cache domains and their TTLs (seconds). Business domains stay short; the
+#: base-data ``identity_org`` domain refreshes daily because master data is
+#: role-independent and changes rarely. TTLs are conservative placeholders to
+#: be confirmed by real-data review; performance is not a gate.
 CACHE_DOMAINS: tuple[str, ...] = ("identity_org", "order_progress", "output", "payroll")
 
 DEFAULT_TTL_BY_DOMAIN: dict[str, int] = {
-    "identity_org": 300,
+    "identity_org": 86400,
     "order_progress": 120,
     "output": 60,
     "payroll": 60,
 }
+
+#: Domains whose data is role-independent full-roster master data. Their keys
+#: use a shared fingerprint instead of a scope fingerprint.
+SCOPELESS_DOMAINS: frozenset[str] = frozenset({"identity_org"})
+
+#: Fingerprint used for scope-free base-data cache lines.
+SHARED_SCOPE_FINGERPRINT = "shared"
 
 KEY_PREFIX = "fa"
 
@@ -172,6 +191,16 @@ class AuthAwareCache:
         except Exception:  # noqa: BLE001
             self._stats.record_miss("identity_org", "store_unavailable")
 
+    async def invalidate_base_data(self, tenant_id: TenantId) -> None:
+        """Manual invalidation entry for the shared base-data lines.
+
+        Called after a Mock PG rebuild or a customer master-data change so the
+        next query re-fetches the full roster instead of a stale headcount or
+        department structure. Only the scope-free ``identity_org`` lines are
+        evicted; business caches keep their own short TTLs.
+        """
+        await self.invalidate_scope(tenant_id, SHARED_SCOPE_FINGERPRINT)
+
     async def purge_all(self) -> None:
         """Evict every cache line (contract/metric/sensitive classification change)."""
         try:
@@ -182,6 +211,91 @@ class AuthAwareCache:
     def _require_domain(self, domain: str) -> None:
         if domain not in CACHE_DOMAINS:
             raise UnknownCacheDomainError(f"unknown cache domain {domain!r}")
+
+
+class CachedDirectorySource:
+    """Scope-free base-data cache in front of a directory source.
+
+    Implements both the ``DirectoryResolver`` and ``OrganizationSource`` ports.
+    The full-roster department/employee lookups (role-independent per customer
+    confirmation 4) are cached in the ``identity_org`` domain under the shared
+    fingerprint, so whichever role queries first populates the line and every
+    later role reuses it without re-fetching. Per-employee current-dept
+    resolution is role-specific and is never cached here. Every cache failure
+    falls back to the wrapped source.
+    """
+
+    def __init__(self, inner: Any, cache: AuthAwareCache) -> None:
+        self._inner = inner
+        self._cache = cache
+
+    async def list_depts(self, scope: DataScope) -> tuple[Any, ...]:
+        return await self._cached_roster(
+            scope.tenant_id, "depts", lambda: self._inner.list_depts(scope)
+        )
+
+    async def list_employees(self, scope: DataScope) -> tuple[Any, ...]:
+        return await self._cached_roster(
+            scope.tenant_id, "employees", lambda: self._inner.list_employees(scope)
+        )
+
+    async def list_current_depts(self, tenant_id: TenantId, employee_id: Any) -> tuple[Any, ...]:
+        return await self._inner.list_current_depts(tenant_id, employee_id)
+
+    async def _cached_roster(self, tenant_id: TenantId, op: str, fetch: Any) -> tuple[Any, ...]:
+        params = {"op": op}
+        lookup = await self._cache.get("identity_org", tenant_id, SHARED_SCOPE_FINGERPRINT, params)
+        if lookup.value is not None:
+            records = _decode_records(lookup.value)
+            if records is not None:
+                return records
+        records = await fetch()
+        await self._cache.put(
+            "identity_org", tenant_id, SHARED_SCOPE_FINGERPRINT, params, _encode_records(records)
+        )
+        return records
+
+
+def _encode_records(records: Any) -> bytes:
+    payload = [asdict(record) for record in records]
+    return json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
+
+
+def _decode_records(raw: bytes) -> tuple[Any, ...] | None:
+    """Rebuild cached directory records without importing vendor shapes.
+
+    Returns ``None`` on any decode problem so the caller falls back to the
+    source of truth instead of surfacing a corrupt line.
+    """
+    from factory_agent.ports.directory import DeptRecord, EmployeeRecord
+
+    try:
+        payload: object = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, list):
+            return None
+        entries = cast("list[object]", payload)
+        records: list[DeptRecord | EmployeeRecord] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return None
+            item = cast(dict[str, str], entry)
+            if "dept_id" in item:
+                records.append(
+                    DeptRecord(dept_id=item["dept_id"], name=item["name"], name_pk=item["name_pk"])
+                )
+            elif "employee_id" in item:
+                records.append(
+                    EmployeeRecord(
+                        employee_id=item["employee_id"],
+                        name=item["name"],
+                        name_pk=item["name_pk"],
+                    )
+                )
+            else:
+                return None
+        return tuple(records)
+    except Exception:  # noqa: BLE001 - corrupt cache falls back to source
+        return None
 
 
 def _canonical_digest(params: Mapping[str, object]) -> str:
@@ -198,9 +312,12 @@ def _json_default(value: Any) -> str:
 __all__ = [
     "CACHE_DOMAINS",
     "AuthAwareCache",
+    "CachedDirectorySource",
     "CacheLookup",
     "CachePolicy",
     "CacheStats",
     "DEFAULT_TTL_BY_DOMAIN",
+    "SCOPELESS_DOMAINS",
+    "SHARED_SCOPE_FINGERPRINT",
     "UnknownCacheDomainError",
 ]

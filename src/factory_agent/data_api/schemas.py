@@ -6,7 +6,8 @@ never leak past ``data_api/``.
 
 Models mirror the customer envelope ``{code, message, result,
 timestamp}`` and the list shell ``result.{list, total}`` with optional
-``result.footer`` (M13/M14).
+``result.footer`` (pagination walks to ``result.total``; the envelope ``code``
+is judged only as 1/0 — see ``docs/product/AI问答对外接口-整理.md`` §1).
 """
 
 # Customer field names intentionally preserve mixed casing from the upstream API.
@@ -16,11 +17,11 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class MesEnvelope(BaseModel):
-    """Customer response envelope; ``code`` is only 0 or 1 (M14)."""
+    """Customer response envelope; ``code`` is only 0 or 1."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -31,7 +32,7 @@ class MesEnvelope(BaseModel):
 
 
 class ListResult(BaseModel):
-    """List shell inside ``result``: list + total, optional footer (M13)."""
+    """List shell inside ``result``: list + total, optional footer."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -40,8 +41,24 @@ class ListResult(BaseModel):
     footer: dict[str, str] | None = None
 
 
+def _normalize_role_codes(value: object) -> object:
+    """The customer returns ``roles`` as a single code string ("00".."99");
+    tolerate a list form as well so both shapes validate."""
+    if isinstance(value, str):
+        return (value,) if value else ()
+    return value
+
+
 class CredentialBundleResponse(BaseModel):
-    """Validated ``/api/system/token`` result (M1/M2/M11/M15)."""
+    """Validated ``/api/system/token`` result.
+
+    Contract source: ``docs/product/AI问答对外接口-整理.md`` §2.1. ``roles``
+    is the authoritative role code (00 员工 / 01 组长 / 02 管理 / 99 老板);
+    ``dept`` is the bound department. ``boundDepts`` carries the full bound
+    department/workshop set when the MES returns multiple bindings (managers
+    may bind across workshops; the single-``dept`` fallback applies
+    otherwise — 绑定集合的多值形态待真实环境联调确认，Mock 按决策点先行).
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -51,12 +68,19 @@ class CredentialBundleResponse(BaseModel):
     expiresAt: str
     user: str
     uname: str
-    loginUserName: str
+    dept: str = ""
+    loginUserName: str = ""
     appkey: str
     sign: str
     timestamp: int
     roles: tuple[str, ...] = ()
+    boundDepts: tuple[str, ...] = ()
     permissions: tuple[str, ...] = ()
+
+    @field_validator("roles", mode="before")
+    @classmethod
+    def _roles_from_code(cls, value: object) -> object:
+        return _normalize_role_codes(value)
 
 
 class _CustomerRow(BaseModel):

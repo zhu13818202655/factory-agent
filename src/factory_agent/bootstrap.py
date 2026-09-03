@@ -11,7 +11,7 @@ from factory_agent.application.authorization import (
     FixedScopeVersionAssigner,
 )
 from factory_agent.application.business_filters import BusinessFilterResolver
-from factory_agent.application.cache import AuthAwareCache
+from factory_agent.application.cache import AuthAwareCache, CachedDirectorySource
 from factory_agent.application.capabilities import CapabilityRegistry
 from factory_agent.application.capability_map import default_capability_catalog
 from factory_agent.application.filters import FilterNarrower
@@ -23,11 +23,16 @@ from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
 from factory_agent.data_api.directory import MesDirectorySource
-from factory_agent.data_api.hongzhao import HongzhaoMesAdapter
+from factory_agent.data_api.hongzhao import AdapterSettings, HongzhaoMesAdapter
 from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE
+from factory_agent.data_api.token_gateway import (
+    GatewayTokenRefresher,
+    TokenBackedMembershipResolver,
+    TokenCredentialExchange,
+)
 from factory_agent.domain import DeptId, EmployeeId, MesError, TenantId, UserId
 from factory_agent.execution.executor import ScopedExecutor
-from factory_agent.execution.kernel import KernelCapabilityRunner
+from factory_agent.execution.kernel import KernelCapabilityRunner, KernelSettings
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import default_metric_registry
 from factory_agent.export_service import ExportService, S3ArtifactStore
@@ -90,6 +95,7 @@ class DependencyOverrides:
     personalization: PersonalizationService | None = None
     new_id: Callable[[], str] | None = None
     mes_call_recorder: MesCallRecorder | None = None
+    credential_exchange: TokenCredentialExchange | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +116,7 @@ class ApplicationContainer:
     artifact_exporter: ArtifactExporter | None = None
     personalization: PersonalizationService | None = None
     cache: AuthAwareCache | None = None
+    credential_exchange: TokenCredentialExchange | None = None
     readiness: dict[str, str] = field(default_factory=lambda: {})
 
 
@@ -120,6 +127,10 @@ def build_container(
     # One shared recorder feeds the MES adapter and the metering context; the
     # session pipeline drains it at each commit.
     mes_recorder: MesCallRecorder = supplied.mes_call_recorder or ContextVarMesCallRecorder()
+    # The token gateway exchanges the caller's encrypted app_key at
+    # /api/system/token and owns the live bundles. It exists exactly when a
+    # canonical MES base URL is configured (single adapter, no second impl).
+    credential_exchange: TokenCredentialExchange | None = supplied.credential_exchange
     if supplied.mes is not None:
         mes = supplied.mes
         mes_status = "fake"
@@ -129,10 +140,15 @@ def build_container(
             if settings.postgres_url is not None
             else None
         )
+        if credential_exchange is None:
+            credential_exchange = TokenCredentialExchange(
+                str(settings.canonical_mes_base_url),
+                refresh_threshold_seconds=settings.mes_token_refresh_threshold_seconds,
+            )
         mes = HongzhaoMesAdapter(
             str(settings.canonical_mes_base_url),
-            # Placeholder bundle for readiness; real credentials are injected
-            # by the frontend credential bundle at the API boundary, never here.
+            # Placeholder bundle for readiness; the live per-caller bundle is
+            # bound by the token gateway at the API boundary, never here.
             MesCredentialBundle(  # nosec B106 - placeholder, no real secret
                 access_token="unconfigured",
                 app_key="unconfigured",
@@ -143,6 +159,11 @@ def build_container(
                 uname="unconfigured",
             ),
             load_catalog(),
+            refresher=GatewayTokenRefresher(credential_exchange),
+            settings=AdapterSettings(
+                refresh_threshold_seconds=settings.mes_token_refresh_threshold_seconds,
+                timestamp_ttl_seconds=settings.mes_timestamp_ttl_seconds,
+            ),
             recorder=mes_recorder,
             tenant_registry=tenant_registry,
         )
@@ -173,7 +194,7 @@ def build_container(
             model_status = "not_configured"
 
     clock = supplied.clock or SystemClock()
-    capability_runner = _build_capability_runner(supplied, mes)
+    capability_runner = _build_capability_runner(supplied, mes, settings)
     artifact_store, exporter = _build_export_service(supplied, settings, clock)
 
     if supplied.interactions is not None:
@@ -188,7 +209,11 @@ def build_container(
         interactions_status = "not_configured"
 
     readiness = {
-        "identity": "fake" if supplied.identity is not None else "not_configured",
+        "identity": (
+            "configured"
+            if credential_exchange is not None
+            else ("fake" if supplied.identity is not None else "not_configured")
+        ),
         "mes": mes_status,
         "model": model_status,
         "sessions": "fake" if supplied.sessions is not None else "not_configured",
@@ -199,17 +224,31 @@ def build_container(
         "redis": "configured" if settings.redis_url is not None else "not_configured",
         "export": "configured" if exporter is not None else "not_configured",
     }
-    directory = (
+    directory: MesDirectorySource | CachedDirectorySource | None = (
         MesDirectorySource(mes, load_catalog()) if isinstance(mes, HongzhaoMesAdapter) else None
     )
+    # Base-data caching: the full-roster department/employee lookups are
+    # role-independent, so they are cached under a shared (scope-free) key and
+    # reused across roles. Built before the membership/authorization wiring so
+    # both the directory resolver and the organization source share the cache.
+    cache = _build_cache(settings)
+    if directory is not None and cache is not None:
+        directory = CachedDirectorySource(directory, cache)
+    # Membership comes from the token gateway when it is configured: the
+    # authoritative role and bound departments are token fields, so
+    # authorization completes before any business-data call.
+    membership_source = (
+        TokenBackedMembershipResolver(credential_exchange)
+        if credential_exchange is not None
+        else _UnresolvedMemberships()
+    )
     authorization = supplied.authorization or AuthorizationService(
-        memberships=_UnresolvedMemberships(),
+        memberships=membership_source,
         organizations=directory or _UnresolvedOrganizations(),
         versions=FixedScopeVersionAssigner(),
     )
     business_filters = BusinessFilterResolver(directory) if directory is not None else None
     personalization = _build_personalization(supplied, settings, clock)
-    cache = _build_cache(settings)
     return ApplicationContainer(
         settings=settings,
         capabilities=CapabilityRegistry(),
@@ -226,6 +265,7 @@ def build_container(
         artifact_exporter=exporter,
         personalization=personalization,
         cache=cache,
+        credential_exchange=credential_exchange,
         sessions_service=_build_session_service(
             settings,
             supplied,
@@ -237,6 +277,7 @@ def build_container(
             exporter,
             business_filters,
             personalization,
+            credential_exchange,
         ),
         readiness=readiness,
     )
@@ -290,6 +331,7 @@ def _build_session_service(
     exporter: ArtifactExporter | None,
     business_filters: BusinessFilterResolver | None,
     personalization: PersonalizationService | None = None,
+    credential_exchange: TokenCredentialExchange | None = None,
 ) -> SessionService | None:
     """Only compose the session pipeline when its dependencies exist."""
     if interactions is None or capability_runner is None:
@@ -319,12 +361,15 @@ def _build_session_service(
         ),
         exporter=exporter,
         personalization=personalization,
+        credential_binder=credential_exchange,
+        time_range_max_days=settings.time_range_max_days,
     )
 
 
 def _build_capability_runner(
     supplied: DependencyOverrides,
     mes: MesDataSource[Any, Any],
+    settings: FactoryAgentSettings,
 ) -> CapabilityRunner | None:
     """Compose the reviewed kernel runner over a real Hongzhao adapter only.
 
@@ -349,6 +394,10 @@ def _build_capability_runner(
         executor,
         recipes,
         default_metric_registry(),
+        settings=KernelSettings(
+            delivery_warning_ratio_percent=settings.delivery_warning_ratio_percent,
+            delivery_warning_fallback_days=settings.delivery_warning_fallback_days,
+        ),
         resource_columns=resource_columns,
     )
 

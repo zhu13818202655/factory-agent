@@ -1,15 +1,17 @@
 # Reviewed L1 output recipe. File changes are semantics changes and
 # require human review.
 #
-# FR-001 个人产量统计: personal output grouped by date x 货号 x 工序.
-# Data source is GongziMxQuery (Type=0,1,2 three-source merge, M18) with Uid
-# scope-sourced from the credential; the quantity column is `sl` (个人产量/工资
-# 语境以 sl 为准, 1.5 分语境表).
+# 口径来源：``docs/product/需求及方案整理.md`` 员工功能表与「客户确认结论」、
+# ``docs/product/AI问答对外接口-整理.md`` §8。
 #
-# 合格/次品数量 (defective_qty) has no unified source (C.5): only the manual
-# PinFeng source carries `cp`. The merged wage view cannot attribute cp per
-# row, so the column is bound to the unavailable `quality_defective` metric and
-# every renderer shows 暂无数据源 instead of a fabricated number.
+# FR-001 个人产量统计: personal output grouped by date x 货号 x 工序.
+# Data source is GongziMxQuery (Type=0,1,2 三来源合并) with Uid scope-sourced
+# from the credential; the quantity column is `sl`（客户确认：个人产量即实收数
+# （合格数），次品不计）.
+#
+# 次品数量 (defective_qty) 无统一数据源：仅手工账接口含次品字段
+# （需求及方案整理·未直接映射接口表）。合并工资视图无法逐行归属次品，
+# 该列绑定 unavailable 指标，渲染为"暂无数据源"，不伪造数字。
 version: 1
 capabilities:
   - capability_id: fr001_personal_output
@@ -57,5 +59,5 @@ capabilities:
         unit: 件
     metric_versions:
       output_personal: customer-output-v1
-      quality_defective: unavailable-c5
+      quality_defective: unavailable-defective-v1
     degradation: incomplete_marker

@@ -1,9 +1,12 @@
 # Reviewed L1 order output recipe. File changes are semantics changes
 # and require human review.
 #
+# 口径来源：``docs/product/需求及方案整理.md`` 管理功能表与「客户确认结论」、
+# ``docs/product/AI问答对外接口-整理.md`` §7。
+#
 # FR-006 订单/款号产量: HuohaoWtCLQuery (scheme=货号工序, 必填) 按「货号×工序」
 # 汇总产量，合计以 footer.sl_total 为准；参与人数由 BarcodeClQuery 按 uid 去重
-# 计算（M16 聚合，登记为 output_participant_count 我方定义口径）。同一行
+# 计算（我方定义口径 output_participant_count）。同一行
 # BarcodeCl 明细既是计件工资来源之一，也是参与人数去重的依据，因此跨来源不会
 # 重复累计产量（产量只取 HuohaoWtCL 的 sssl）。
 #

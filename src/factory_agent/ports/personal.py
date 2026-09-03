@@ -18,7 +18,7 @@ from factory_agent.domain import CapabilityId, TenantId, UserId
 
 @dataclass(frozen=True, slots=True)
 class UserMapping:
-    """Minimal ``uid`` ↔ ``uname``/``company`` mapping (M20).
+    """Minimal ``uid`` ↔ ``uname``/``company`` mapping.
 
     Stored for session continuity and history display only. It must never enter
     an LLM prompt or a usage event.

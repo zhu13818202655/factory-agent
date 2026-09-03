@@ -8,12 +8,12 @@ Registry semantics:
 - ``parameter_sources`` gains the ``credential`` category: those parameters may
   only originate from ``MesCredentialBundle`` (app_key/timestamp/sign), never
   from filters or model output.
-- ``enabled: false`` operations (MoveMenuQuery, K7) load but are rejected at
+- ``enabled: false`` operations (MoveMenuQuery) load but are rejected at
   runtime before any HTTP traffic.
 - ``required_params`` are validated at load time against the customer contract
   (e.g. GongziMxQuery.Type/scheme, WorktypeProgressQuery.userid).
 - Pagination is ``list_total``: walk pages until accumulated rows reach
-  ``result.total`` (M13).
+  ``result.total``.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ DEFAULT_CATALOG_PATH = Path("configs/knowledge/apis.yaml")
 
 ParameterSource = Literal["credential", "scope", "filter", "clock"]
 PaginationKind = Literal["none", "list_total"]
-#: MES 调用统计的计费分类（D1/D5）。能力分类 ≠ API 分类（R2），该字段只在
+#: MES 调用统计的计费分类（口径见 usage-admin/docs/API.md）。能力分类 ≠ API 分类，该字段只在
 #: ``data_api`` 内部消费，绝不作为能力维度统计。
 UsageCategory = Literal["output", "payroll", "order", "other"]
 
@@ -124,7 +124,7 @@ def load_catalog(path: Path | None = None) -> ApiCatalog:
                     f"{operation.operation_id}.{parameter} has an invalid credential source"
                 )
         # Every reviewed operation must be archived to one of the four billing
-        # categories (D1/D5); a new operation without an archive blocks startup
+        # categories; a new operation without an archive blocks startup
         # so the MES usage statistics never silently drop a call category.
         if operation.usage_category not in _USAGE_CATEGORIES:
             raise InvalidRequestError(

@@ -1,9 +1,10 @@
 """Session and streaming endpoints.
 
-Identity never comes from the request body. Until the customer login contract is
-confirmed (CQ-01/CQ-02) the deployment must place a trusted gateway in front of
-this service that sets the configured tenant and user headers; the application
-treats those headers as the only credential source.
+Identity never comes from the request body. The caller presents the encrypted
+``app_key`` in the configured credential header; the token gateway exchanges it
+at ``/api/system/token`` and yields the authoritative role and bound
+departments (customer contract §2). See ``factory_agent.api.identity`` for the
+degraded header fallback used only when no gateway is configured.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from factory_agent.api.identity import TENANT_HEADER, USER_HEADER, resolve_credential
 from factory_agent.api.sse import encode_event, parse_last_event_id
 from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.application.session import (
@@ -23,11 +25,8 @@ from factory_agent.application.session import (
     StartRequest,
 )
 from factory_agent.bootstrap import ApplicationContainer
-from factory_agent.domain import InteractionId, SessionId, TenantId, UserId
-from factory_agent.ports import InteractionOwner, TrustedCredential
-
-TENANT_HEADER = "X-Factory-Tenant-Id"
-USER_HEADER = "X-Factory-User-Id"
+from factory_agent.domain import InteractionId, SessionId
+from factory_agent.ports import InteractionOwner
 
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -78,19 +77,6 @@ def _service(request: Request) -> SessionService:
     return service
 
 
-def _credential(tenant_id: str | None, user_id: str | None) -> TrustedCredential:
-    if not tenant_id or not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="trusted identity headers are missing"
-        )
-    try:
-        return TrustedCredential(tenant_id=TenantId(tenant_id), user_id=UserId(user_id))
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="trusted identity headers are invalid"
-        ) from exc
-
-
 def _not_found() -> HTTPException:
     """Unauthorized access is indistinguishable from a missing interaction."""
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="interaction not found")
@@ -105,11 +91,9 @@ async def start_interaction(
     session_id: str,
     body: StartInteractionRequest,
     request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias=TENANT_HEADER),
-    x_factory_user_id: str | None = Header(default=None, alias=USER_HEADER),
 ) -> InteractionView:
     service = _service(request)
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     try:
         record = await service.start(
             credential, StartRequest(session_id=SessionId(session_id), text=body.text)
@@ -132,12 +116,10 @@ async def start_interaction(
 async def stream_interaction(
     interaction_id: str,
     request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias=TENANT_HEADER),
-    x_factory_user_id: str | None = Header(default=None, alias=USER_HEADER),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     service = _service(request)
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     after_sequence = parse_last_event_id(last_event_id)
 
     async def body() -> AsyncIterator[str]:
@@ -156,11 +138,9 @@ async def stream_interaction(
 async def cancel_interaction(
     interaction_id: str,
     request: Request,
-    x_factory_tenant_id: str | None = Header(default=None, alias=TENANT_HEADER),
-    x_factory_user_id: str | None = Header(default=None, alias=USER_HEADER),
 ) -> InteractionView:
     service = _service(request)
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     try:
         record = await service.cancel(credential, InteractionId(interaction_id))
     except (InteractionNotFoundError, IdentityRejectionError) as exc:
@@ -179,8 +159,6 @@ async def list_messages(
     request: Request,
     limit: int = 50,
     cursor: str | None = None,
-    x_factory_tenant_id: str | None = Header(default=None, alias=TENANT_HEADER),
-    x_factory_user_id: str | None = Header(default=None, alias=USER_HEADER),
 ) -> MessagePageView:
     container = _container(request)
     store = container.interactions
@@ -189,7 +167,7 @@ async def list_messages(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="session store is not configured",
         )
-    credential = _credential(x_factory_tenant_id, x_factory_user_id)
+    credential, _ = await resolve_credential(request)
     try:
         authorization = await container.authorization.authorize(credential, container.clock.now())
     except IdentityRejectionError as exc:

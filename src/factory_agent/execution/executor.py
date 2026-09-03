@@ -21,9 +21,30 @@ from factory_agent.domain import (
     DataScope,
     NarrowedFilters,
     PlatformScope,
+    Role,
 )
 from factory_agent.domain.errors import ForbiddenError
 from factory_agent.ports.contracts import ResourceFetchResult
+
+#: Wage detail operation whose ``Uid`` may only be left empty by the boss role
+#: (客户确认：GongziMxQuery 传空查全部仅限老板，管理传空不允许 — 见
+#: ``docs/product/需求及方案整理.md``「客户确认结论」).
+_GONGZI_MX_QUERY = "GongziMxQuery"
+
+
+def verify_payroll_uid_rule(operation_id: str, filters: NarrowedFilters, role: Role | None) -> None:
+    """Reject a whole-factory wage-detail query for every role below boss.
+
+    An empty ``Uid`` (no narrowed employee) turns ``GongziMxQuery`` into a
+    factory-wide wage query; only the owner role may do that. The check runs
+    before any HTTP traffic.
+    """
+    if operation_id != _GONGZI_MX_QUERY:
+        return
+    if role is Role.OWNER:
+        return
+    if not filters.employee_ids:
+        raise ForbiddenError("工资明细传空查全部仅限老板角色；管理角色请指定员工工号")
 
 
 class ResourceFetcher(Protocol):
@@ -50,7 +71,7 @@ class ResourceFetcher(Protocol):
         ``extra_params`` carries reviewed filter parameters for the operation
         (e.g. a wage ``scheme``/``Flag``/``Type``); it can never carry scope or
         credential identifiers. A ``complete`` result proves the full range was
-        retrieved up to ``result.total`` (M13).
+        retrieved up to ``result.total``.
         """
         ...
 
@@ -81,11 +102,16 @@ class StrictScopeVerifier:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRequest:
-    """One bounded execution step requested by a capability recipe."""
+    """One bounded execution step requested by a capability recipe.
+
+    ``role`` is the authoritative token role of the caller; it drives the
+    reviewed payroll ``Uid`` rule and never broadens any scope.
+    """
 
     operation_id: str
     time_range: tuple[datetime, datetime]
     pagination_size: int = 50
+    role: Role | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +148,7 @@ class ScopedExecutor:
     ) -> StepResult:
         # Authorization completes before any business-data API call.
         self._catalog.get(request.operation_id)  # whitelist check before HTTP
+        verify_payroll_uid_rule(request.operation_id, filters, request.role)
         if active_scope is not None:
             self._verifier.verify(active_scope, filters)
 
@@ -151,6 +178,7 @@ class ScopedExecutor:
         carry filter-sourced parameters.
         """
         self._catalog.get(request.operation_id)  # whitelist check before HTTP
+        verify_payroll_uid_rule(request.operation_id, filters, request.role)
         if active_scope is not None:
             self._verifier.verify(active_scope, filters)
         return await self._adapter.fetch_resource(
@@ -174,4 +202,5 @@ __all__ = [
     "StepResult",
     "StrictScopeVerifier",
     "reject_platform_scope",
+    "verify_payroll_uid_rule",
 ]

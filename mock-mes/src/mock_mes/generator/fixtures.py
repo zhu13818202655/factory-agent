@@ -112,13 +112,22 @@ def _d(value: object) -> Decimal:
 # Master data (identical for every day; decided by the factory-scale settings).
 # ---------------------------------------------------------------------------
 
-#: Role codes newly confirmed by the customer (four tiers):
-#: 00 员工 (own data only) / 01 组长 (own department) / 02 管理 (own department)
-#: / 99 老板 (whole factory, exactly one per company).
+#: Role codes confirmed by the customer (four tiers):
+#: 00 员工 (own data only) / 01 组长 (bound 小组 group, see ``group``) /
+#: 02 管理 (bound 车间/部门 depts, possibly several) / 99 老板 (whole factory,
+#: exactly one per company). Contract: docs/product/需求及方案整理.md 角色定义.
 ROLE_WORKER = "00"
 ROLE_GROUP_LEADER = "01"
 ROLE_MANAGER = "02"
 ROLE_BOSS = "99"
+
+#: Group-id prefix separator used for employee group ids (``dept-a1-g01``).
+_GROUP_SEP = "-g"
+
+
+def group_id(dept: str, group_index: int) -> str:
+    """Deterministic 小组 id for ``dept`` and a 1-based group index."""
+    return f"{dept}{_GROUP_SEP}{group_index:02d}"
 
 
 def _anchored_employee(
@@ -131,6 +140,7 @@ def _anchored_employee(
     *,
     rule: str = '["0001"]',
     move_scan: int = 0,
+    group: str = "",
 ) -> dict[str, object]:
     return {
         "uid": uid,
@@ -148,29 +158,57 @@ def _anchored_employee(
         "dy_gongzhong": "",
         "move_admin_role": role,
         "company": company,
+        "group": group,
     }
 
 
 #: Anchored employees keep their original payloads verbatim (role included),
 #: so the customer-shaped fixtures, goldens and contract tests never drift.
 #: Scale generation fills the rest of the headcount around them. 01009 is the
-#: single factory boss (99) under the newly confirmed four-tier role codes.
+#: single factory boss (99) under the confirmed four-tier role codes.
+#: ``group`` names the 小组 a 组长/员工 belongs to (empty for 管理/老板, who are
+#: not production-group members).
 _ANCHORED_EMPLOYEES: dict[str, dict[str, object]] = {
     "01001": _anchored_employee(
-        "01001", "模拟员工甲", "dept-a1", "一车间", ROLE_WORKER, "COMPANY-A"
+        "01001",
+        "模拟员工甲",
+        "dept-a1",
+        "一车间",
+        ROLE_WORKER,
+        "COMPANY-A",
+        group=group_id("dept-a1", 1),
     ),
     # 同名员工 edge case (same name, different workshop/uid).
     "01002": _anchored_employee(
-        "01002", "模拟员工甲", "dept-a2", "二车间", ROLE_WORKER, "COMPANY-A", move_scan=1
+        "01002",
+        "模拟员工甲",
+        "dept-a2",
+        "二车间",
+        ROLE_WORKER,
+        "COMPANY-A",
+        move_scan=1,
+        group=group_id("dept-a2", 1),
     ),
     "01008": _anchored_employee(
-        "01008", "模拟车间主任", "dept-a1", "一车间", ROLE_MANAGER, "COMPANY-A", rule='["0002"]'
+        "01008",
+        "模拟车间主任",
+        "dept-a1",
+        "一车间",
+        ROLE_MANAGER,
+        "COMPANY-A",
+        rule='["0002"]',
     ),
     "01009": _anchored_employee(
         "01009", "模拟厂长", "dept-a1", "一车间", ROLE_BOSS, "COMPANY-A", rule='["0003"]'
     ),
     "02001": _anchored_employee(
-        "02001", "乙厂员工", "dept-b1", "乙厂车间", ROLE_WORKER, "COMPANY-B"
+        "02001",
+        "乙厂员工",
+        "dept-b1",
+        "乙厂车间",
+        ROLE_WORKER,
+        "COMPANY-B",
+        group=group_id("dept-b1", 1),
     ),
 }
 
@@ -243,6 +281,9 @@ def _employee(
     deptname: str,
     role: str,
     company: str,
+    *,
+    group: str = "",
+    bound_depts: tuple[str, ...] = (),
 ) -> dict[str, object]:
     return {
         "uid": uid,
@@ -260,6 +301,10 @@ def _employee(
         "dy_gongzhong": "",
         "move_admin_role": role,
         "company": company,
+        "group": group,
+        #: Manager-only: the full bound 车间/部门 list (own dept first). 组长/
+        #: 员工/老板 never carry more than their own dept.
+        "boundDepts": list(bound_depts),
     }
 
 
@@ -278,6 +323,12 @@ def _employee_rows(settings: MockMesSettings) -> list[dict[str, object]]:
     for dept_index in range(settings.departments):
         dept_id = f"dept-a{dept_index + 1}"
         dept_name = _workshop_name(dept_index)
+        # Cross-workshop binding demo (客户确认：管理可跨车间绑定多部门): the
+        # manager of the second workshop also binds the fourth workshop when
+        # the factory is large enough to have one.
+        bound_depts: tuple[str, ...] = ()
+        if dept_index == 1 and settings.departments >= 4:
+            bound_depts = (dept_id, "dept-a4")
         for position in range(per_dept):
             uid = f"01{dept_index * per_dept + position + 1:03d}"
             anchored = _ANCHORED_EMPLOYEES.get(uid)
@@ -293,7 +344,19 @@ def _employee_rows(settings: MockMesSettings) -> list[dict[str, object]]:
                 role = ROLE_GROUP_LEADER
             else:
                 role = ROLE_WORKER
-            rows.append(_employee(uid, f"{surname}{given}", dept_id, dept_name, role, "COMPANY-A"))
+            group = _group_of(role, dept_id, position, group_size)
+            rows.append(
+                _employee(
+                    uid,
+                    f"{surname}{given}",
+                    dept_id,
+                    dept_name,
+                    role,
+                    "COMPANY-A",
+                    group=group,
+                    bound_depts=bound_depts if role == ROLE_MANAGER else (),
+                )
+            )
 
     secondary_depts = settings.company_b_departments
     per_dept_b = max(settings.headcount_secondary // max(secondary_depts, 1), 1)
@@ -310,8 +373,31 @@ def _employee_rows(settings: MockMesSettings) -> list[dict[str, object]]:
             given = _GIVEN_NAMES[(name_index * 7) % len(_GIVEN_NAMES)]
             name_index += 1
             role = ROLE_MANAGER if position == 0 else ROLE_WORKER
-            rows.append(_employee(uid, f"{surname}{given}", dept_id, dept_name, role, "COMPANY-B"))
+            group = _group_of(role, dept_id, position, group_size)
+            rows.append(
+                _employee(
+                    uid,
+                    f"{surname}{given}",
+                    dept_id,
+                    dept_name,
+                    role,
+                    "COMPANY-B",
+                    group=group,
+                )
+            )
     return rows
+
+
+def _group_of(role: str, dept_id: str, position: int, group_size: int) -> str:
+    """小组 id for a generated non-manager at ``position`` of ``dept_id``.
+
+    组长 (01) lead every ``group_size``-th member run; workers (00) join the
+    same group as their position dictates. 管理 (02) and 老板 (99) are not
+    production-group members and carry no group.
+    """
+    if role in (ROLE_MANAGER, ROLE_BOSS):
+        return ""
+    return group_id(dept_id, max((position - 1) // group_size, 0) + 1)
 
 
 def master_rows(settings: MockMesSettings) -> list[RowInsert]:
@@ -643,7 +729,7 @@ _SCAN_PLAN: list[tuple[str, str, str, str, str, str, str, str, str]] = [
     ("1003", "ZD-B-001", "02001", "乙厂员工", "dept-b1", "WT01", "6", "1.2500", "2026-08-20"),
 ]
 
-#: Cumulative scanned quantity per anchored detail (M18/1.5 per-context table).
+#: Cumulative scanned quantity per anchored detail (progress context table).
 _SCAN_SSSL: dict[str, str] = {"1001": "13", "1002": "3", "1003": "6"}
 
 #: Anchored sclzd rows keyed by plan dh.

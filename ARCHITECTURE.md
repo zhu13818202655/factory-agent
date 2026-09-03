@@ -8,6 +8,7 @@ one active `TenantContext`, obtains an effective tenant-local `DataScope`, calls
 typed adapter, validates responses, performs bounded local processing, and composes grounded results.
 Platform usage operations use a separate `PlatformScope` and do not enter the MES execution path.
 
+
 ```mermaid
 flowchart LR
     Client --> Agent[factory-agent API]
@@ -19,6 +20,78 @@ flowchart LR
     Orchestrator --> Sandbox[Interaction DuckDB]
     Orchestrator --> Gateway[Model Gateway]
     Gateway --> Models[Reviewed registry deployments]
+```
+
+## factory-agent 全流程处理逻辑图
+
+```plantuml
+@startuml
+skinparam componentStyle rectangle
+title factory-agent 问答全流程（Story 1 口径）
+
+skinparam defaultFontName "Noto Sans CJK SC"
+
+actor "前端同事\n(PC 悬浮助手 / App)" as FE
+
+rectangle "API 层  /v1" {
+  (identity: resolve_credential) as EDGE
+  (sessions/interactions SSE) as API
+  (quick-questions / history / favorites / export) as PERS_API
+}
+
+rectangle "认证与授权（任何业务调用前完成）" {
+  database "Mock MES\n/api/system/token" as TOKEN
+  component "TokenCredentialExchange\n(换取/60s·2h 刷新/重试一次)" as EX
+  component "TokenBackedMembershipResolver\n(role/dept/boundDepts 权威字段)" as MEM
+  component "authorize_capability\n能力-角色矩阵 FR-001~012" as AUTH
+  component "DataScope\n(仅来自 token，不可由用户/LLM 扩大)" as SCOPE
+}
+
+rectangle "意图与口径约束" {
+  component "CapabilityIntentParser\n(LLM 别名→意图 + 时间/名称槽)" as INTENT
+  component "口径门：近一年上限 · Uid 空值规则\n(超限友好终止，零 MES 调用)" as GATES
+  component "quick_questions 角色化\n+ 友好拒绝(告知可查范围)" as FRIENDLY
+}
+
+rectangle "执行（L1 确定性 DAG，单一 bounded 执行器）" {
+  component "recipes fr001~fr012\n(api 步 + 本地 compute)" as RECIPE
+  component "ScopedExecutor→HongzhaoMesAdapter\n仅 data_api 调 MES；Bearer+app_key/timestamp/sign" as EXEC
+  component "CachedDirectorySource\n基础数据共享缓存(键不含 scope) + 业务范围缓存" as CACHE
+  database "Mock MES 业务接口\n(99全厂/02绑定车间/01本组/00本人)" as MES
+  component "DuckDB 沙箱(只读)" as SANDBOX
+}
+
+rectangle "结果与产物" {
+  component "ResultTable + 指标注册表\n(unavailable 不伪造；交期预警标记字段)" as RT
+  component "卡片/SSE result 事件 / XLSX 导出\n(presigned 即时下载，不留存)" as OUT
+  component "usage metering → 共享 PostgreSQL\n(业务提交后独立事务；仅 factory-agent 写计量表)" as USAGE
+}
+
+rectangle "数据 API 单边界" {
+  database "customer MES / mock-mes" as MESEND
+}
+
+FE --> EDGE
+EDGE --> EX
+EX --> TOKEN
+EX --> MEM
+MEM --> AUTH
+AUTH --> SCOPE
+SCOPE --> INTENT
+INTENT --> GATES
+GATES --> FRIENDLY
+GATES --> RECIPE : time_range/filters
+RECIPE --> EXEC
+EXEC --> CACHE
+CACHE --> MESEND : 基础数据全量
+EXEC --> MESEND : 业务数据(按角色行级过滤)
+MESEND --> EXEC
+EXEC --> SANDBOX : 本地 compute(JOIN/GROUP BY/RANK)
+SANDBOX --> RT
+RT --> OUT
+OUT --> FE
+RT --> USAGE
+@enduml
 ```
 
 ## Dependency Direction

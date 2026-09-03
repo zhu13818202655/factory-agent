@@ -1,15 +1,15 @@
-"""Resolve user business filters against the MES-filtered directory.
+"""Resolve user business filters against the directory.
 
 ``dept_names`` / ``employee_names`` / ``order_codes`` / ``style_codes`` /
 ``plan_codes`` are user *business* filters: they only narrow the requested
-range and are enforced by MES-side row-level filtering (M3/M19) plus the M12
+range and are enforced by MES-side row-level filtering plus the
 "returned range smaller than requested" judgement. They can never broaden the
 active ``DataScope``.
 
-Directory lookups (``DeptQuery`` / ``EmployeeQuery``) are themselves
-MES-filtered, so a ``move_admin_role="00"`` caller only ever resolves their own
-record; a resolved target employee therefore carries ``mes_filtered`` trust and
-the final wage/visibility call stays with the customer MES.
+Directory lookups (``DeptQuery`` / ``EmployeeQuery``) return the full roster
+regardless of role (客户确认结论 4), so a resolved target employee carries
+``mes_filtered`` trust and the final wage/visibility call stays with the
+customer MES.
 """
 
 from __future__ import annotations

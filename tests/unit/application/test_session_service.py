@@ -91,6 +91,12 @@ ANY_EMPLOYEE_PAYLOAD = (
     '{"time_expression": "上个月", "employee_names": ["模拟员工甲"]}}'
 )
 INCOMPLETE_PAYLOAD = '{"capability_id": null, "confidence": 0.2, "slots": {}}'
+#: Explicit slot dates spanning more than the one-year ceiling (客户确认 2).
+TOO_WIDE_PAYLOAD = (
+    '{"capability_id": "FR-001", "confidence": 0.95, "slots": '
+    '{"time_range_start": "2025-01-01T00:00:00+00:00", '
+    '"time_range_end": "2026-08-01T00:00:00+00:00"}}'
+)
 
 
 class FakeDirectory:
@@ -239,13 +245,9 @@ async def test_executor_only_receives_scope_narrowed_filters() -> None:
 
 
 @pytest.mark.asyncio
-async def test_registered_capability_runs_for_any_role() -> None:
-    """M11: roles are display-only, so a registered capability is never denied.
-
-    An employee may run what used to be an owner-only capability; actual data
-    visibility is enforced later by MES-side row filtering (M3/M12).
-    """
-    service, store, runner = build([OWNER_ONLY_PAYLOAD], role=Role.EMPLOYEE)
+async def test_owner_capability_runs_for_the_owner_role() -> None:
+    """The owner may run the factory-wide payroll capability."""
+    service, store, runner = build([OWNER_ONLY_PAYLOAD], role=Role.OWNER)
     request = StartRequest(session_id=SESSION, text="全厂工资统计")
     record = await service.start(credential(), request)
 
@@ -254,6 +256,41 @@ async def test_registered_capability_runs_for_any_role() -> None:
     assert len(runner.requests) == 1
     assert events[-1].name == "interaction.completed"
     assert store.interactions[str(record.interaction_id)].error_category is None
+
+
+@pytest.mark.asyncio
+async def test_employee_is_denied_an_owner_capability_with_friendly_scope() -> None:
+    """An employee asking for a factory-wide capability gets a friendly denial
+    naming their actual data range, with zero runner calls."""
+    service, store, runner = build([OWNER_ONLY_PAYLOAD], role=Role.EMPLOYEE)
+    request = StartRequest(session_id=SESSION, text="全厂工资统计")
+    record = await service.start(credential(), request)
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert events[-1].name == "interaction.failed"
+    stored = store.interactions[str(record.interaction_id)]
+    assert stored.error_category == "forbidden"
+    denial = next(message for message in store.messages if message.kind.value == "error")
+    assert "您可查询的范围" in denial.text
+
+
+@pytest.mark.asyncio
+async def test_over_one_year_time_range_is_friendly_rejected_with_zero_calls() -> None:
+    """超近一年时间范围被友好终止，不进 MES 调用（客户确认 2）."""
+    service, store, runner = build([TOO_WIDE_PAYLOAD], role=Role.EMPLOYEE)
+    request = StartRequest(session_id=SESSION, text="两年前的产量")
+    record = await service.start(credential(), request)
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert events[-1].name == "interaction.failed"
+    stored = store.interactions[str(record.interaction_id)]
+    assert stored.error_category == "time_range_exceeds_limit"
+    denial = next(message for message in store.messages if message.kind.value == "error")
+    assert "时间范围超出上限（近一年）" in denial.text
 
 
 @pytest.mark.asyncio
@@ -471,7 +508,7 @@ async def test_ownership_filter_is_used_for_every_store_read() -> None:
 async def test_fr012_resolves_target_employee_into_narrowed_filters() -> None:
     """FR-012 resolves the employee via the MES-filtered directory before any
     wage call; the runner receives employee_ids={target} (mes_filtered trust)."""
-    service, _, runner = build([ANY_EMPLOYEE_PAYLOAD])
+    service, _, runner = build([ANY_EMPLOYEE_PAYLOAD], role=Role.OWNER)
     record = await service.start(
         credential(), StartRequest(session_id=SESSION, text="查模拟员工甲的工资")
     )
@@ -490,7 +527,7 @@ async def test_fr012_ambiguous_name_asks_for_uid_not_run() -> None:
     directory = FakeDirectory(
         employee_error=DirectoryError("ambiguous", "员工「模拟员工甲」存在同名，请提供工号")
     )
-    service, _, runner = build([ANY_EMPLOYEE_PAYLOAD], directory=directory)
+    service, _, runner = build([ANY_EMPLOYEE_PAYLOAD], directory=directory, role=Role.OWNER)
     record = await service.start(
         credential(), StartRequest(session_id=SESSION, text="查模拟员工甲的工资")
     )
@@ -509,7 +546,7 @@ async def test_fr012_unresolved_employee_rejects_with_zero_business_calls() -> N
     directory = FakeDirectory(
         employee_error=DirectoryError("not_found", "未找到员工「不存在的人」")
     )
-    service, store, runner = build([ANY_EMPLOYEE_PAYLOAD], directory=directory)
+    service, store, runner = build([ANY_EMPLOYEE_PAYLOAD], directory=directory, role=Role.OWNER)
     record = await service.start(
         credential(), StartRequest(session_id=SESSION, text="查不存在的人的工资")
     )

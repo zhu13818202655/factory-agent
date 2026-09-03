@@ -31,16 +31,14 @@ class FilterNarrower:
 
     Business filters (``order_codes`` / ``style_codes`` /
     ``plan_codes`` and a user-requested department) are narrow-only: they are
-    passed to MES which enforces row-level filtering (M3/M19), and a too-small
-    return is surfaced via the M12 judgement. They are never treated as scope
+    passed to MES which enforces row-level filtering, and a too-small
+    return is surfaced via the MES judgement. They are never treated as scope
     identifiers and can never broaden the scope.
 
     ``tenant_resolved_employee_ids`` are employees already resolved in the
-    tenant through the MES-filtered ``EmployeeQuery`` (FR-012 target employee).
-    Because that resolution itself obeys MES row-level filtering (a
-    ``move_admin_role="00"`` caller only ever sees their own row), those ids
+    tenant through ``EmployeeQuery`` (FR-012 target employee). Those ids
     enter the interaction with ``mes_filtered`` trust: MES decides actual
-    visibility on the wage call, and an empty return surfaces as the M12
+    visibility on the wage call, and an empty return surfaces as the
     "无权限或无数据" state. They are never accepted from raw user text.
     """
 
@@ -71,7 +69,7 @@ class FilterNarrower:
             narrowed_employees = scope.employee_ids
         else:
             # Management/boss capabilities: no employee-level restriction on
-            # our side; MES row-level filtering (M3/M19) decides the range.
+            # our side; MES row-level filtering decides the range.
             narrowed_employees = None
 
         requested_depts: frozenset[DeptId] | None = None

@@ -94,10 +94,24 @@ def test_incomplete_table_declares_status() -> None:
 
 def test_unconfirmed_metrics_carry_a_gap_status() -> None:
     registry = default_metric_registry()
-    metric = registry.resolve("quality_defective", "unavailable-c5")
+    metric = registry.resolve("quality_defective", "unavailable-defective-v1")
     assert metric.status == "unavailable"
     assert not metric.allows_numeric_rendering()
-    assert "C.5" in metric.assumption_status
+    assert metric.assumption_status != ""
+
+
+def test_closed_story_1_metrics_are_confirmed() -> None:
+    registry = default_metric_registry()
+    for name, version in {
+        "org_headcount": "employee-registered-v1",
+        "payroll_avg_by_dept": "customer-payroll-avg-v1",
+        "time_flag_default": "confirmed-flag-v1",
+        "delivery_warning": "factory-warning-v1",
+        "delivery_days_remaining": "factory-warning-v1",
+    }.items():
+        metric = registry.resolve(name, version)
+        assert metric.status == "confirmed"
+        assert metric.allows_numeric_rendering() is True
 
 
 def test_duplicate_registration_overwrites_explicitly() -> None:

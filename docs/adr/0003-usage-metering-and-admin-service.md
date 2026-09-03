@@ -132,8 +132,9 @@ Kafka/Redpanda 或独立分析库；届时重新引入传输层，存档 payload
 
 因按工厂计费，平台必须持久化每个工厂对应的客户 MES AppKey。决策：
 
-- 新增**租户主数据表 `tenant_registry`**，直接以 `app_key` 为主键（客户契约 M4「一厂一
-  Key」，AppKey 本身即租户标识；`tenant_id` 与 `app_key` 同值，见下），字段含
+- 新增**租户主数据表 `tenant_registry`**，直接以 `app_key` 为主键（客户契约：按工厂
+  计费、一厂一 AppKey，见 `docs/product/需求及方案整理.md`「客户确认结论」；AppKey 本身即
+  租户标识，`tenant_id` 与 `app_key` 同值，见下），字段含
   `tenant_name`、`status`（active/disabled）、`created_at`、`updated_at`。不引入独立的
   自增/UUID 租户 ID：AppKey 全局唯一且由客户 MES 分配，已是租户标识，独立 ID 不增加信息；
   事件流中的 `tenant_id` 即 AppKey，与本表主键直接对应，无需映射与迁移。

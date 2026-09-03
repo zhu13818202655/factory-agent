@@ -45,7 +45,11 @@ uv run --package mock-mes mock-mes-generate --start 2026-08-01 --end 2026-08-31
 - **Factory scale**: defaults to a realistic ~500-person plant — 500 employees
   across 5 departments, four role tiers (00 worker / 01 group leader / 02
   manager / 99 boss, one boss per factory, one manager per department, one
-  group leader per 10 workers), 24 styles and ~3 new orders per workday. Every
+  group leader per 10 workers) and a **小组 (group) model**: every 组长/员工
+  belongs to a 车间下的生产小组 carried on the employee master (`group` /
+  `group_id`), so 01 leaders can be scoped to their own group. The manager of
+  the second workshop also binds the fourth workshop (cross-workshop
+  multi-dept binding, 客户确认), 24 styles and ~3 new orders per workday. Every
   value is overridable via `MOCK_MES_HEADCOUNT`, `MOCK_MES_DEPARTMENTS`,
   `MOCK_MES_GROUP_SIZE`, `MOCK_MES_DAILY_ACTIVE_RATIO`,
   `MOCK_MES_SCANS_PER_WORKER`, `MOCK_MES_DAILY_HIRES`, `MOCK_MES_PLANS_PER_DAY`,
@@ -64,14 +68,28 @@ uv run --package mock-mes mock-mes-generate --start 2026-08-01 --end 2026-08-31
   delayed orders, defects, cross-workshop flows, one-worker-many-orders,
   scanned/unscanned mixes).
 
-## Synthetic identity and faults
+## Synthetic identity, roles and faults
 
-The token endpoint returns a customer-shaped credential bundle including a
-deterministic JWT-shaped `accessToken`, `sign`, timestamp, plaintext AppKey, and
-empty roles/permissions. Mock identities also accept the legacy test tokens
-`MOCK-TOKEN-01009`, `MOCK-TOKEN-01008`, `MOCK-TOKEN-01001`, and `MOCK-TOKEN-02001`.
+Login identities are the **generated employee master**: the boss (99), one
+manager per department (02, one of them bound across workshops), group leaders
+(01) and workers (00) all come from PostgreSQL, so any generated account can
+authenticate at ~500-person scale — there is no static identity fixture.
 
-Bearer identity drives company, workshop, and own-data filtering **in SQL**.
+`POST /api/system/token` returns a customer-shaped credential bundle:
+`accessToken` (JWT-shaped, carrying `user`/`dept`/`roles`), `sign`, `timestamp`,
+plaintext `appkey`, plus the authoritative **`roles` code string** (00/01/02/99),
+`dept` and `boundDepts` (a manager's bound 车间/部门 set). The bundle is issued
+for a generated employee chosen by an optional dev-only `uid` body field;
+without one the tenant's boss is used. Legacy `MOCK-TOKEN-<uid>` tokens are also
+accepted (e.g. `MOCK-TOKEN-01009` boss, `01008` manager, `01012` group leader,
+`01001` worker, `02001` COMPANY-B worker).
+
+Bearer identity drives company and role-scope filtering **in SQL**: 99 whole
+company; 02 the bound 车间/部门 (possibly several, cross-workshop); 01 their
+bound 小组 on personal (uid-attributed) rows — 车间-level organisational tables
+without uid stay dept-scoped for leaders (mock simplification, real-MES
+behaviour is a joint-debug item); 00 own rows only. **Base-data interfaces
+(员工/部门等) are NOT role-filtered** — they return the full company set.
 Request-body filters narrow results only; they cannot widen the identity's
 visibility.
 

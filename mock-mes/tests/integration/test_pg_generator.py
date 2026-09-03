@@ -184,7 +184,8 @@ async def test_invariants_hold_on_postgres_data(migrated_db: str) -> None:
 
 @pytest.mark.asyncio
 async def test_sql_row_level_filtering_visibility(migrated_db: str) -> None:
-    """Company/dept/own-data tiers are enforced in SQL (M19)."""
+    """Company/role tiers are enforced in SQL: 99 whole, 02 bound depts, 01 own
+    小组 (on personal uid rows), 00 own data only."""
     app = create_app(
         MockMesSettings(
             environment="test",
@@ -232,12 +233,40 @@ async def test_sql_row_level_filtering_visibility(migrated_db: str) -> None:
                     headers={"Authorization": "Bearer MOCK-TOKEN-01001"},
                 )
             ).json()["result"]["list"]
+            # Leader scope is exercised without a Uid narrowing filter: the
+            # group leader (01012, dept-a1 g02) must see only group members.
+            leader_params = {k: v for k, v in params.items() if k != "Uid"}
+            leader = (
+                await client.post(
+                    "/api/NetYf/Sclzd/YskQuery",
+                    json=leader_params,
+                    headers={"Authorization": "Bearer MOCK-TOKEN-01012"},
+                )
+            ).json()["result"]["list"]
     finally:
         await app.state.db.close()
 
     assert len(boss) >= len(manager) >= len(worker)
     assert all(row["dept"] == "dept-a1" for row in manager)
     assert all(row["uid"] == "01001" for row in worker)
+
+    # 01 组长 sees only their bound 小组's member rows (SQL group_id subquery).
+    async with await connect_db(migrated_db) as connection:
+        cursor = await connection.execute(
+            "SELECT group_id FROM mock_employee WHERE company = 'COMPANY-A' AND uid = '01012'"
+        )
+        row = await cursor.fetchone()
+        group = str(row["group_id"]) if row else ""
+        assert group
+        cursor = await connection.execute(
+            "SELECT uid FROM mock_employee WHERE company = 'COMPANY-A' AND group_id = %(g)s",
+            {"g": group},
+        )
+        member_uids = {str(item["uid"]) for item in await cursor.fetchall()}
+    assert leader
+    leader_uids = {str(item["uid"]) for item in leader}
+    assert leader_uids <= member_uids
+    assert len(leader_uids) > 1
 
 
 @pytest.mark.asyncio

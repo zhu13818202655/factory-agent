@@ -8,13 +8,13 @@ import yaml
 from factory_agent.data_api.catalog import DEFAULT_CATALOG_PATH, load_catalog
 
 
-def test_default_catalog_loads_and_covers_27_customer_operations() -> None:
+def test_default_catalog_loads_and_covers_26_customer_operations() -> None:
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
-    assert len(catalog.operation_ids) == 27
+    assert len(catalog.operation_ids) == 26
     assert "SystemToken" in catalog
     assert "YskQuery" in catalog
     assert "GongziMxQuery" in catalog
-    assert "MoveMenuQuery" in catalog  # registered but disabled (K7)
+    assert "MoveMenuQuery" in catalog  # registered but disabled
     assert catalog.get("MoveMenuQuery").enabled is False
     assert "A1_getTenantMembership" not in catalog
     assert "C1_listPieceworkRecords" not in catalog

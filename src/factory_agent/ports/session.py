@@ -19,6 +19,7 @@ from factory_agent.domain import (
     InteractionRecord,
     MessageRecord,
     NarrowedFilters,
+    Role,
     SessionEvent,
     SessionId,
     TenantId,
@@ -154,11 +155,16 @@ class InteractionStore(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class CapabilityRunRequest:
-    """Everything the bounded executor needs; scope IDs arrive only via filters."""
+    """Everything the bounded executor needs; scope IDs arrive only via filters.
+
+    ``role`` is the authoritative token role; the executor uses it for the
+    reviewed payroll ``Uid`` rule. It can never broaden a scope.
+    """
 
     capability_id: CapabilityId
     filters: NarrowedFilters
     time_range: TimeRange
+    role: Role | None = None
 
 
 @dataclass(frozen=True, slots=True)

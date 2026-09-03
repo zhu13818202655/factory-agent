@@ -1,15 +1,17 @@
 """MES-backed directory and current-department membership.
 
-Implements the application-layer ``OrganizationSource`` (K2 current
-department membership) and ``DirectoryResolver`` (dept/employee name lookup)
-over the reviewed ``DeptQuery`` / ``EmployeeQuery`` operations. Both are
-MES-filtered by the Bearer identity (M3/M19): a ``move_admin_role="00"``
-caller only ever resolves their own employee record.
+Implements the application-layer ``OrganizationSource`` (current department
+membership) and ``DirectoryResolver`` (dept/employee name lookup) over the
+reviewed ``DeptQuery`` / ``EmployeeQuery`` operations.
 
-Scope semantics: ``DataScope.dept_ids`` is the caller's *visible*
-department range (DeptQuery, MES-filtered), not a single home department; a
-wider range stays recorded as MES-side filtering (``mes_filtered``). User
-department requests are intersected with this range by ``FilterNarrower``.
+Base-data interfaces are role-independent: the customer returns the full roster
+regardless of the caller (客户确认结论 4), so these lookups are never filtered
+by the agent. The caller's *authoritative* role and bound departments come from
+the token response and feed ``TenantContext``/``DataScope`` directly; this
+source is only the degraded fallback for the minimal provable range, which is
+the caller's own department from their own employee record. A wider range is
+recorded as MES-side filtering (``mes_filtered``), never claimed here. User
+department requests are intersected with the scope by ``FilterNarrower``.
 """
 
 from __future__ import annotations
@@ -42,23 +44,19 @@ class MesDirectorySource:
     async def list_current_depts(
         self, tenant_id: TenantId, employee_id: EmployeeId
     ) -> tuple[DeptId, ...]:
-        """K2: the caller's current department range from DeptQuery/EmployeeQuery.
+        """The caller's minimal provable department range (fallback only).
 
-        ``move_admin_role="00"`` callers are own-data-only (M19): their scope is
-        the single department of their own employee record. Other callers get
-        the MES-filtered DeptQuery range (company/dept tiers), which is the
-        range MES will actually return business rows for.
+        The authoritative binding comes from the token response and is carried
+        on ``TenantMembership.bound_dept_ids``; this fallback runs only when a
+        bundle lacks a binding. Base-data queries are unfiltered (full roster),
+        so the minimal provable range is the caller's own department read from
+        their own employee record — never the whole roster.
         """
         employee = await self._employee_by_id(tenant_id, employee_id)
-        if employee is not None and employee.get("move_admin_role") == "00":
-            own_dept = employee.get("dept")
-            return (DeptId(str(own_dept)),) if own_dept else ()
-        dept_rows = await self._dept_rows(tenant_id)
-        return tuple(
-            DeptId(str(row["id"]))
-            for row in dept_rows
-            if row.get("id") is not None and str(row["id"])
-        )
+        if employee is None:
+            return ()
+        own_dept = employee.get("dept")
+        return (DeptId(str(own_dept)),) if own_dept else ()
 
     # ------------------------------------------------------- DirectoryResolver
 

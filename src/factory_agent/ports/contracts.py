@@ -1,19 +1,28 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Protocol, TypeVar
 
-from factory_agent.domain import InteractionId, TenantId, TenantMembership, UserId
+from factory_agent.domain import (
+    DeptId,
+    InteractionId,
+    Role,
+    TenantId,
+    TenantMembership,
+    UserId,
+)
 
 MesRequestT = TypeVar("MesRequestT", contravariant=True)
 MesResponseT = TypeVar("MesResponseT", covariant=True)
 
-#: Column-level sentinel for a metric with no data source (C.5/C.7/C.8/C.9).
-#: Renderers must surface it as an explicit "no data source" state, never as a
-#: fabricated number. Lives in ``ports`` so both the execution kernel and the
-#: application renderers share the same contract without crossing packages.
+#: Column-level sentinel for a metric with no confirmed data source (see the
+#: metric registry's ``unavailable`` entries). Renderers must surface it as an
+#: explicit "no data source" state, never as a fabricated number. Lives in
+#: ``ports`` so both the execution kernel and the application renderers share
+#: the same contract without crossing packages.
 UNAVAILABLE_VALUE = "unavailable"
 
 
@@ -28,6 +37,47 @@ class TrustedCredential:
 
     tenant_id: TenantId
     user_id: UserId
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPrincipal:
+    """Identity facts exchanged from the customer token endpoint.
+
+    Derived exclusively from the ``/api/system/token`` response: the role code
+    ``roles`` (00/01/02/99) and the bound department set are authoritative
+    (客户确认：绑定关系登录后由 token 接口返回). No credential value
+    (accessToken/sign/app_key) is ever exposed here.
+    """
+
+    credential: TrustedCredential
+    display_name: str
+    role: Role
+    bound_dept_ids: tuple[DeptId, ...] = ()
+
+
+class CredentialExchange(Protocol):
+    """Exchanges the caller's encrypted app_key for token-derived identity.
+
+    Implementations live in ``data_api/``: they call ``/api/system/token``,
+    retain the credential bundle internally, and expose only identity facts.
+    A rejected exchange raises ``UnauthenticatedError``.
+    """
+
+    async def authenticate(self, encrypted_credential: str) -> ResolvedPrincipal: ...
+
+    def principal_for(self, credential: TrustedCredential) -> ResolvedPrincipal | None:
+        """Return the cached principal behind an already-authenticated pair."""
+        ...
+
+
+class CredentialBinder(Protocol):
+    """Binds the live credential bundle to the current interaction context.
+
+    MES calls executed inside the returned context use that caller's bundle;
+    outside of any binding the adapter falls back to its injected default.
+    """
+
+    def bind_for(self, credential: TrustedCredential) -> AbstractContextManager[None]: ...
 
 
 @dataclass(frozen=True, slots=True)

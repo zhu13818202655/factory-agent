@@ -1,9 +1,9 @@
 """End-to-end permission scenarios: allow and deny paths.
 
 Every denial scenario asserts zero business MES calls and no sensitive leaks.
-Roles are display-only (M11); capability availability depends on tenant binding
-and the registered capability list, while actual data visibility is enforced by
-MES-side row filtering (M3/M12).
+Role is authoritative: capability availability depends on the capability-role
+matrix plus tenant binding, while actual data visibility is enforced by
+MES-side row filtering.
 """
 
 from __future__ import annotations
@@ -88,8 +88,8 @@ async def test_single_tenant_employee_full_allow_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_employee_can_use_a_team_capability_when_registered() -> None:
-    """M11: roles never gate capabilities, so an employee may run a team recipe."""
+async def test_employee_is_denied_a_team_capability() -> None:
+    """Role is authoritative: an employee cannot run a management capability."""
     service = service_with(FakeMesDataSource(response={"items": []}))
 
     resolved = await service.authorize(credential("tenant-a", "user-emp"), AS_OF)
@@ -97,10 +97,23 @@ async def test_employee_can_use_a_team_capability_when_registered() -> None:
         Capability.TEAM_PAYROLL_LIST, resolved.tenant_context, resolved.data_scope
     )
 
-    assert decision.allowed
+    assert not decision.allowed
+    assert decision.reason == "capability is not available for the current role"
     # The scope is still minimal: only the caller's own employee + current dept.
     assert resolved.data_scope.employee_ids == frozenset({resolved.tenant_context.employee_id})
     assert resolved.data_scope.mes_filtered is False
+
+
+@pytest.mark.asyncio
+async def test_manager_can_use_a_team_capability() -> None:
+    service = service_with(FakeMesDataSource(response={"items": []}))
+
+    resolved = await service.authorize(credential("tenant-a", "user-mgr"), AS_OF)
+    decision = authorize_capability(
+        Capability.TEAM_PAYROLL_LIST, resolved.tenant_context, resolved.data_scope
+    )
+
+    assert decision.allowed
 
 
 @pytest.mark.asyncio

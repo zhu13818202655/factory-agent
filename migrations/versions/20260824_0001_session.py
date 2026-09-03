@@ -334,7 +334,7 @@ def upgrade() -> None:
     # Reviewed operation_id -> billing category mapping (D5), owned by this
     # service and seeded from configs/knowledge/apis.yaml. Classification is
     # applied at aggregation time so a reclassification never rewrites history.
-    # The 27 rows below mirror the `usage_category` fields in apis.yaml (verified
+    # The 26 rows below mirror the `usage_category` fields in apis.yaml (verified
     # by tests/unit/.../test_mes_operation_categories.py); a new
     # operation added to apis.yaml fails that test until it is classified here.
     op.create_table(
@@ -348,7 +348,6 @@ def upgrade() -> None:
         INSERT INTO mes_operation_category (operation_id, category, version)
         VALUES
             ('SystemToken', 'other', 'apis-v2'),
-            ('QuerySign', 'other', 'apis-v2'),
             ('TestPermissions', 'other', 'apis-v2'),
             ('UserInfoQuery', 'other', 'apis-v2'),
             ('MoveMenuQuery', 'other', 'apis-v2'),

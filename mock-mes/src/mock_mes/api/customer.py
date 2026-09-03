@@ -1,12 +1,17 @@
 """Mock MES customer-shaped endpoints: all 27 interfaces, PG-backed.
 
 Implements the authentication chain, the ``{code, message, result, timestamp}``
-envelope, ``footer`` totals, row-level filtering (M3/M19) and ``code=0`` error
-scenarios. Every endpoint reads from PostgreSQL through
-``MockMesStore``: row-level filtering (company → dept → ``move_admin_role="00"``
-own-data), pagination and SQL COUNT/SUM happen in SQL; the three wage sources
-are normalised in Python after SQL filtering. There is no in-memory dataset and
-no fallback.
+envelope, ``footer`` totals, the customer-confirmed role data ranges and
+``code=0`` error scenarios. Every endpoint reads from PostgreSQL through
+``MockMesStore``: company → role row-level filtering (``99`` whole company /
+``02`` bound 车间·部门, possibly several / ``01`` bound 小组 on personal rows /
+``00`` own rows) and pagination/SQL COUNT-SUM happen in SQL; the three wage
+sources are normalised in Python after SQL filtering. **Base-data interfaces
+(员工/部门等) are not role-filtered** — they return the full company set (客户
+确认). Bearer identities resolve against the generated employee master, never a
+static fixture. There is no in-memory dataset and no fallback.
+
+Contract: docs/product/AI问答对外接口-整理.md and docs/product/需求及方案整理.md.
 """
 
 from __future__ import annotations
@@ -22,7 +27,13 @@ from typing import Any, cast
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from mock_mes.identities import APP_KEY_TO_COMPANY, IDENTITIES, Record
+from mock_mes.identities import (
+    APP_KEY_TO_COMPANY,
+    ROLE_GROUP_LEADER,
+    ROLE_MANAGER,
+    ROLE_WORKER,
+    Record,
+)
 from mock_mes.store import MockMesStore
 
 router = APIRouter(tags=["customer"])
@@ -30,7 +41,7 @@ router = APIRouter(tags=["customer"])
 #: Deterministic placeholder secret; form simulation only, never a real key.
 _MOCK_SECRET = "mock-secret-for-shape-simulation-only"  # nosec B105 - shape only
 
-TOKEN_TTL_SECONDS = 7200  # M2: accessToken validity is 2 hours.
+TOKEN_TTL_SECONDS = 7200  # accessToken validity is 2 hours.
 
 
 class MesError(Exception):
@@ -63,7 +74,7 @@ def fail(message: str) -> dict[str, object]:
 
 
 def sign_of(app_key: str, timestamp: int) -> str:
-    """Deterministic 32-char lowercase MD5 placeholder (M8 shape simulation)."""
+    """Deterministic 32-char lowercase MD5 placeholder (shape simulation)."""
     raw = f"{_MOCK_SECRET}app_key={app_key}timestamp={timestamp}"
     # MD5 is a shape-only placeholder, not a security primitive.
     return hashlib.md5(raw.encode()).hexdigest()  # nosec B324 # noqa: S324 - shape simulation only
@@ -85,21 +96,69 @@ def bearer_token(request: Request) -> str:
     return token
 
 
-def identity_from(request: Request) -> Record:
-    """Resolve the Bearer identity; unknown tokens are unauthenticated."""
+def _company_of_uid(uid: str) -> str:
+    """Tenant for a legacy ``MOCK-TOKEN-<uid>`` (no JWT claims to read)."""
+    return "COMPANY-B" if uid.startswith("02") else "COMPANY-A"
+
+
+def _identity_record(payload: Record) -> Record:
+    """Normalise one generated employee master row into a request identity.
+
+    ``user`` is the uid used for own-data filtering, ``dept`` the employee's
+    车间/部门, ``group`` the 小组 id (00/01 members only) and ``boundDepts`` a
+    manager's full bound 车间/部门 set (own dept first, cross-workshop allowed).
+    """
+    dept = str(payload.get("dept") or "")
+    role = str(payload.get("move_admin_role") or ROLE_WORKER)
+    bound_depts: list[str] = []
+    if role == ROLE_MANAGER:
+        bound = payload.get("boundDepts")
+        if isinstance(bound, (list, tuple)):
+            bound_depts = [str(code) for code in cast("list[object]", bound)]
+        if dept and dept not in bound_depts:
+            bound_depts.insert(0, dept)
+    elif dept:
+        bound_depts = [dept]
+    return {
+        "user": str(payload.get("uid") or ""),
+        "uname": str(payload.get("uname") or ""),
+        "company": str(payload.get("company") or ""),
+        "dept": dept,
+        "deptname": str(payload.get("deptname") or ""),
+        "move_admin_role": role,
+        "group": str(payload.get("group") or ""),
+        "boundDepts": bound_depts,
+    }
+
+
+async def identity_from(request: Request) -> Record:
+    """Resolve the Bearer identity against the generated employee master.
+
+    Accounts are the PG-generated employees, so the factory boss, one manager
+    per department, group leaders and workers can all log in at factory scale
+    (no static fixture). ``MOCK-TOKEN-<uid>`` names the account by uid; JWT
+    tokens carry ``user`` and ``customId`` (the AppKey) for the tenant.
+    """
     token = bearer_token(request)
     if token.startswith("MOCK-TOKEN-"):
         user = token.removeprefix("MOCK-TOKEN-")
+        company = _company_of_uid(user)
     else:
         try:
-            payload = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
-            user = str(payload["user"])
+            claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
+            user = str(claims["user"])
+            custom_id = claims.get("customId")
+            company = (
+                APP_KEY_TO_COMPANY.get(str(custom_id), _company_of_uid(user))
+                if custom_id
+                else _company_of_uid(user)
+            )
         except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             raise MesError(401, "签名无效") from None
-    identity = next((item for item in IDENTITIES.values() if item["user"] == user), None)
-    if identity is None:
+    employee = await store_from(request).employee_by_uid(company, user)
+    if employee is None:
         raise MesError(401, "签名无效")
-    return identity
+    return _identity_record(employee)
 
 
 def check_common_params(body: dict[str, Any], *, need_sign: bool = True) -> tuple[str, int]:
@@ -167,8 +226,11 @@ async def system_token(request: Request) -> JSONResponse:
     encrypted_app_key = body.get("app_key")
     if not encrypted_app_key:
         return JSONResponse(status_code=200, content=fail("app_key不能为空"))
-    # The mock accepts any non-empty encrypted key and maps it to worker-a1's
-    # tenant unless it names another seeded identity's AppKey.
+    # The mock accepts any non-empty encrypted key that names a tenant (plain
+    # or suffixed with the tenant letter). The bundle is issued for one
+    # *generated* employee: an optional dev-only ``uid`` picks the account,
+    # otherwise the tenant's boss (99) — or its first employee when the tenant
+    # has no boss — is used.
     matched_app_key = next(
         (
             key
@@ -178,7 +240,12 @@ async def system_token(request: Request) -> JSONResponse:
         ),
         "APPKEY-A",
     )
-    identity = next(item for item in IDENTITIES.values() if item["app_key"] == matched_app_key)
+    company = APP_KEY_TO_COMPANY[matched_app_key]
+    uid = body.get("uid")
+    employee = await store_from(request).login_employee(company, str(uid) if uid else None)
+    if employee is None:
+        return JSONResponse(status_code=200, content=fail("无效app_key"))
+    identity = _identity_record(employee)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=TOKEN_TTL_SECONDS)
     iat = int(now.timestamp())
@@ -187,8 +254,10 @@ async def system_token(request: Request) -> JSONResponse:
         "uname": identity["uname"],
         "loginUserName": "",
         "loginRealName": None,
+        "dept": identity["dept"],
         "customId": matched_app_key,
         "userType": "小程序用户",
+        "roles": identity["move_admin_role"],
         "iat": iat,
         "nbf": iat,
         "exp": iat + TOKEN_TTL_SECONDS,
@@ -209,10 +278,12 @@ async def system_token(request: Request) -> JSONResponse:
         "user": identity["user"],
         "uname": identity["uname"],
         "loginUserName": "",
+        "dept": identity["dept"],
         "appkey": matched_app_key,
         "sign": sign_of(matched_app_key, iat),
         "timestamp": iat,
-        "roles": [],
+        "roles": identity["move_admin_role"],
+        "boundDepts": identity["boundDepts"],
         "permissions": [],
     }
     return JSONResponse(content=ok(result))
@@ -241,7 +312,7 @@ async def test_permissions(request: Request) -> JSONResponse:
 async def user_info_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     username = body.get("USERNAME")
     if not username:
@@ -254,8 +325,8 @@ async def user_info_query(request: Request) -> JSONResponse:
 async def move_menu_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     check_common_params(body)
-    identity = identity_from(request)
-    rows = await store_from(request).list_rows("mock_move_menu", identity)
+    identity = await identity_from(request)
+    rows = await store_from(request).list_rows("mock_move_menu", identity, role_scoped=False)
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -350,14 +421,16 @@ async def huohao_worktype_query(request: Request) -> JSONResponse:
 async def employee_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     store = store_from(request)
     uid = body.get("uid")
     if uid:
-        rows = await store.list_rows("mock_employee", identity, extra=[("uid", "=", str(uid))])
+        rows = await store.list_rows(
+            "mock_employee", identity, extra=[("uid", "=", str(uid))], role_scoped=False
+        )
     else:
-        rows = await store.list_rows("mock_employee", identity)
+        rows = await store.list_rows("mock_employee", identity, role_scoped=False)
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -365,9 +438,9 @@ async def employee_query(request: Request) -> JSONResponse:
 async def dept_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
-    rows = await store_from(request).list_rows("mock_dept", identity)
+    rows = await store_from(request).list_rows("mock_dept", identity, role_scoped=False)
     return JSONResponse(content=ok({"list": rows, "total": len(rows)}))
 
 
@@ -380,7 +453,7 @@ async def dept_query(request: Request) -> JSONResponse:
 async def plan_grid_page_list(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
     page, size = page_size(body)
@@ -394,7 +467,7 @@ async def plan_grid_page_list(request: Request) -> JSONResponse:
 async def sclzd_grid_page_list(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
     page, size = page_size(body)
@@ -408,7 +481,7 @@ async def sclzd_grid_page_list(request: Request) -> JSONResponse:
 async def sclzd_worktype_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     dh = body.get("dh")
     if not dh:
@@ -421,7 +494,7 @@ async def sclzd_worktype_query(request: Request) -> JSONResponse:
 async def sclzd_barcode_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     dh = body.get("dh")
     detail_id = body.get("detailId")
@@ -456,7 +529,7 @@ async def sclzd_barcode_query(request: Request) -> JSONResponse:
 async def barcode_cl_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
     page, size = page_size(body)
@@ -470,7 +543,7 @@ async def barcode_cl_query(request: Request) -> JSONResponse:
 async def huohao_wt_cl_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
     scheme = body.get("scheme")
@@ -504,7 +577,7 @@ async def huohao_wt_cl_query(request: Request) -> JSONResponse:
 async def pin_feng_grid_page_list(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
     page, size = page_size(body)
@@ -524,7 +597,7 @@ async def pin_feng_grid_page_list(request: Request) -> JSONResponse:
 async def worktype_progress_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     userid = body.get("userid")
     if userid is None:
@@ -572,7 +645,7 @@ async def worktype_progress_query(request: Request) -> JSONResponse:
 async def ysk_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
     page, size = page_size(body)
@@ -618,7 +691,7 @@ async def ysk_query(request: Request) -> JSONResponse:
 async def wsk_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     page, size = page_size(body)
     store = store_from(request)
@@ -645,7 +718,7 @@ async def wsk_query(request: Request) -> JSONResponse:
 async def gongzi_mx_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
     flag = str(body.get("Flag", "0"))
@@ -726,8 +799,13 @@ async def gongzi_mx_query(request: Request) -> JSONResponse:
 async def gongzi_je_order_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
+    # 收入排名 peers: a worker's 组内排名 needs their 小组 peers, so on this
+    # ranking interface a worker (00) is scoped like a 组长 (01) — the only
+    # place a worker sees group peers (product FR-004 输出组内总人数/组内排名).
+    if identity["move_admin_role"] == ROLE_WORKER and identity.get("group"):
+        identity = {**identity, "move_admin_role": ROLE_GROUP_LEADER}
     start, end = date_window(body)
     store = store_from(request)
     rows = await store.wage_rows(identity, {"0", "1", "2"}, start, end)
@@ -759,7 +837,7 @@ async def gongzi_je_order_query(request: Request) -> JSONResponse:
 async def dg_grid_page_list(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     page, size = page_size(body)
     result = await store_from(request).page("mock_dg", identity, page_num=page, size=size)
@@ -770,7 +848,7 @@ async def dg_grid_page_list(request: Request) -> JSONResponse:
 async def dg_zu_grid_page_list(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     page, size = page_size(body)
     result = await store_from(request).page("mock_dg_zu", identity, page_num=page, size=size)
@@ -781,7 +859,7 @@ async def dg_zu_grid_page_list(request: Request) -> JSONResponse:
 async def dg_cl_query(request: Request) -> JSONResponse:
     body = await _json_body(request)
     app_key, _ = check_common_params(body)
-    identity = identity_from(request)
+    identity = await identity_from(request)
     require_same_tenant(identity, app_key)
     start, end = date_window(body)
     page, size = page_size(body)

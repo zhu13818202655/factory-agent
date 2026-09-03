@@ -3,9 +3,11 @@
 Membership comes from the customer credential bundle, not from a membership
 closure chain. ``tenant_id`` is the plaintext ``app_key`` and ``employee_id``
 is the token ``user``; one factory has one AppKey, so membership is naturally
-unique — there is no multi-hit branch. Roles are display-only: capability
-availability is decided by whether MES returns data plus the capability
-registry, never by a role matrix.
+unique — there is no multi-hit branch. Role and bound departments are
+authoritative token fields (客户确认：四角色与绑定关系由 ``/api/system/token``
+返回，见 ``docs/product/需求及方案整理.md``「客户确认结论」); capability
+availability is decided by the capability-role matrix in
+``application/permission_matrix.py``.
 """
 
 from __future__ import annotations
@@ -71,7 +73,11 @@ class MembershipSource(Protocol):
 
 
 class OrganizationSource(Protocol):
-    """Port over EmployeeQuery/DeptQuery current department membership (K2)."""
+    """Port over EmployeeQuery/DeptQuery current department membership.
+
+    Fallback source only: the authoritative binding comes from the token
+    response (``TenantMembership.bound_dept_ids``).
+    """
 
     async def list_current_depts(
         self, tenant_id: TenantId, employee_id: EmployeeId
@@ -127,7 +133,7 @@ class AuthorizationService:
             role=membership.role,
             resolved_at=as_of,
         )
-        dept_ids = await self._current_depts(membership.tenant_id, membership.employee_id)
+        dept_ids = await self._current_depts(membership)
         version = self._versions.new_version()
         data_scope = DataScope(
             tenant_id=membership.tenant_id,
@@ -166,11 +172,19 @@ class AuthorizationService:
             )
         return membership
 
-    async def _current_depts(
-        self, tenant_id: TenantId, employee_id: EmployeeId
-    ) -> tuple[DeptId, ...]:
+    async def _current_depts(self, membership: TenantMembership) -> tuple[DeptId, ...]:
+        """Bound departments are authoritative token fields.
+
+        When the token response carries the binding (客户确认：登录后由 token
+        接口返回) no business-data call is needed; the directory lookup stays
+        as the degraded fallback for fixtures and legacy bundles.
+        """
+        if membership.bound_dept_ids:
+            return membership.bound_dept_ids
         try:
-            return await self._organizations.list_current_depts(tenant_id, employee_id)
+            return await self._organizations.list_current_depts(
+                membership.tenant_id, membership.employee_id
+            )
         except LookupError as error:
             raise IdentityRejectionError(
                 IdentityErrorCode.NOT_FOUND,

@@ -4,18 +4,23 @@ URL construction, bearer credentials, raw payloads, and customer field names
 are confined to this module. Application and domain code depend on the
 ``MesDataSource`` Protocol and never see base URLs or path mappings.
 
-Adapter semantics:
+Adapter semantics (contract: ``docs/product/AI问答对外接口-整理.md``):
 - Single ``HongzhaoMesAdapter``: POST + JSON, public parameter injection
   (app_key/timestamp/sign from ``MesCredentialBundle``), Bearer injection,
   ``{code, message, result}`` envelope unwrapping, ``footer`` extraction.
-- Two-layer success judgment (M14): HTTP 200/404 first, then body ``code``
-  1/0; failures are distinguished by ``message`` text only.
+- Bundle resolution is context-aware: inside a token-gateway binding the
+  caller's own bundle (``CURRENT_BUNDLE``) is used; otherwise the injected
+  default bundle applies. Concurrent interactions therefore never share one
+  caller's credential.
+- Two-layer success judgment: HTTP 200/404 first, then body ``code`` 1/0;
+  failures are distinguished by ``message`` text only.
 - Message → unified exception mapping: ``app_key不能为空``/``无效app_key``/
   ``加密信息解析失败`` → invalid_request; ``请求已过期``/``签名无效`` →
   unauthenticated (one refresh + one retry, never unbounded); HTTP 404 →
   upstream_unavailable (wrong endpoint); other ``code=0`` → upstream_invalid.
-- accessToken refresh: proactive at a threshold (default 90 minutes of the
-  2-hour validity, M2) plus exactly one reactive refresh-retry.
+- Refresh: proactive when the accessToken approaches expiry (default 90
+  minutes of the 2-hour validity) or the short-lived ``timestamp`` window
+  (default 60 s) is about to close, plus exactly one reactive refresh-retry.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from typing import Any, Mapping, Protocol, cast
 import httpx
 
 from factory_agent.data_api.catalog import ApiCatalog, CatalogOperation
-from factory_agent.data_api.credentials import MesCredentialBundle
+from factory_agent.data_api.credentials import CURRENT_BUNDLE, MesCredentialBundle
 from factory_agent.data_api.pagination import BoundedPager
 from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE, row_to_plain_dict
 from factory_agent.domain.errors import (
@@ -50,7 +55,7 @@ from factory_agent.ports.tenant_registry import TenantRegistryReader
 
 _LOGGER = get_logger("factory_agent.data_api.hongzhao")
 
-#: Customer failure messages that indicate credential problems (M8/M14).
+#: Customer failure messages that indicate credential problems.
 _EXPIRED_MESSAGES = ("请求已过期", "签名无效")
 _INVALID_REQUEST_MESSAGES = (
     "app_key不能为空",
@@ -72,8 +77,11 @@ class AdapterSettings:
     timeout_seconds: float = 10.0
     max_retries: int = 2
     default_retry_after_seconds: int = 1
-    #: Proactive refresh threshold within the 2h token validity (M2).
+    #: Proactive refresh threshold within the 2h token validity.
     refresh_threshold_seconds: int = 5400
+    #: Customer ``timestamp`` validity window; a bundle older than this is
+    #: re-exchanged before the next business call (客户接口文档 §2.1).
+    timestamp_ttl_seconds: int = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +146,11 @@ class HongzhaoMesAdapter:
 
     @property
     def bundle(self) -> MesCredentialBundle:
-        return self._bundle
+        return self._active_bundle()
+
+    def _active_bundle(self) -> MesCredentialBundle:
+        """The context-bound caller bundle, else the injected default."""
+        return CURRENT_BUNDLE.get() or self._bundle
 
     async def set_bundle(self, bundle: MesCredentialBundle) -> None:
         object.__setattr__(self, "_bundle", bundle)
@@ -165,13 +177,20 @@ class HongzhaoMesAdapter:
         """Execute one whitelisted operation with envelope unwrapping."""
         operation = self._operation(request.operation_id)
         await self._assert_tenant_enabled()
-        if self._bundle.needs_refresh(self._now(), self._settings.refresh_threshold_seconds):
+        bundle = self._active_bundle()
+        now = self._now()
+        # Proactive refresh only when a refresher exists; otherwise there is no
+        # credential to re-exchange and the reactive path below handles expiry.
+        if self._refresher is not None and (
+            bundle.needs_refresh(now, self._settings.refresh_threshold_seconds)
+            or bundle.timestamp_is_stale(now, self._settings.timestamp_ttl_seconds)
+        ):
             await self._refresh_bundle()
 
         try:
             envelope = await self._send(operation, request.params)
         except UnauthenticatedError:
-            # One refresh + one retry on expiry/signature failures (M1/M8).
+            # One refresh + one retry on expiry/signature failures.
             await self._refresh_bundle()
             envelope = await self._send(operation, request.params)
         if envelope.code == 1:
@@ -181,10 +200,10 @@ class HongzhaoMesAdapter:
         raise map_message_to_error(envelope.message)
 
     async def _assert_tenant_enabled(self) -> None:
-        """D13 guard: a disabled AppKey is rejected before any MES request."""
+        """A disabled AppKey is rejected before any MES request."""
         if self._tenant_registry is None:
             return
-        record = await self._tenant_registry.get(self._bundle.app_key)
+        record = await self._tenant_registry.get(self._active_bundle().app_key)
         if record is not None and record.status == "disabled":
             raise TenantDisabledError()
 
@@ -211,7 +230,7 @@ class HongzhaoMesAdapter:
 
         Extra params carry reviewed ``filter``-source parameters (e.g. a wage
         ``scheme``/``Flag``/``Type``); they can never carry scope or credential
-        identifiers. The pager walks to ``result.total`` (M13) and returns a
+        identifiers. The pager walks to ``result.total`` and returns a
         structured incompleteness reason on any anomaly rather than a truncated
         result.
         """
@@ -281,7 +300,7 @@ class HongzhaoMesAdapter:
         except UnsupportedOperationError:
             raise
         if not operation.enabled:
-            # K7: registered but disabled operations are rejected pre-HTTP.
+            # Registered but disabled operations are rejected before any HTTP.
             raise UnsupportedOperationError("operation is disabled in this release")
         return operation
 
@@ -293,6 +312,7 @@ class HongzhaoMesAdapter:
 
     async def _send(self, operation: CatalogOperation, params: Mapping[str, Any]) -> Any:
         body = self._build_body(operation, params)
+        bundle = self._active_bundle()
         attempts_left = self._settings.max_retries + 1
         last_error: Exception | None = None
         while attempts_left > 0:
@@ -302,7 +322,7 @@ class HongzhaoMesAdapter:
                 response = await self._ensure_client().post(
                     operation.path,
                     json=body,
-                    headers={"Authorization": f"Bearer {self._bundle.access_token}"},
+                    headers={"Authorization": f"Bearer {bundle.access_token}"},
                 )
             except httpx.TimeoutException:
                 last_error = MesTimeoutError()
@@ -362,7 +382,7 @@ class HongzhaoMesAdapter:
                     error_category=error_category,
                 )
             )
-        except Exception:  # noqa: BLE001 - metering must never break the MES call (R1)
+        except Exception:  # noqa: BLE001 - metering must never break the MES call
             _LOGGER.exception(
                 "mes.metering.record_failed",
                 operation_id=operation.operation_id,
@@ -371,18 +391,20 @@ class HongzhaoMesAdapter:
     def _build_body(self, operation: CatalogOperation, params: Mapping[str, Any]) -> dict[str, Any]:
         """Inject public parameters from the bundle; reject unknown sources.
 
-        Credential-sourced values come exclusively from ``MesCredentialBundle``
-        — never from filters, user text, or model output.
+        Credential-sourced values come exclusively from the active
+        ``MesCredentialBundle`` — never from filters, user text, or model
+        output.
         """
+        bundle = self._active_bundle()
         body: dict[str, Any] = {}
         for parameter, source in operation.parameter_sources.items():
             if source == "credential":
                 if parameter == "app_key":
-                    body[parameter] = self._bundle.app_key
+                    body[parameter] = bundle.app_key
                 elif parameter == "timestamp":
-                    body[parameter] = self._bundle.timestamp
+                    body[parameter] = bundle.timestamp
                 elif parameter == "sign":
-                    body[parameter] = self._bundle.sign
+                    body[parameter] = bundle.sign
             else:
                 value = params.get(parameter)
                 if value is None and parameter in operation.required_params:
@@ -407,7 +429,7 @@ class HongzhaoMesAdapter:
             except Exception as error:  # noqa: BLE001 - pydantic ValidationError
                 raise UpstreamInvalidError("envelope failed schema validation") from error
         if response.status_code == 404:
-            # M14: wrong endpoint address surfaces as upstream_unavailable.
+            # A wrong endpoint address surfaces as upstream_unavailable.
             raise UpstreamUnavailableError("upstream endpoint not found")
         if response.status_code == 400:
             raise InvalidRequestError("upstream rejected request parameters")
@@ -437,7 +459,7 @@ def _result_row_count(envelope: Any) -> int:
 
     ``mes_call_fact.row_count_bucket`` is derived from this count. The count
     is only ever an estimate for rollup display; call counts themselves come
-    from event rows, never from summing this number (D6).
+    from event rows, never from summing this number.
     """
     result = getattr(envelope, "result", None)
     if isinstance(result, list):

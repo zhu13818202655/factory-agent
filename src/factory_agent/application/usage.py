@@ -187,7 +187,11 @@ def interaction_started_event(
     entrypoint: Entrypoint,
     role: Role,
 ) -> UsageEvent:
-    """Role is display-only (M11); recorded as a category, never a gate."""
+    """The authoritative token role, recorded as a metering category.
+
+    Role gates capability availability in the permission matrix; here it is
+    archived for usage reporting only.
+    """
     payload = context.envelope("interaction_started", occurred_at)
     payload["capability"] = str(capability) if capability is not None else None
     payload["entrypoint"] = entrypoint
