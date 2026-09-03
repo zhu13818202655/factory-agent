@@ -56,14 +56,11 @@ async def test_fake_session_repository_copies_records() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fake_artifact_store_supports_full_lifecycle() -> None:
+async def test_fake_artifact_store_supports_put_get_delete() -> None:
     store = FakeArtifactStore()
     await store.put("artifact-1", b"content", "application/octet-stream")
 
     assert await store.get("artifact-1") == b"content"
-    assert (
-        await store.presign("artifact-1", 60) == "https://artifacts.invalid/artifact-1?expires=60"
-    )
     await store.delete("artifact-1")
     with pytest.raises(KeyError):
         await store.get("artifact-1")

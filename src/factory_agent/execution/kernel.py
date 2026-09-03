@@ -98,6 +98,7 @@ class KernelCapabilityRunner:
         settings: KernelSettings | None = None,
         clock: Any | None = None,
         resource_columns: Mapping[str, tuple[str, ...]] | None = None,
+        base_data_operations: frozenset[str] | None = None,
     ) -> None:
         self._executor = executor
         self._recipes = recipes
@@ -108,6 +109,11 @@ class KernelCapabilityRunner:
         #: a fan-out that exhausted its call budget) still registers a typed
         #: sandbox table for downstream local compute.
         self._resource_columns = resource_columns or {}
+        #: Base-data operations (full-roster directory sources, no role
+        #: filtering) are excluded from ownership observation: their rows carry
+        #: the whole tenant's uid/dept values and would otherwise look like an
+        #: out-of-range return to the consistency validator (Story 2).
+        self._base_data_operations = base_data_operations or frozenset()
 
     @property
     def recipes(self) -> RecipeRegistry:
@@ -125,7 +131,10 @@ class KernelCapabilityRunner:
                 sandbox, recipe, filters, time_range, request.role
             )
             render_table = self._build_table(sandbox, recipe, fetches, filters, time_range)
-        result = self._to_run_result(render_table, time_range, fetches, call_count, started)
+            observed = _observe_ownership(recipe, fetches, self._base_data_operations)
+        result = self._to_run_result(
+            render_table, time_range, fetches, call_count, started, observed
+        )
         return result
 
     def to_render_table(self, result: CapabilityRunResult) -> RenderTable:
@@ -537,6 +546,7 @@ class KernelCapabilityRunner:
         fetches: dict[str, ResourceFetchResult],
         call_count: int,
         started: float,
+        observed: OwnershipObservation | None = None,
     ) -> CapabilityRunResult:
         column_names = tuple(column.name for column in table.columns)
         rows = tuple(
@@ -562,6 +572,8 @@ class KernelCapabilityRunner:
                 column.name: column.unit for column in table.columns if column.unit is not None
             },
             warnings=table.warnings,
+            observed_uid_values=observed.uids if observed is not None else (),
+            observed_dept_values=observed.depts if observed is not None else (),
         )
 
     @staticmethod
@@ -605,6 +617,51 @@ def render_table_from_run_result(result: CapabilityRunResult) -> RenderTable:
         incomplete=result.incomplete,
         incomplete_reason=result.incomplete_reason,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class OwnershipObservation:
+    """Distinct ownership values returned by the customer MES on business rows.
+
+    Consumed only by the role-consistency validator (Story 2); never rendered,
+    exported, logged, or persisted.
+    """
+
+    uids: tuple[str, ...] = ()
+    depts: tuple[str, ...] = ()
+
+
+def _observe_ownership(
+    recipe: CapabilityRecipe,
+    fetches: dict[str, ResourceFetchResult],
+    base_data_operations: frozenset[str],
+) -> OwnershipObservation:
+    """Collect distinct uid/dept values from the fetched business rows.
+
+    Base-data (full-roster directory) steps are skipped so the whole tenant's
+    roster is never mistaken for an out-of-range return. Only rows actually
+    returned by the MES after its row-level filtering are observed; a missing
+    ownership column simply contributes nothing.
+    """
+    api_by_step = {
+        step.step_id: step.operation_id
+        for step in recipe.steps
+        if step.kind == "api" and step.operation_id is not None
+    }
+    uids: set[str] = set()
+    depts: set[str] = set()
+    for step_id, fetch in fetches.items():
+        operation_id = api_by_step.get(step_id)
+        if operation_id is None or operation_id in base_data_operations:
+            continue
+        for row in fetch.rows:
+            uid = row.get("uid")
+            if uid is not None and uid != "":
+                uids.add(str(uid))
+            dept = row.get("dept")
+            if dept is not None and dept != "":
+                depts.add(str(dept))
+    return OwnershipObservation(uids=tuple(sorted(uids)), depts=tuple(sorted(depts)))
 
 
 def _binding_identifiers(step_id: str, param: str, binding: ParamBinding) -> tuple[str, str]:

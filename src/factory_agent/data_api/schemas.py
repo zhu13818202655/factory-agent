@@ -482,6 +482,26 @@ ROW_MODEL_BY_RESOURCE: dict[str, type[_CustomerRow]] = {
     "dg_cl": DgClRow,
 }
 
+#: Base-data resources: the catalog's 基础数据 (9) group. These operations do
+#: NOT filter by role and return the full roster/directory (customer-confirmed
+#: rule 4, ``docs/product/需求及方案整理.md``「客户确认结论」), so their rows
+#: carry the whole tenant's uid/dept values. The role-consistency safety net
+#: (Story 2) must never treat those unfiltered directory rows as the result's
+#: ownership signal; the kernel excludes them when observing ownership.
+BASE_DATA_RESOURCES: frozenset[str] = frozenset(
+    {
+        "user_info",
+        "move_menu",
+        "huohao",
+        "huohao_form",
+        "sc_type",
+        "rfid_worktype",
+        "huohao_worktype",
+        "employee",
+        "dept",
+    }
+)
+
 
 def row_to_plain_dict(row: BaseModel) -> dict[str, Any]:
     """Convert a validated row into a plain dict for the sandbox."""

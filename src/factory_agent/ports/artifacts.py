@@ -1,19 +1,19 @@
-"""Artifact metadata repository port.
+"""Instant-export contract (Story 3: 即时生成、直接下载、服务端不留存).
 
-Separate from the object-storage ``ArtifactStore``: the repository records only
-approved metadata (opaque object key, owner, capability, filename, size, SHA-256,
-retention timestamps) and never stores employee IDs, names, question text, or
-amounts. Every read is keyed by the trusted ownership pair so a cross-tenant
-object key is unreachable.
+The exporter renders a run result into XLSX in memory and keeps it only in a
+bounded transient buffer for a short window; there is no object store, no
+presigned URL, no retention lifecycle, and no durable artifact record. The
+download endpoint streams the transient bytes back as a file response after
+re-validating ownership. "回头再取" is served by history/favorite re-ask
+(重新执行 → 直接下载), never by a stored file.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Protocol
 
-from factory_agent.domain import CapabilityId, TenantId, UserId
+from factory_agent.domain import CapabilityId
 from factory_agent.ports.session import CapabilityRunResult, InteractionOwner
 
 
@@ -21,8 +21,7 @@ class ErrorCatalog:
     """Bounded export error categories; never carries sensitive values."""
 
     NOT_FOUND = "artifact_not_found"
-    UPLOAD_FAILED = "artifact_upload_failed"
-    INVALID = "artifact_invalid"
+    UNAVAILABLE = "artifact_unavailable"
 
 
 class ExportError(Exception):
@@ -36,44 +35,26 @@ class ExportError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ExportOutcome:
-    """Result of a successful (or intentionally failed) export."""
+    """Result of an instant export: an id plus render metadata."""
 
     artifact_id: str
     filename: str
     size_bytes: int
     sha256: str
-    expires_at: datetime
-    download_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class ArtifactRecord:
+class ExportContent:
+    """Transient export bytes served to the owner within the short window."""
+
     artifact_id: str
-    tenant_id: TenantId
-    user_id: UserId
-    interaction_id: str
-    capability_id: CapabilityId
-    object_key: str
     filename: str
     content_type: str
-    size_bytes: int
-    sha256: str
-    created_at: datetime
-    expires_at: datetime
-
-
-class ArtifactRepository(Protocol):
-    async def save(self, record: ArtifactRecord) -> None: ...
-
-    async def get(self, owner: InteractionOwner, artifact_id: str) -> ArtifactRecord | None: ...
-
-    async def delete(self, artifact_id: str) -> None: ...
-
-    async def list_expired(self, now: datetime) -> tuple[ArtifactRecord, ...]: ...
+    content: bytes
 
 
 class ArtifactExporter(Protocol):
-    """Renders a run result into an XLSX artifact and records its metadata."""
+    """Renders a run result into XLSX and hands back a transient export id."""
 
     async def export(
         self,
@@ -87,16 +68,19 @@ class ArtifactExporter(Protocol):
         result: CapabilityRunResult,
     ) -> ExportOutcome: ...
 
-    async def presign(self, owner: InteractionOwner, artifact_id: str) -> str: ...
+    async def fetch(self, owner: InteractionOwner, artifact_id: str) -> ExportContent | None:
+        """Return the transient content when owned and still within its window.
 
-    async def cleanup(self, now: datetime) -> int: ...
+        A missing, expired, or foreign id is indistinguishable (``None``): the
+        client should regenerate via history/favorite re-ask.
+        """
+        ...
 
 
 __all__ = [
     "ArtifactExporter",
-    "ArtifactRecord",
-    "ArtifactRepository",
     "ErrorCatalog",
+    "ExportContent",
     "ExportError",
     "ExportOutcome",
 ]

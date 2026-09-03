@@ -46,7 +46,8 @@
 4. 收到终态事件（`interaction.completed` / `interaction.failed` /
    `interaction.cancelled`）后结束本轮加载态。
 5. 收到 `interaction.result` 且 `artifact_id` 非空时，展示"导出报表"入口；用户点击后调用
-   `GET /v1/artifacts/{artifact_id}/download` 取得短时效下载 URL 并立即下载。
+   `GET /v1/artifacts/{artifact_id}/download`，把响应作为文件直接下载/保存（不留存，
+   无需预签名 URL）。
 6. SSE 意外断开时，用 `Last-Event-ID` 重连断点续传（§5.1），**不要**重新发起提问。
 7. 刷新页面 / 重新打开面板后，用 `GET /v1/sessions/{session_id}/messages` 恢复聊天内容；
    跨会话的历史查询入口用 `GET /v1/history`。
@@ -125,17 +126,18 @@
 
 ### 3.4 Artifact（导出产物）
 
-结果导出采用**即时生成、直接下载、服务端不留存**策略：导出文件不是长期保存的资源，
-"回头再取"通过历史记录/收藏一键复问重新生成。前端拿到下载视图后立即使用
-（URL 为短时效预签名链接）：
+结果导出采用**即时生成、直接下载、服务端不留存**策略：导出文件在内存中即时渲染，
+只短暂保留在进程内缓冲（约 15 分钟窗口），服务端**不落盘、不入对象存储、无生命周期**；
+"回头再取"通过历史记录/收藏一键复问**重新执行 → 直接下载**，留查询不留文件。
+`interaction.result` 携带的 `artifact_id` 是一次导出的短时效凭证：
 
 ```json
-{
-  "artifact_id": "art_xxx",
-  "url": "https://<object-store>/...?signature=...",
-  "expires_in_seconds": 900
-}
+{ "artifact_id": "art_xxx" }
 ```
+
+前端拿到 `artifact_id` 后调用 `GET /v1/artifacts/{artifact_id}/download`，响应即文件
+本体（`Content-Disposition: attachment`），浏览器直接下载、App 端保存到本地；不再需要
+预签名链接。链接过期或文件不可得（返回 404）时，引导用户用历史/收藏一键复问重新生成。
 
 ## 4. 接口清单
 
@@ -390,23 +392,16 @@ Query：`limit`（默认 50，上限 200）。响应：`Favorite[]`（结构同�
 
 `GET /v1/artifacts/{artifact_id}/download`
 
-响应：
+响应即文件本体（流式返回，`Content-Disposition: attachment`），前端/浏览器直接把响应当
+文件下载；App 端保存到本地。文件名按"角色_功能_时间范围_生成时间"约定。
 
-```json
-{
-  "artifact_id": "art_xxx",
-  "url": "https://<object-store>/factory-agent/9f1c....xlsx?...Signature=...",
-  "expires_in_seconds": 900
-}
-```
+- `artifact_id` 来自 `interaction.result` 事件（§5.3），是一次导出的短时效凭证。
+- 导出**即时生成、直接下载、服务端不留存**：XLSX 在内存渲染后仅短暂保留于进程内缓冲
+  （约 15 分钟窗口），无对象存储、无预签名链接、无留存生命周期；缓冲过期或文件不可得
+  时接口返回 404，应引导用户用历史/收藏一键复问**重新执行 → 直接下载**。
+- 下载会重新校验凭据与归属：他人 `artifact_id`、已过期的与不存在的 `artifact_id` 一律
+  返回 404（刻意不可区分）。
 
-- `artifact_id` 来自 `interaction.result` 事件（§5.3）。
-- `url` 为预签名直链，默认有效期 900 秒（可配置 60–3600 秒），**取得后立即下载**，
-  不要缓存复用；过期后重新调用本接口获取。
-- 导出即时生成、直接下载、服务端不留存：文件不是长期资源，链接过期或文件不可得时应
-  引导用户用历史/收藏一键复问重新生成。
-- PC 端浏览器直接下载；App 端保存到本地。文件名按"角色_功能_时间范围_生成时间"约定。
-- 下载会重新校验凭据与归属：他人 `artifact_id` 与不存在的 `artifact_id` 一样返回 404。
 
 ## 5. SSE 事件
 

@@ -18,6 +18,12 @@ class AuditEventType(StrEnum):
     API_CALL = "api_call"
     EXPORT = "export"
     DOWNLOAD = "download"
+    #: Role-consistency safety net (Story 2): an exact scope mismatch blocked a
+    #: result from display in production/strict mode. Emitted as the real-time
+    #: alert carrier alongside the structured log and the review table.
+    SCOPE_VIOLATION_EXACT = "scope_violation_exact"
+    #: Heuristic mismatch recorded without blocking (production mode).
+    SCOPE_VIOLATION_HEURISTIC = "scope_violation_heuristic"
 
 
 class AuditOutcome(StrEnum):

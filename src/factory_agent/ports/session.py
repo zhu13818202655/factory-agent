@@ -183,6 +183,13 @@ class CapabilityRunResult:
     column_types: dict[str, str] | None = None
     column_units: dict[str, str] | None = None
     warnings: tuple[str, ...] = ()
+    #: Ownership fields observed on the fetched business rows (role-consistency
+    #: safety net, Story 2). Distinct work numbers and dept ids actually
+    #: returned by the customer MES before local compute collapses rows; never
+    #: rendered, exported, logged, or persisted — consumed in memory only by
+    #: the consistency validator. Empty for fakes that do not populate them.
+    observed_uid_values: tuple[str, ...] = ()
+    observed_dept_values: tuple[str, ...] = ()
 
 
 class CapabilityRunner(Protocol):

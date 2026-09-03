@@ -223,25 +223,6 @@ tenant_usage_daily_table = sa.Table(
     sa.PrimaryKeyConstraint("tenant_id", "bucket_date", "metric"),
 )
 
-artifact_table = sa.Table(
-    "agent_artifact",
-    METADATA,
-    sa.Column("artifact_id", sa.Text, primary_key=True),
-    sa.Column("tenant_id", sa.Text, nullable=False),
-    sa.Column("user_id", sa.Text, nullable=False),
-    sa.Column("interaction_id", sa.Text, nullable=False),
-    sa.Column("capability_id", sa.Text, nullable=False),
-    sa.Column("object_key", sa.Text, nullable=False),
-    sa.Column("filename", sa.Text, nullable=False),
-    sa.Column("content_type", sa.Text, nullable=False),
-    sa.Column("size_bytes", sa.BigInteger, nullable=False),
-    sa.Column("sha256", sa.Text, nullable=False),
-    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-    sa.Index("agent_artifact_owner_idx", "tenant_id", "user_id", "artifact_id"),
-    sa.Index("agent_artifact_expiry_idx", "expires_at"),
-)
-
 user_mapping_table = sa.Table(
     "agent_user_mapping",
     METADATA,
@@ -287,9 +268,34 @@ favorite_table = sa.Table(
     sa.Index("agent_favorite_expiry_idx", "expires_at"),
 )
 
+#: Role-consistency review surface (Story 2). Structured findings from the
+#: consistency validator; never contains sensitive values — only digests and
+#: counts. Both the real-time alert path and the periodic scope-review task
+#: read/write it.
+scope_violation_table = sa.Table(
+    "agent_scope_violation",
+    METADATA,
+    sa.Column("violation_id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, nullable=False),
+    sa.Column("user_id", sa.Text, nullable=False),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("capability_id", sa.Text, nullable=False),
+    sa.Column("level", sa.Text, nullable=False),
+    sa.Column("mode", sa.Text, nullable=False),
+    sa.Column("reason_code", sa.Text, nullable=False),
+    sa.Column("interaction_id", sa.Text, nullable=True),
+    sa.Column("expected_range", sa.Text, nullable=False),
+    sa.Column("actual_summary", sa.Text, nullable=False),
+    sa.Column("row_count", sa.Integer, nullable=False),
+    sa.Column("sample_count", sa.Integer, nullable=False),
+    sa.Column("sample_digests", sa.JSON, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("agent_scope_violation_created_idx", "created_at"),
+    sa.Index("agent_scope_violation_tenant_idx", "tenant_id", "created_at"),
+)
+
 __all__ = [
     "METADATA",
-    "artifact_table",
     "event_table",
     "favorite_table",
     "interaction_fact_table",
@@ -299,6 +305,7 @@ __all__ = [
     "mes_operation_category_table",
     "message_table",
     "query_history_table",
+    "scope_violation_table",
     "tenant_usage_daily_table",
     "tenant_usage_hourly_table",
     "usage_event_table",

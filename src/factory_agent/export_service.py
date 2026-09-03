@@ -1,58 +1,70 @@
-"""Concrete artifact exporter wiring the renderer, object store, and repository.
+"""Instant, no-retention export service (Story 3).
+
+Renders a ``CapabilityRunResult`` into XLSX fully in memory and keeps the bytes
+only in a bounded, short-TTL in-process buffer (受控临时缓冲). There is no
+object store write, no presigned URL, and no retention lifecycle — the bytes
+are released when the download response finishes or the window expires, and
+"回头再取" is served by history/favorite re-ask (重新执行 → 直接下载).
 
 This module lives at the package root because it composes the ``export``
-renderer, the artifact object store, and the persistence repository — a
-combination no single governed subpackage may own. The session/application
-layers depend only on the ``ArtifactExporter`` port.
+renderer and the transient buffer; the session/application layers depend only
+on the ``ArtifactExporter`` port.
 """
 
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from factory_agent.domain import CapabilityId
-from factory_agent.domain.errors import InvalidRequestError, UpstreamUnavailableError
 from factory_agent.execution.kernel import render_table_from_run_result
-from factory_agent.export.artifacts import FilesystemArtifactStore, S3ArtifactStore
 from factory_agent.export.sanitize import build_export_filename
 from factory_agent.export.xlsx import render_xlsx
 from factory_agent.ports.artifacts import (
-    ArtifactRecord,
-    ArtifactRepository,
     ErrorCatalog,
+    ExportContent,
     ExportError,
     ExportOutcome,
 )
-from factory_agent.ports.contracts import ArtifactStore, Clock
 from factory_agent.ports.session import CapabilityRunResult, InteractionOwner
 
 _XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#: Default transient window before a generated export is dropped (seconds).
+DEFAULT_EXPORT_TTL_SECONDS = 900
+#: Hard cap on buffered exports so a busy tenant cannot exhaust memory.
+DEFAULT_EXPORT_MAX_ENTRIES = 512
+
+
+@dataclass(frozen=True, slots=True)
+class _Entry:
+    tenant_id: str
+    user_id: str
+    filename: str
+    content_type: str
+    content: bytes
+    created_monotonic: float
 
 
 class ExportService:
-    """Renders a ``CapabilityRunResult`` into XLSX and records its metadata."""
+    """Renders a ``CapabilityRunResult`` into transient, downloadable XLSX."""
 
     def __init__(
         self,
-        store: ArtifactStore,
-        repository: ArtifactRepository,
         *,
-        presign_expires_seconds: int = 900,
-        cleanup_after_days: int = 90,
-        secret_prefix: str = "factory-agent",
+        clock: Callable[[], datetime] | None = None,
         new_id: Callable[[], str] | None = None,
-        clock: Clock | None = None,
+        ttl_seconds: float = DEFAULT_EXPORT_TTL_SECONDS,
+        max_entries: int = DEFAULT_EXPORT_MAX_ENTRIES,
     ) -> None:
-        self._store = store
-        self._repository = repository
-        self._presign_expires_seconds = presign_expires_seconds
-        self._cleanup_after_days = cleanup_after_days
-        self._secret_prefix = secret_prefix
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._new_id = new_id or (lambda: uuid4().hex)
-        self._clock = clock
+        self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
+        self._buffer: dict[str, _Entry] = {}
 
     async def export(
         self,
@@ -71,79 +83,72 @@ class ExportService:
         try:
             content = render_xlsx(render_table)
         except Exception as error:  # noqa: BLE001 - renderer failures are bounded
-            raise ExportError(ErrorCatalog.INVALID, "renderer could not produce XLSX") from error
+            raise ExportError(
+                ErrorCatalog.UNAVAILABLE, "renderer could not produce XLSX"
+            ) from error
         if not content:
-            raise ExportError(ErrorCatalog.INVALID, "renderer produced empty content")
+            raise ExportError(ErrorCatalog.UNAVAILABLE, "renderer produced empty content")
 
         artifact_id = self._new_id()
-        object_key = f"{self._secret_prefix}/{artifact_id}"
-        try:
-            await self._store.put(artifact_id, content, _XLSX_CONTENT_TYPE)
-        except (InvalidRequestError, UpstreamUnavailableError) as error:
-            raise ExportError(ErrorCatalog.UPLOAD_FAILED, "artifact upload failed") from error
-
-        created_at = self._now()
-        record = ArtifactRecord(
-            artifact_id=artifact_id,
-            tenant_id=owner.tenant_id,
-            user_id=owner.user_id,
-            interaction_id=interaction_id,
-            capability_id=capability_id,
-            object_key=object_key,
+        self._evict_expired()
+        self._buffer[artifact_id] = _Entry(
+            tenant_id=str(owner.tenant_id),
+            user_id=str(owner.user_id),
             filename=filename,
             content_type=_XLSX_CONTENT_TYPE,
-            size_bytes=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
-            created_at=created_at,
-            expires_at=created_at + timedelta(days=self._cleanup_after_days),
+            content=content,
+            created_monotonic=time.monotonic(),
         )
-        await self._repository.save(record)
+        # Bound the buffer: evict the oldest entries beyond the cap.
+        if len(self._buffer) > self._max_entries:
+            for oldest in sorted(self._buffer, key=lambda key: self._buffer[key].created_monotonic)[
+                : len(self._buffer) - self._max_entries
+            ]:
+                self._buffer.pop(oldest, None)
         return ExportOutcome(
             artifact_id=artifact_id,
             filename=filename,
             size_bytes=len(content),
-            sha256=record.sha256,
-            expires_at=record.expires_at,
+            sha256=hashlib.sha256(content).hexdigest(),
         )
 
-    async def presign(self, owner: InteractionOwner, artifact_id: str) -> str:
-        record = await self._get_owned(owner, artifact_id)
-        if record is None:
-            raise ExportError(ErrorCatalog.NOT_FOUND, "artifact not found")
-        try:
-            return await self._store.presign(artifact_id, self._presign_expires_seconds)
-        except (InvalidRequestError, UpstreamUnavailableError) as error:
-            raise ExportError(ErrorCatalog.UPLOAD_FAILED, "artifact download failed") from error
+    async def fetch(self, owner: InteractionOwner, artifact_id: str) -> ExportContent | None:
+        """Return the transient content when owned and still within its window.
 
-    async def cleanup(self, now: datetime) -> int:
-        expired = await self._repository.list_expired(now)
-        for record in expired:
-            try:
-                await self._store.delete(record.artifact_id)
-            except (InvalidRequestError, UpstreamUnavailableError):
-                continue
-            await self._repository.delete(record.artifact_id)
-        return len(expired)
+        A missing, expired, or foreign id is indistinguishable (``None``):
+        regeneration happens through history/favorite re-ask, never a stored
+        file.
+        """
+        self._evict_expired()
+        entry = self._buffer.get(artifact_id)
+        if entry is None:
+            return None
+        if entry.tenant_id != str(owner.tenant_id) or entry.user_id != str(owner.user_id):
+            return None
+        return ExportContent(
+            artifact_id=artifact_id,
+            filename=entry.filename,
+            content_type=entry.content_type,
+            content=entry.content,
+        )
 
-    async def _get_owned(self, owner: InteractionOwner, artifact_id: str) -> ArtifactRecord | None:
-        return await self._repository.get(owner, artifact_id)
+    def _evict_expired(self) -> None:
+        cutoff = time.monotonic() - self._ttl_seconds
+        expired = [
+            artifact_id
+            for artifact_id, entry in self._buffer.items()
+            if entry.created_monotonic < cutoff
+        ]
+        for artifact_id in expired:
+            self._buffer.pop(artifact_id, None)
 
-    def _now(self) -> datetime:
-        if self._clock is not None:
-            return self._clock.now()
-        from datetime import timezone
 
-        return datetime.now(timezone.utc)
-
-
-def _timestamp_label(clock: Clock | None) -> str:
-    now = clock.now() if clock is not None else datetime.now()
-    return now.strftime("%Y%m%d%H%M%S")
+def _timestamp_label(clock: Callable[[], datetime]) -> str:
+    return clock().strftime("%Y%m%d%H%M%S")
 
 
 __all__ = [
-    "ExportError",
+    "DEFAULT_EXPORT_MAX_ENTRIES",
+    "DEFAULT_EXPORT_TTL_SECONDS",
     "ExportService",
-    "FilesystemArtifactStore",
-    "S3ArtifactStore",
 ]

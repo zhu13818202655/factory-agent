@@ -1,45 +1,50 @@
-"""Export artifact download endpoint.
+"""Instant export download endpoint (Story 3: 即时生成、直接下载、不留存).
 
 Download re-validates the caller through the token exchange, resolves the
-current authorization, and then issues a short-lived presigned URL from the
-artifact store. Cross-tenant object keys are unreachable because the artifact
-repository is queried by the trusted ownership pair. A download audit event
-records only the artifact ID, tenant, and outcome — never the row detail.
+current authorization, and then streams the transient in-memory XLSX back as a
+file response. There is no object store and no presigned URL: content lives in
+a short-TTL in-process buffer and is released when the response ends. A
+missing, expired, or foreign export id is a plain 404 — regeneration goes
+through history/favorite re-ask. A download audit event records only the
+artifact ID, tenant, and outcome — never the row detail.
 """
 
 from __future__ import annotations
 
 from typing import cast
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from factory_agent.api.identity import resolve_credential
 from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.bootstrap import ApplicationContainer
 from factory_agent.observability.audit import AuditEvent, AuditEventType, AuditOutcome
-from factory_agent.ports.artifacts import ExportError
 from factory_agent.ports.session import InteractionOwner
 
-
-class DownloadView(BaseModel):
-    artifact_id: str
-    url: str
-    expires_in_seconds: int
-
-
 export_router = APIRouter(prefix="/v1", tags=["artifacts"])
+
+#: Exports are served as an attachment; browsers download the stream directly
+#: and App clients save it to local storage.
+_DISPOSITION_ASCII_FALLBACK = "export.xlsx"
+
+
+def _content_disposition(filename: str) -> str:
+    return (
+        f'attachment; filename="{_DISPOSITION_ASCII_FALLBACK}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
 
 
 def _container(request: Request) -> ApplicationContainer:
     return cast(ApplicationContainer, request.app.state.container)
 
 
-@export_router.get("/artifacts/{artifact_id}/download", response_model=DownloadView)
+@export_router.get("/artifacts/{artifact_id}/download")
 async def download_artifact(
     artifact_id: str,
     request: Request,
-) -> DownloadView:
+) -> Response:
     container = _container(request)
     exporter = container.artifact_exporter
     if exporter is None:
@@ -57,18 +62,15 @@ async def download_artifact(
         tenant_id=authorization.tenant_context.tenant_id,
         user_id=authorization.tenant_context.user_id,
     )
-    try:
-        url = await exporter.presign(owner, artifact_id)
-    except ExportError as exc:
-        if exc.code == "artifact_not_found":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="artifact not found"
-            ) from exc
+    content = await exporter.fetch(owner, artifact_id)
+    if content is None:
+        # Indistinguishable for foreign/expired/missing ids; regeneration goes
+        # through history/favorite re-ask (重新执行 → 直接下载).
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="artifact download failed"
-        ) from exc
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="export is no longer available; re-ask from history/favorites to regenerate",
+        )
 
-    expires_in_seconds = container.settings.artifact_presign_expires_seconds
     await container.audit.record(
         AuditEvent(
             event_type=AuditEventType.DOWNLOAD,
@@ -85,7 +87,14 @@ async def download_artifact(
             request_id=str(artifact_id),
         )
     )
-    return DownloadView(artifact_id=artifact_id, url=url, expires_in_seconds=expires_in_seconds)
+    return Response(
+        content=content.content,
+        media_type=content.content_type,
+        headers={
+            "Content-Disposition": _content_disposition(content.filename),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 __all__ = ["export_router"]

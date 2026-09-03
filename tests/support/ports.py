@@ -57,7 +57,6 @@ class FakeSessionRepository:
 
 @dataclass
 class FakeArtifactStore:
-    base_url: str = "https://artifacts.invalid"
     objects: dict[str, tuple[bytes, str]] = field(default_factory=lambda: {})
 
     async def put(self, artifact_id: str, content: bytes, content_type: str) -> None:
@@ -68,11 +67,6 @@ class FakeArtifactStore:
 
     async def delete(self, artifact_id: str) -> None:
         self.objects.pop(artifact_id, None)
-
-    async def presign(self, artifact_id: str, expires_in_seconds: int) -> str:
-        if artifact_id not in self.objects:
-            raise KeyError(artifact_id)
-        return f"{self.base_url}/{artifact_id}?expires={expires_in_seconds}"
 
 
 @dataclass(frozen=True)

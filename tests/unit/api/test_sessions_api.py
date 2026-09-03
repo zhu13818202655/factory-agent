@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import httpx
@@ -46,17 +47,23 @@ CATALOG = CapabilityCatalog(
 
 
 def overrides(
-    store: InMemoryInteractionStore, runner: RecordingCapabilityRunner
+    store: InMemoryInteractionStore,
+    runner: RecordingCapabilityRunner,
+    *,
+    extra_members: dict[tuple[str, str], object] | None = None,
 ) -> DependencyOverrides:
     member = membership("user-a", "tenant-a", "emp-1", Role.EMPLOYEE)
+    members = {("tenant-a", "user-a"): member}
+    if extra_members:
+        members.update(extra_members)  # type: ignore[arg-type]
     return DependencyOverrides(
         model=ScriptedModelGateway(contents=[INTENT_PAYLOAD]),
         clock=FrozenClock(NOW),
         authorization=AuthorizationService(
-            memberships=FakeMembershipSource(
-                memberships_by_credential={("tenant-a", "user-a"): member}
+            memberships=FakeMembershipSource(memberships_by_credential=members),
+            organizations=FakeOrganizationSource(
+                depts_by_employee={"emp-1": ("dept-1",), "emp-2": ("dept-1",)}
             ),
-            organizations=FakeOrganizationSource(depts_by_employee={"emp-1": ("dept-1",)}),
             versions=FixedScopeVersionAssigner(),
         ),
         interactions=store,
@@ -232,3 +239,75 @@ async def test_health_still_reports_dependency_readiness() -> None:
         response = await http.get("/health/ready")
 
     assert response.json()["dependencies"]["model"] == "fake"
+
+
+async def _exported_artifact_id(
+    http: httpx.AsyncClient,
+) -> str:
+    created = await http.post(
+        "/v1/sessions/session-1/interactions",
+        json={"text": "上个月产量"},
+        headers=HEADERS,
+    )
+    interaction_id = created.json()["interaction_id"]
+    stream = await http.get(f"/v1/interactions/{interaction_id}/stream", headers=HEADERS)
+    body = next(
+        data
+        for data in _event_data(stream.text)
+        if '"capability_id"' in data and '"artifact_id"' in data
+    )
+    return json.loads(body)["artifact_id"]
+
+
+def _event_data(body: str) -> list[str]:
+    return [
+        frame.split("data: ", 1)[1]
+        for frame in body.split("\n\n")
+        if frame.strip() and "data: " in frame
+    ]
+
+
+@pytest.mark.asyncio
+async def test_export_download_streams_xlsx_after_ownership_validation() -> None:
+    store, runner = InMemoryInteractionStore(), RecordingCapabilityRunner()
+
+    async with client(store, runner) as http:
+        artifact_id = await _exported_artifact_id(http)
+        response = await http.get(f"/v1/artifacts/{artifact_id}/download", headers=HEADERS)
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert "attachment" in response.headers["content-disposition"]
+        assert response.content[:2] == b"PK"
+
+
+@pytest.mark.asyncio
+async def test_export_download_is_owned_and_not_replayable_across_users() -> None:
+    store, runner = InMemoryInteractionStore(), RecordingCapabilityRunner()
+    member_b = membership("user-b", "tenant-a", "emp-2", Role.EMPLOYEE)
+
+    async with client(store, runner) as http:
+        artifact_id = await _exported_artifact_id(http)
+        # A valid but different user cannot fetch the export (indistinguishable
+        # from a missing id).
+        app = create_app(
+            FactoryAgentSettings(environment="test"),
+            overrides(
+                store,
+                runner,
+                extra_members={("tenant-a", "user-b"): member_b},
+            ),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test.invalid"
+        ) as foreign_http:
+            foreign = await foreign_http.get(
+                f"/v1/artifacts/{artifact_id}/download",
+                headers={TENANT_HEADER: "tenant-a", USER_HEADER: "user-b"},
+            )
+        missing = await http.get("/v1/artifacts/does-not-exist/download", headers=HEADERS)
+
+    assert foreign.status_code == 404
+    assert missing.status_code == 404

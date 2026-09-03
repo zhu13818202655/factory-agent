@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Self
 
 from factory_agent.domain.identifiers import TenantId
@@ -230,11 +230,91 @@ class DataScope:
         return replace(self, dept_ids=narrowed)
 
 
+class ExpectedRangeKind(StrEnum):
+    """Role-derived expected-range tier used by the consistency validator.
+
+    00 员工 → SELF（仅本人 uid）；01 组长 → GROUP（本人 + 绑定小组，小组在数据层以
+    dept 集合表达）；02 管理 → DEPT（本人 + 绑定部门/车间集合，可跨车间多绑定）；
+    99 老板 → WHOLE_TENANT（不设范围上限）。01 与 02 的差别在绑定集合的构造
+    （Story 1 落地），不在校验分支里区分。
+    """
+
+    SELF = "self"
+    GROUP = "group"
+    DEPT = "dept"
+    WHOLE_TENANT = "whole_tenant"
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedRange:
+    """Expected visibility range for the role-consistency safety net (Story 2).
+
+    Built only from Story 1's authoritative token role and the bound dept set
+    (``TenantContext`` + ``DataScope``); it is never derived from user or LLM
+    output. The validator compares MES-returned ownership fields against this
+    range and only reports; it never re-filters or re-scopes data.
+
+    ``whole_tenant`` expresses the 99 老板 stance (no ceiling) and is never a
+    locally proven scope — exactly like ``DataScope.mes_filtered`` it records
+    that the customer MES performs the wider filtering.
+    """
+
+    role: Role
+    #: The caller's own work number (self dimension of every role).
+    employee_id: EmployeeId | None
+    #: Bound department/workshop set from the token binding (00/01: own dept,
+    #: 02: bound set which may span workshops; 99: empty — whole tenant).
+    dept_ids: frozenset[DeptId]
+    whole_tenant: bool = False
+
+    @classmethod
+    def from_context(cls, context: TenantContext, scope: DataScope) -> ExpectedRange:
+        """Derive the range from the authoritative role and bound scope."""
+        return cls(
+            role=context.role,
+            employee_id=context.employee_id,
+            dept_ids=frozenset(scope.dept_ids),
+            whole_tenant=context.role is Role.OWNER,
+        )
+
+    @property
+    def kind(self) -> ExpectedRangeKind:
+        if self.whole_tenant:
+            return ExpectedRangeKind.WHOLE_TENANT
+        if self.role is Role.EMPLOYEE:
+            return ExpectedRangeKind.SELF
+        if self.role is Role.GROUP_LEADER:
+            return ExpectedRangeKind.GROUP
+        return ExpectedRangeKind.DEPT
+
+    @property
+    def dept_id_strings(self) -> frozenset[str]:
+        return frozenset(str(item) for item in self.dept_ids)
+
+    def allows_employee(self, uid: str | None) -> bool:
+        """Whether an observed employee work number sits inside the range."""
+        if uid is None:
+            return True
+        if self.whole_tenant:
+            return True
+        return self.employee_id is not None and uid == str(self.employee_id)
+
+    def allows_dept(self, dept: str | None) -> bool:
+        """Whether an observed dept id sits inside the bound dept set."""
+        if dept is None:
+            return True
+        if self.whole_tenant:
+            return True
+        return dept in self.dept_id_strings
+
+
 __all__ = [
     "CapabilityId",
     "DataScope",
     "DeptId",
     "EmployeeId",
+    "ExpectedRange",
+    "ExpectedRangeKind",
     "Identity",
     "MembershipId",
     "NonEmptyId",

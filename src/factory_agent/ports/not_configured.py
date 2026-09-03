@@ -84,10 +84,6 @@ class NotConfiguredArtifactStore(ArtifactStore):
     async def delete(self, artifact_id: str) -> None:
         _raise("artifact store")
 
-    @override
-    async def presign(self, artifact_id: str, expires_in_seconds: int) -> str:
-        _raise("artifact store")
-
 
 class NotConfiguredClock(Clock):
     @override

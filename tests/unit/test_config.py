@@ -11,7 +11,9 @@ def test_optional_services_are_disabled_by_default() -> None:
     assert settings.canonical_mes_base_url is None
     assert settings.postgres_url is None
     assert settings.redis_url is None
-    assert settings.artifact_endpoint is None
+    assert settings.export_buffer_ttl_seconds == 900
+    # Story 3: no object-store/retention configuration remains.
+    assert "artifact_endpoint" not in FactoryAgentSettings.model_fields
 
 
 def test_no_provider_url_or_key_is_configurable_here() -> None:
@@ -27,13 +29,11 @@ def test_settings_read_unified_environment(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("FACTORY_AGENT_CANONICAL_MES_BASE_URL", "http://mock-mes:8010")
     monkeypatch.setenv("FACTORY_AGENT_POSTGRES_URL", "postgresql://secret@db/app")
     monkeypatch.setenv("FACTORY_AGENT_REDIS_URL", "redis://redis:6379/0")
-    monkeypatch.setenv("FACTORY_AGENT_ARTIFACT_ENDPOINT", "http://artifacts:9000")
-    monkeypatch.setenv("FACTORY_AGENT_ARTIFACT_BUCKET", "exports")
+    monkeypatch.setenv("FACTORY_AGENT_EXPORT_BUFFER_TTL_SECONDS", "300")
 
     settings = FactoryAgentSettings()
 
     assert settings.canonical_mes_base_url is not None
     assert settings.postgres_url is not None
     assert settings.redis_url is not None
-    assert settings.artifact_endpoint is not None
-    assert settings.artifact_bucket == "exports"
+    assert settings.export_buffer_ttl_seconds == 300

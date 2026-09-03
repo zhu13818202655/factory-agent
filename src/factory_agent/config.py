@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, SecretStr
+from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,18 +17,11 @@ class FactoryAgentSettings(BaseSettings):
     canonical_mes_base_url: AnyHttpUrl | None = None
     postgres_url: PostgresDsn | None = None
     redis_url: RedisDsn | None = None
-    artifact_endpoint: AnyHttpUrl | None = None
-    artifact_bucket: str | None = None
-    artifact_region: str = "us-east-1"
-    artifact_access_key: SecretStr | None = None
-    artifact_secret_key: SecretStr | None = None
-    #: Presigned download links default to a short 15-minute lifetime.
-    artifact_presign_expires_seconds: int = Field(default=900, ge=60, le=3600)
-    #: Exported artifacts are retained for 3 months and then cleaned up.
-    artifact_cleanup_after_days: int = Field(default=90, ge=1)
-    artifact_max_size_bytes: int = Field(default=50 * 1024 * 1024, ge=1024)
-    #: Object keys are unguessable UUIDs; no employee IDs or question text.
-    artifact_secret_prefix: str = "factory-agent"
+    # Instant-export transient buffer (Story 3: 即时生成、直接下载、服务端不留存).
+    # Generated XLSX lives only in a bounded in-process buffer for this short
+    # window; there is no object store and no retention lifecycle.
+    export_buffer_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    export_buffer_max_entries: int = Field(default=512, ge=1)
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     request_id_header: str = "X-Request-ID"
@@ -52,6 +45,12 @@ class FactoryAgentSettings(BaseSettings):
     # date falls back to a fixed window. Reviewed again in Story 3 dry-runs.
     delivery_warning_ratio_percent: int = Field(default=10, ge=1, le=100)
     delivery_warning_fallback_days: int = Field(default=7, ge=1)
+
+    # Role-consistency validation staged mode (Story 2): strict = 对接期
+    # (any inconsistency blocks the result and is exposed as an integration
+    # problem); production = 主路径信任 MES + two-tier handling (exact blocks
+    # with alert, heuristic only logs).
+    validation_mode: Literal["strict", "production"] = "strict"
 
     # LLM boundary (ADR-0006). Deployments and fallback order come from the
     # reviewed registry; provider keys come from the environment variables that

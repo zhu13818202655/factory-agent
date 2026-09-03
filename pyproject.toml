@@ -37,6 +37,7 @@ dev = [
 [project.scripts]
 factory-agent = "factory_agent.__main__:main"
 factory-agent-migrate = "factory_agent.persistence.migrations:main"
+factory-agent-scope-review = "factory_agent.cli:scope_review_main"
 
 [tool.uv.workspace]
 members = ["mock-mes", "usage-admin"]

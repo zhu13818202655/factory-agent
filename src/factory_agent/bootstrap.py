@@ -14,6 +14,7 @@ from factory_agent.application.business_filters import BusinessFilterResolver
 from factory_agent.application.cache import AuthAwareCache, CachedDirectorySource
 from factory_agent.application.capabilities import CapabilityRegistry
 from factory_agent.application.capability_map import default_capability_catalog
+from factory_agent.application.consistency import ConsistencyValidator
 from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
 from factory_agent.application.personal import PersonalizationService
@@ -24,7 +25,7 @@ from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
 from factory_agent.data_api.directory import MesDirectorySource
 from factory_agent.data_api.hongzhao import AdapterSettings, HongzhaoMesAdapter
-from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE
+from factory_agent.data_api.schemas import BASE_DATA_RESOURCES, ROW_MODEL_BY_RESOURCE
 from factory_agent.data_api.token_gateway import (
     GatewayTokenRefresher,
     TokenBackedMembershipResolver,
@@ -35,12 +36,11 @@ from factory_agent.execution.executor import ScopedExecutor
 from factory_agent.execution.kernel import KernelCapabilityRunner, KernelSettings
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import default_metric_registry
-from factory_agent.export_service import ExportService, S3ArtifactStore
+from factory_agent.export_service import ExportService
 from factory_agent.infrastructure.cache import RedisCacheStore
 from factory_agent.llm.registry import ModelRegistry, load_model_registry
 from factory_agent.llm.router_gateway import LiteLlmRouterGateway
 from factory_agent.observability.audit import AuditSink, InMemoryAuditSink
-from factory_agent.persistence.artifact_repository import SqlArtifactRepository
 from factory_agent.persistence.engine import create_session_engine
 from factory_agent.persistence.metering import SqlMeteringStore
 from factory_agent.persistence.personal_store import (
@@ -48,6 +48,7 @@ from factory_agent.persistence.personal_store import (
     SqlHistoryRepository,
     SqlUserMappingRepository,
 )
+from factory_agent.persistence.scope_violation import SqlScopeViolationStore
 from factory_agent.persistence.session_store import SqlInteractionStore
 from factory_agent.persistence.tenant_registry import SqlTenantRegistryReader
 from factory_agent.ports import (
@@ -320,6 +321,16 @@ def _build_personalization(
     )
 
 
+def _build_scope_violation_store(
+    settings: FactoryAgentSettings,
+) -> SqlScopeViolationStore | None:
+    """Durable review surface for role-consistency findings (Story 2)."""
+    if settings.postgres_url is None:
+        return None
+    engine = create_session_engine(str(settings.postgres_url))
+    return SqlScopeViolationStore(engine)
+
+
 def _build_session_service(
     settings: FactoryAgentSettings,
     supplied: DependencyOverrides,
@@ -363,6 +374,10 @@ def _build_session_service(
         personalization=personalization,
         credential_binder=credential_exchange,
         time_range_max_days=settings.time_range_max_days,
+        validator=ConsistencyValidator(),
+        violations=_build_scope_violation_store(settings),
+        audit=supplied.audit or InMemoryAuditSink(),
+        validation_mode=settings.validation_mode,
     )
 
 
@@ -386,10 +401,13 @@ def _build_capability_runner(
     recipes = load_recipes(catalog.operation_ids)
     executor = ScopedExecutor(adapter=mes, catalog=catalog)
     resource_columns: dict[str, tuple[str, ...]] = {}
+    base_data_operations: set[str] = set()
     for operation_id in catalog.operation_ids:
         operation = catalog.get(operation_id)
         model = ROW_MODEL_BY_RESOURCE.get(operation.resource) if operation.resource else None
         resource_columns[operation_id] = tuple(model.model_fields) if model else ()
+        if operation.resource in BASE_DATA_RESOURCES:
+            base_data_operations.add(operation_id)
     return KernelCapabilityRunner(
         executor,
         recipes,
@@ -399,6 +417,7 @@ def _build_capability_runner(
             delivery_warning_fallback_days=settings.delivery_warning_fallback_days,
         ),
         resource_columns=resource_columns,
+        base_data_operations=frozenset(base_data_operations),
     )
 
 
@@ -407,39 +426,21 @@ def _build_export_service(
     settings: FactoryAgentSettings,
     clock: Clock,
 ) -> tuple[ArtifactStore | None, ArtifactExporter | None]:
-    """Compose the exporter from object-store + PostgreSQL settings when present."""
+    """Compose the instant no-retention exporter (Story 3).
+
+    The exporter is purely in-memory (transient buffer): it needs no object
+    store and no PostgreSQL. It is built whenever an injected override is
+    absent, so generated exports are always downloadable within the short
+    buffer window for any configured deployment.
+    """
     if supplied.artifact_exporter is not None:
         return supplied.artifacts, supplied.artifact_exporter
-    if settings.artifact_endpoint is None or settings.postgres_url is None:
-        return None, None
-    store = supplied.artifacts
-    if store is None:
-        store = S3ArtifactStore(
-            str(settings.artifact_endpoint),
-            settings.artifact_bucket or "exports",
-            region=settings.artifact_region,
-            access_key=(
-                settings.artifact_access_key.get_secret_value()
-                if settings.artifact_access_key is not None
-                else None
-            ),
-            secret_key=(
-                settings.artifact_secret_key.get_secret_value()
-                if settings.artifact_secret_key is not None
-                else None
-            ),
-            path_prefix=settings.artifact_secret_prefix,
-        )
-    repository = SqlArtifactRepository(create_session_engine(str(settings.postgres_url)))
     exporter = ExportService(
-        store,
-        repository,
-        presign_expires_seconds=settings.artifact_presign_expires_seconds,
-        cleanup_after_days=settings.artifact_cleanup_after_days,
-        secret_prefix=settings.artifact_secret_prefix,
-        clock=clock,
+        clock=clock.now,
+        ttl_seconds=settings.export_buffer_ttl_seconds,
+        max_entries=settings.export_buffer_max_entries,
     )
-    return store, exporter
+    return supplied.artifacts, exporter
 
 
 def _load_registry(settings: FactoryAgentSettings) -> ModelRegistry | None:

@@ -26,6 +26,12 @@ from factory_agent.application.business_filters import (
     ResolvedBusinessFilters,
 )
 from factory_agent.application.capability_map import fr_id_for
+from factory_agent.application.consistency import (
+    ConsistencyValidator,
+    ConsistencyVerdict,
+    ValidationAction,
+    ValidationLevel,
+)
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.filters import FilterNarrower, FilterRejectionError
 from factory_agent.application.intent import CapabilityIntentParser, clarification_for
@@ -54,6 +60,8 @@ from factory_agent.domain import (
     INTERACTION_STARTED,
     CapabilityId,
     CapabilityIntent,
+    DataScope,
+    ExpectedRange,
     InteractionId,
     InteractionRecord,
     InteractionStatus,
@@ -66,10 +74,18 @@ from factory_agent.domain import (
     SessionId,
     SessionState,
     SessionStateMachine,
+    TenantContext,
     TimeRange,
     terminal_event_name,
 )
 from factory_agent.domain.errors import ForbiddenError
+from factory_agent.observability.audit import (
+    AuditEvent,
+    AuditEventType,
+    AuditOutcome,
+    AuditSink,
+)
+from factory_agent.observability.logging_adapter import get_logger
 from factory_agent.ports import (
     CapabilityRunRequest,
     CapabilityRunResult,
@@ -84,9 +100,12 @@ from factory_agent.ports import (
 )
 from factory_agent.ports.artifacts import ArtifactExporter
 from factory_agent.ports.contracts import CredentialBinder
+from factory_agent.ports.scope_violation import ScopeViolationRecord, ScopeViolationStore
 from factory_agent.ports.session import CapabilityRunner
 
 IdFactory = Callable[[], str]
+
+_logger = get_logger("session.consistency")
 
 #: Customer-confirmed time-range ceiling: at most the past year. Requests
 #: beyond it are terminated with a friendly notice before any MES call.
@@ -142,6 +161,10 @@ class SessionService:
         personalization: PersonalizationService | None = None,
         credential_binder: CredentialBinder | None = None,
         time_range_max_days: int = DEFAULT_TIME_RANGE_MAX_DAYS,
+        validator: ConsistencyValidator | None = None,
+        violations: ScopeViolationStore | None = None,
+        audit: AuditSink | None = None,
+        validation_mode: str = "strict",
     ) -> None:
         self._store = store
         self._authorization = authorization
@@ -157,6 +180,11 @@ class SessionService:
         self._personalization = personalization
         self._credential_binder = credential_binder
         self._time_range_max_days = time_range_max_days
+        #: Role-consistency safety net (Story 2): runs post-fetch, pre-compose.
+        self._validator = validator
+        self._violations = violations
+        self._audit = audit
+        self._validation_mode = validation_mode
 
     async def start(
         self, credential: TrustedCredential, request: StartRequest
@@ -529,6 +557,32 @@ class SessionService:
                 yield event
             return
 
+        # Role-consistency safety net (Story 2): judge the MES return AFTER the
+        # capability executed and BEFORE anything user-visible is composed. It
+        # never re-filters or rewrites rows and never triggers a re-fetch; it
+        # only blocks/warns, records, and alerts.
+        verdict = self._scope_verdict(result, capability, decision_context, scope)
+        if verdict is not None and not verdict.ok:
+            finding = verdict.finding
+            if finding is not None:
+                await self._record_scope_violation(
+                    state, capability, verdict, decision_context, scope, len(result.rows)
+                )
+                if verdict.action is ValidationAction.BLOCK:
+                    # Canonical category mirrors the audit event type names:
+                    # scope_violation_exact / scope_violation_heuristic.
+                    level_suffix = finding.level.value.removesuffix("_hit")
+                    category = f"scope_violation_{level_suffix}"
+                    async for event in self._terminate(
+                        state,
+                        InteractionStatus.FAILED,
+                        category,
+                        usage_events,
+                        self._scope_block_text(verdict, decision_context),
+                    ):
+                        yield event
+                    return
+
         yield await self._phase(state, SessionState.COMPOSING, "execution_complete")
 
         artifact_id = None
@@ -549,6 +603,7 @@ class SessionService:
                 artifact_id = None
 
         state.record = replace(state.record, capability_id=capability_id)
+        consistency = _consistency_payload(verdict)
         result_event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_RESULT,
@@ -559,6 +614,7 @@ class SessionService:
                 "incomplete": result.incomplete,
                 "incomplete_reason": result.incomplete_reason,
                 "artifact_id": artifact_id,
+                **({"consistency": consistency} if consistency is not None else {}),
             },
         )
         answered = self._advance(state.record, SessionState.ANSWERED, "result_ready")
@@ -596,6 +652,7 @@ class SessionService:
                             "columns": list(result.column_names),
                             "row_count": len(result.rows),
                             "artifact_id": artifact_id,
+                            **({"consistency": consistency} if consistency is not None else {}),
                         },
                     ),
                 ),
@@ -824,6 +881,115 @@ class SessionService:
         )
         yield event
 
+    # ------------------------------------------------------------------
+    # Role-consistency safety net (Story 2).
+    # ------------------------------------------------------------------
+
+    def _scope_verdict(
+        self,
+        result: CapabilityRunResult,
+        capability: Capability,
+        context: TenantContext,
+        scope: DataScope,
+    ) -> ConsistencyVerdict | None:
+        """Run the validator when wired; expected range comes only from the
+        authoritative token role and bound scope."""
+        if self._validator is None:
+            return None
+        expected = ExpectedRange.from_context(context, scope)
+        return self._validator.validate(
+            result=result,
+            capability=capability,
+            expected=expected,
+            mode=self._validation_mode,
+        )
+
+    async def _record_scope_violation(
+        self,
+        state: _RunState,
+        capability: Capability,
+        verdict: ConsistencyVerdict,
+        context: TenantContext,
+        scope: DataScope,
+        row_count: int,
+    ) -> None:
+        """Record the finding (review table + audit alert + structured log).
+
+        Best-effort only: a storage failure is logged and never changes the
+        interaction outcome. No sensitive value ever enters the record — only
+        counts, digests, and the readable expected/actual summaries.
+        """
+        finding = verdict.finding
+        if finding is None:
+            return
+        now = self._clock.now()
+        blocked = verdict.action is ValidationAction.BLOCK
+        exact = finding.level is ValidationLevel.EXACT_HIT
+        interaction_id = str(state.record.interaction_id)
+        entry = ScopeViolationRecord(
+            violation_id=self._new_id(),
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            role=context.role,
+            capability_id=str(capability),
+            level=finding.level.value,
+            mode=self._validation_mode,
+            reason_code=finding.code,
+            interaction_id=interaction_id,
+            expected_range=finding.expected,
+            actual_summary=finding.actual,
+            row_count=row_count,
+            sample_count=finding.sample_count,
+            sample_digests=finding.sample_digests,
+            created_at=now,
+        )
+        if self._violations is not None:
+            try:
+                await self._violations.record(entry)
+            except Exception:  # noqa: BLE001 - best-effort review surface
+                _logger.opt(exception=True).warning("session.consistency.violation_store_failed")
+        if self._audit is not None:
+            try:
+                await self._audit.record(
+                    AuditEvent(
+                        event_type=(
+                            AuditEventType.SCOPE_VIOLATION_EXACT
+                            if exact
+                            else AuditEventType.SCOPE_VIOLATION_HEURISTIC
+                        ),
+                        outcome=(AuditOutcome.DENIED if blocked else AuditOutcome.ALLOWED),
+                        capability_id=str(capability),
+                        intent_summary=None,
+                        scope_fingerprint=None,
+                        employee_count=len(scope.employee_ids),
+                        dept_count=len(scope.dept_ids),
+                        whole_tenant=scope.mes_filtered,
+                        tenant_id=str(context.tenant_id),
+                        status="blocked" if blocked else "logged",
+                        occurred_at=now,
+                        request_id=interaction_id,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - audit must not break the pipeline
+                _logger.opt(exception=True).warning("session.consistency.audit_failed")
+        _logger.bind(
+            level=finding.level.value,
+            mode=self._validation_mode,
+            code=finding.code,
+            capability_id=str(capability),
+            role=context.role.value,
+            tenant_id=str(context.tenant_id),
+            action="block" if blocked else "log",
+            row_count=row_count,
+        ).warning("session.consistency.violation_detected")
+
+    @staticmethod
+    def _scope_block_text(verdict: ConsistencyVerdict, context: TenantContext) -> str:
+        finding = verdict.finding
+        if finding is None:
+            return "本次查询未能完成。"
+        return finding.reason
+
     async def _record_history(self, owner: InteractionOwner, state: _RunState) -> None:
         """Persist a normalized, non-sensitive history entry at terminal state.
 
@@ -1016,6 +1182,26 @@ def _friendly_rejection(role: Role | None) -> str:
     if data_range is None:
         return "当前角色暂不支持该查询。"
     return f"当前角色暂不支持该查询。您可查询的范围：{data_range}。"
+
+
+def _consistency_payload(verdict: ConsistencyVerdict | None) -> dict[str, object] | None:
+    """Front-end renderable consistency fields on result/card events.
+
+    Carries only the structured, non-sensitive fields: level, code, reason and
+    the readable expected/actual summaries.
+    """
+    if verdict is None or verdict.finding is None:
+        return None
+    finding = verdict.finding
+    return {
+        "level": finding.level.value,
+        "code": finding.code,
+        "reason": finding.reason,
+        "expected": finding.expected,
+        "actual": finding.actual,
+        "sample_count": finding.sample_count,
+        "blocked": verdict.action is ValidationAction.BLOCK,
+    }
 
 
 #: Human-readable stage labels carried on phase events.
