@@ -18,6 +18,9 @@ from factory_agent.application.consistency import ConsistencyValidator
 from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
 from factory_agent.application.personal import PersonalizationService
+from factory_agent.application.preferences import PreferencesService
+from factory_agent.application.push_channel import LocalPushChannel
+from factory_agent.application.reporting import DirectReportRunner, ReportingService
 from factory_agent.application.session import SessionLimits, SessionService
 from factory_agent.application.usage import ContextVarMesCallRecorder
 from factory_agent.config import FactoryAgentSettings
@@ -48,6 +51,10 @@ from factory_agent.persistence.personal_store import (
     SqlHistoryRepository,
     SqlUserMappingRepository,
 )
+from factory_agent.persistence.push_store import (
+    SqlPushDeliveryStore,
+    SqlPushPreferenceRepository,
+)
 from factory_agent.persistence.scope_violation import SqlScopeViolationStore
 from factory_agent.persistence.session_store import SqlInteractionStore
 from factory_agent.persistence.tenant_registry import SqlTenantRegistryReader
@@ -72,6 +79,7 @@ from factory_agent.ports.not_configured import (
     NotConfiguredModelGateway,
     NotConfiguredSessionRepository,
 )
+from factory_agent.ports.push import PushChannel
 
 
 class SystemClock(Clock):
@@ -94,6 +102,8 @@ class DependencyOverrides:
     artifact_exporter: ArtifactExporter | None = None
     capability_catalog: CapabilityCatalog | None = None
     personalization: PersonalizationService | None = None
+    preferences_service: PreferencesService | None = None
+    reporting: ReportingService | None = None
     new_id: Callable[[], str] | None = None
     mes_call_recorder: MesCallRecorder | None = None
     credential_exchange: TokenCredentialExchange | None = None
@@ -116,6 +126,8 @@ class ApplicationContainer:
     capability_runner: CapabilityRunner | None = None
     artifact_exporter: ArtifactExporter | None = None
     personalization: PersonalizationService | None = None
+    preferences_service: PreferencesService | None = None
+    reporting: ReportingService | None = None
     cache: AuthAwareCache | None = None
     credential_exchange: TokenCredentialExchange | None = None
     readiness: dict[str, str] = field(default_factory=lambda: {})
@@ -250,6 +262,11 @@ def build_container(
     )
     business_filters = BusinessFilterResolver(directory) if directory is not None else None
     personalization = _build_personalization(supplied, settings, clock)
+    preferences_service = _build_preferences_service(supplied, settings, clock)
+    push_channel = _build_push_channel(supplied, settings)
+    reporting = _build_reporting(
+        supplied, authorization, capability_runner, business_filters, clock, push_channel
+    )
     return ApplicationContainer(
         settings=settings,
         capabilities=CapabilityRegistry(),
@@ -265,6 +282,8 @@ def build_container(
         capability_runner=capability_runner,
         artifact_exporter=exporter,
         personalization=personalization,
+        preferences_service=preferences_service,
+        reporting=reporting,
         cache=cache,
         credential_exchange=credential_exchange,
         sessions_service=_build_session_service(
@@ -329,6 +348,51 @@ def _build_scope_violation_store(
         return None
     engine = create_session_engine(str(settings.postgres_url))
     return SqlScopeViolationStore(engine)
+
+
+def _build_preferences_service(
+    supplied: DependencyOverrides,
+    settings: FactoryAgentSettings,
+    clock: Clock,
+) -> PreferencesService:
+    """Push preferences service; a no-PG deployment returns defaults only."""
+    if supplied.preferences_service is not None:
+        return supplied.preferences_service
+    repository = (
+        SqlPushPreferenceRepository(create_session_engine(str(settings.postgres_url)))
+        if settings.postgres_url is not None
+        else None
+    )
+    return PreferencesService(repository, clock=clock)
+
+
+def _build_push_channel(
+    supplied: DependencyOverrides,
+    settings: FactoryAgentSettings,
+) -> PushChannel | None:
+    """Local fake push channel with an envelope delivery log when PostgreSQL."""
+    if settings.postgres_url is None:
+        return None
+    return LocalPushChannel(SqlPushDeliveryStore(create_session_engine(str(settings.postgres_url))))
+
+
+def _build_reporting(
+    supplied: DependencyOverrides,
+    authorization: AuthorizationService,
+    runner: CapabilityRunner | None,
+    business_filters: BusinessFilterResolver | None,
+    clock: Clock,
+    channel: PushChannel | None,
+) -> ReportingService | None:
+    """Morning-report/summary generation needs a real capability runner."""
+    if supplied.reporting is not None:
+        return supplied.reporting
+    if runner is None:
+        return None
+    direct = DirectReportRunner(
+        authorization, runner, clock=clock, business_filters=business_filters
+    )
+    return ReportingService(direct, channel, clock=clock)
 
 
 def _build_session_service(

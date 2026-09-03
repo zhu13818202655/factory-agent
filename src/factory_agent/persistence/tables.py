@@ -294,6 +294,43 @@ scope_violation_table = sa.Table(
     sa.Index("agent_scope_violation_tenant_idx", "tenant_id", "created_at"),
 )
 
+#: Push subscription preferences (Story 3B): monthly/weekly cadence + selected
+#: content items. The daily morning report is default-on and never stored here.
+#: Non-sensitive only (dates/times/content-item ids).
+user_preference_table = sa.Table(
+    "agent_user_preference",
+    METADATA,
+    sa.Column("tenant_id", sa.Text, primary_key=True),
+    sa.Column("user_id", sa.Text, primary_key=True),
+    sa.Column("weekly_enabled", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column("weekly_day_of_week", sa.Integer, nullable=True),
+    sa.Column("weekly_time", sa.Text, nullable=True),
+    sa.Column("monthly_enabled", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column("monthly_day_of_month", sa.Integer, nullable=True),
+    sa.Column("monthly_time", sa.Text, nullable=True),
+    sa.Column("content_items", sa.JSON, nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+#: Push delivery log (Story 3B local fake channel). Records only the delivery
+#: envelope — recipient, kind, item, status, and a message digest — never the
+#: message body or business amounts.
+push_delivery_table = sa.Table(
+    "agent_push_delivery",
+    METADATA,
+    sa.Column("delivery_id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, nullable=False),
+    sa.Column("user_id", sa.Text, nullable=False),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("content_item_id", sa.Text, nullable=True),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("message_digest", sa.Text, nullable=True),
+    sa.Column("row_count", sa.Integer, nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("agent_push_delivery_created_idx", "created_at"),
+    sa.Index("agent_push_delivery_owner_idx", "tenant_id", "user_id", "created_at"),
+)
+
 __all__ = [
     "METADATA",
     "event_table",
@@ -304,10 +341,12 @@ __all__ = [
     "mes_call_fact_table",
     "mes_operation_category_table",
     "message_table",
+    "push_delivery_table",
     "query_history_table",
     "scope_violation_table",
     "tenant_usage_daily_table",
     "tenant_usage_hourly_table",
     "usage_event_table",
     "user_mapping_table",
+    "user_preference_table",
 ]
