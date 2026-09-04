@@ -1,0 +1,150 @@
+{
+    // VS Code 调试配置（Factory Agent 联调用）
+    //
+    // 环境变量统一来自仓库根 .env（git-ignored），由 envFile 注入：
+    //   - 客户 MES 真实环境：FACTORY_AGENT_CANONICAL_MES_BASE_URL=http://hzlinkbiz.ywhzsoft.com:9002
+    //   - 大模型：FACTORY_AGENT_LLM_API_BASE / _API_KEY / _MODEL
+    // 注意：factory-agent 与 usage-admin 只读取进程环境变量，不会自己加载 .env，
+    // 所以「不在 VS Code 里启动」时必须手动 set -a; source .env; set +a。
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "factory-agent（客户真实 MES）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "factory_agent.__main__",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            // 不走 reload：uvicorn reload 会fork子进程，断点会失效。改代码请手动重启。
+            "purpose": [
+                "debug-in-terminal"
+            ]
+        },
+        {
+            "name": "factory-agent（本地 Mock MES）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "factory_agent.__main__",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                // 仅覆盖 MES 根地址，切回本地 mock-mes（需另开终端 `make dev-mock`）
+                "FACTORY_AGENT_CANONICAL_MES_BASE_URL": "http://127.0.0.1:8010"
+            },
+            "justMyCode": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "usage-admin",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "usage_admin.__main__",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pytest：当前文件",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${file}",
+                "-vv",
+                "-s"
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pytest：全量 unit",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/unit",
+                "tests/eval",
+                "mock-mes/tests/unit",
+                "usage-admin/tests/unit"
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "factory-agent-migrate（升级业务库）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "factory_agent.persistence.migrations",
+            "args": [
+                "upgrade",
+                "head"
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": true,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "factory-agent 测试前端（代理 + 静态页）",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/test_frontend/server.py",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": true,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "usage-admin 演示前端（代理 + 看板）",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/usage_admin_demo/server.py",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": true,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "usage-admin-migrate（升级运营库）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "usage_admin.migrations",
+            "args": [
+                "upgrade",
+                "head"
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": true,
+            "console": "integratedTerminal"
+        }
+    ],
+    "compounds": [
+        {
+            "name": "全部服务：factory-agent + usage-admin + 两个演示前端",
+            "configurations": [
+                "factory-agent（客户真实 MES）",
+                "usage-admin",
+                "factory-agent 测试前端（代理 + 静态页）",
+                "usage-admin 演示前端（代理 + 看板）"
+            ],
+            "stopAll": true
+        }
+    ]
+}

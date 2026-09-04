@@ -553,6 +553,11 @@ class SessionService:
                 yield event
             return
         except Exception:
+            _logger.exception(
+                "interaction.execution_failed",
+                interaction_id=str(state.record.interaction_id),
+                capability_id=str(capability_id),
+            )
             async for event in self._fail(state, "execution_failed", usage_events):
                 yield event
             return
@@ -651,6 +656,8 @@ class SessionService:
                             "capability_id": str(capability_id),
                             "columns": list(result.column_names),
                             "row_count": len(result.rows),
+                            "incomplete": result.incomplete,
+                            "incomplete_reason": result.incomplete_reason,
                             "artifact_id": artifact_id,
                             **({"consistency": consistency} if consistency is not None else {}),
                         },

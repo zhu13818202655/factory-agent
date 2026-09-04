@@ -157,6 +157,8 @@ operations:
       sign: credential
       uid: scope
     pagination: none
+    # 真实 MES 返回 {"employeeList": [...], "total": N}（2026-09-04 实测）。
+    list_key: employeeList
     usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: [movepassword, mobile, uname]
@@ -171,6 +173,8 @@ operations:
       timestamp: credential
       sign: credential
     pagination: none
+    # 真实 MES 返回 {"deptList": [...], "total": N}（2026-09-04 实测）。
+    list_key: deptList
     usage_category: other
     timeout_seconds: 10.0
     sensitive_fields: []

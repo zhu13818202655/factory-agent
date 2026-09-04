@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>usage-admin · 用量与运营看板（Demo）</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">UA</span>
+      <div>
+        <h1>usage-admin 运营看板（Demo）</h1>
+        <p class="sub">多租户用量计量 · 工厂账户 · Bearer 凭据由本地代理注入，不下发浏览器</p>
+      </div>
+    </div>
+    <div class="top-right">
+      <span id="conn" class="pill">连接中…</span>
+      <nav class="tabs">
+        <button class="tab active" data-tab="overview">用量看板</button>
+        <button class="tab" data-tab="registry">工厂账户</button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ============ Tab: 用量看板 ============ -->
+  <section id="tab-overview" class="tab-page">
+    <div class="filters">
+      <label>开始 <input type="date" id="start" /></label>
+      <label>结束 <input type="date" id="end" /></label>
+      <select id="tenant-filter" title="按工厂筛选（时间范围内有数据的租户）"><option value="">全部工厂</option></select>
+      <button id="btn-refresh" class="primary">刷新</button>
+      <span id="range-note" class="muted"></span>
+    </div>
+
+    <div class="kpi-grid" id="kpis"><!-- summary cards --></div>
+
+    <div class="panel">
+      <h3>每日趋势（F1.11）<span class="tag">Token 与问答</span></h3>
+      <div class="legend" id="ts-legend"></div>
+      <div id="ts-chart" class="chart"></div>
+    </div>
+
+    <div class="two-col">
+      <div class="panel">
+        <h3>MES 调用 · 成功四类（F1.8~F1.10 / F1.12）</h3>
+        <div id="mes-cat" class="bars"></div>
+        <div class="muted" id="mes-cat-note"></div>
+      </div>
+      <div class="panel">
+        <h3>MES 调用 · 失败（D7）</h3>
+        <div id="mes-fail" class="bars"></div>
+        <div class="muted" id="mes-fail-note"></div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="panel">
+        <h3>按能力分布（智能体口径，勿与 MES 分类混用）</h3>
+        <div id="caps" class="chips"></div>
+      </div>
+      <div class="panel">
+        <h3>按错误类别</h3>
+        <div id="errs" class="chips"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>按工厂用量明细（F1.13 / F1.14）</h3>
+      <table class="grid" id="by-tenant">
+        <thead>
+          <tr>
+            <th>工厂</th><th>AppKey</th><th>状态</th><th>Token</th>
+            <th>问答数</th><th>MES 产量</th><th>MES 工资</th><th>MES 订单</th><th>其他</th><th>最后使用</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="pager">
+        <button id="page-prev" class="ghost">上一页</button>
+        <span id="page-info"></span>
+        <button id="page-next" class="ghost">下一页</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ Tab: 工厂账户 ============ -->
+  <section id="tab-registry" class="tab-page" hidden>
+    <div class="panel">
+      <h3>工厂账户注册表（D8）<span class="tag">停用后不再发起新 MES 调用 · 不做物理删除</span></h3>
+      <div class="reg-form">
+        <input id="reg-name" placeholder="新工厂全称，如：温州制衣一厂" maxlength="200" />
+        <select id="reg-status">
+          <option value="active">启用</option>
+          <option value="disabled">停用</option>
+        </select>
+        <button id="btn-reg-create" class="primary">新增账户</button>
+      </div>
+      <table class="grid">
+        <thead><tr><th>工厂名称</th><th>AppKey（脱敏）</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead>
+        <tbody id="reg-body"></tbody>
+      </table>
+      <div class="muted" id="reg-note">新账户明文 AppKey 仅在创建响应返回一次，请立即保存。</div>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -8,6 +8,17 @@
 # holding the key, which the process resolves into a SecretStr at startup.
 # A deployment whose `api_key_env` is unset is dropped with a warning, so a
 # partially configured environment degrades instead of leaking a null key.
+#
+# Deployment topology (2026-09-04): all three tiers — fast / reasoning /
+# summary — are served by ONE self-hosted Qwen3.8 endpoint. The three-tier
+# split is retained as logical aliases (so per-tier routing, fallback chains and
+# per-alias budgets survive unchanged), but they currently resolve to the same
+# physical deployment.
+#
+# `api_base_env` / `model_env` let the endpoint and model id be retargeted from
+# the environment (see .env / .env.example) without editing this reviewed file.
+# The values below are the checked-in defaults used whenever those variables are
+# unset.
 
 version: 1
 
@@ -15,23 +26,38 @@ aliases:
   - alias: factory-fast
     fallbacks: [factory-reasoning]
     deployments:
-      - model: deepseek/deepseek-chat
-        api_base: https://api.deepseek.com/v1
-        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+      - model: Qwen/Qwen3.8-27B-FP8
+        api_base: http://117.184.148.14:21003/v1
+        api_key_env: FACTORY_AGENT_LLM_API_KEY
+        provider: openai
+        model_env: FACTORY_AGENT_LLM_MODEL
+        api_base_env: FACTORY_AGENT_LLM_API_BASE
         priority: 1
 
   - alias: factory-reasoning
     fallbacks: []
     deployments:
-      - model: deepseek/deepseek-reasoner
-        api_base: https://api.deepseek.com/v1
-        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+      - model: Qwen/Qwen3.8-27B-FP8
+        api_base: http://117.184.148.14:21003/v1
+        api_key_env: FACTORY_AGENT_LLM_API_KEY
+        provider: openai
+        model_env: FACTORY_AGENT_LLM_MODEL
+        api_base_env: FACTORY_AGENT_LLM_API_BASE
         priority: 1
 
   - alias: factory-summary
     fallbacks: [factory-fast]
     deployments:
-      - model: deepseek/deepseek-chat
-        api_base: https://api.deepseek.com/v1
-        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+      - model: Qwen/Qwen3.8-27B-FP8
+        api_base: http://117.184.148.14:21003/v1
+        api_key_env: FACTORY_AGENT_LLM_API_KEY
+        provider: openai
+        model_env: FACTORY_AGENT_LLM_MODEL
+        api_base_env: FACTORY_AGENT_LLM_API_BASE
         priority: 1
+
+# `provider: openai` is REQUIRED for this self-hosted vLLM endpoint. The served
+# model id (`Qwen/Qwen3.8-27B-FP8`) has no LiteLLM provider mapping, and an
+# unqualified id makes litellm Router construction fail with "LLM Provider NOT
+# provided". The prefix selects litellm's OpenAI-compatible path, which is what
+# a vLLM server speaks.

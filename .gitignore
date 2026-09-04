@@ -16,3 +16,4 @@ dist/
 
 # agent memory
 .workbuddy/
+.env-appkey.txt

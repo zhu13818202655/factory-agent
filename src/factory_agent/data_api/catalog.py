@@ -51,6 +51,12 @@ class CatalogOperation(BaseModel):
     required_params: tuple[str, ...] = ()
     parameter_sources: dict[str, ParameterSource]
     pagination: PaginationKind
+    #: Customer envelope key carrying the row list. The Hongzhao MES does not
+    #: use one uniform key: payroll queries return ``list`` while the
+    #: base-data queries return ``employeeList`` (EmployeeQuery) and
+    #: ``deptList`` (DeptQuery). Recorded per operation so the pager stays
+    #: customer-field-agnostic (field names are adapter-side details).
+    list_key: str = "list"
     usage_category: UsageCategory | None = None
     supports_footer: bool = False
     timeout_seconds: float

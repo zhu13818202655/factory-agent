@@ -48,3 +48,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         command.upgrade(config, args.revision)
     else:
         command.downgrade(config, args.revision)
+
+
+if __name__ == "__main__":  # pragma: no cover - module CLI entry
+    # Without this guard `python -m usage_admin.migrations upgrade head` only
+    # imports the module and silently performs no migration, while the
+    # `usage-admin-migrate` console script works. Both paths must behave
+    # identically (the VS Code launch configs use the `-m` form).
+    main()

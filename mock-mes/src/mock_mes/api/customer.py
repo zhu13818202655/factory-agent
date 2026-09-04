@@ -881,7 +881,18 @@ async def _json_body(request: Request) -> dict[str, Any]:
         raise MesError(400, "加密信息解析失败,请检查参数是否正确") from None
     if not isinstance(body, dict):
         raise MesError(400, "加密信息解析失败,请检查参数是否正确")
-    return cast(dict[str, Any], body)
+    body = cast(dict[str, Any], body)
+    # Real customer MES wraps business parameters under a single ``param``
+    # object (verified 2026-09-04): ``{app_key, timestamp, sign, param: {...}}``.
+    # Mock mirrors that shape, and also tolerates the legacy flat form so both
+    # are accepted by every endpoint below.
+    wrapped = body.get("param")
+    if isinstance(wrapped, dict):
+        merged: dict[str, Any] = dict(body)
+        merged.update(wrapped)
+        merged.pop("param", None)
+        return merged
+    return body
 
 
 __all__ = ["MesError", "router"]

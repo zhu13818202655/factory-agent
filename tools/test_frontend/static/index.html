@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Factory Agent · 四角色测试台</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <!-- ============ 视图 1：角色选择 ============ -->
+  <main id="view-select" class="view">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">FA</span>
+        <div>
+          <h1>Factory Agent 测试台</h1>
+          <p class="sub">对接客户 MES · 四角色对话测试（X-Factory-Credential 由本地代理注入）</p>
+        </div>
+      </div>
+      <div class="health" id="health-pill">检查后端中…</div>
+    </header>
+
+    <section class="role-grid" id="role-grid">
+      <!-- role cards rendered by app.js -->
+    </section>
+
+    <footer class="hint">
+      选择角色进入对话。每个角色的会话独立保存于浏览器；凭据配置在服务端
+      <code>.env</code> 的 <code>MES_APP_KEY_00/01/02/99</code>（git-ignored）。
+    </footer>
+  </main>
+
+  <!-- ============ 视图 2：对话 ============ -->
+  <main id="view-chat" class="view" hidden>
+    <header class="topbar chat-topbar">
+      <button id="btn-back" class="ghost" title="切换角色">← 切换角色</button>
+      <div class="chat-title">
+        <span id="role-badge" class="badge"></span>
+        <span id="role-name" class="role-name"></span>
+        <span id="session-chip" class="chip" title="会话 ID（存于浏览器本地）"></span>
+      </div>
+      <div class="chat-actions">
+        <span id="conn-state" class="conn"></span>
+        <button id="btn-cancel" class="ghost danger" hidden>停止</button>
+      </div>
+    </header>
+
+    <div id="messages" class="messages" aria-live="polite"></div>
+
+    <div id="quick-wrap" class="quick-wrap">
+      <div id="quick-questions" class="quick-questions"></div>
+    </div>
+
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="输入要查询的内容，例如：这个月整个厂工资发了多少钱？（Enter 发送 / Shift+Enter 换行）"></textarea>
+      <button id="btn-send" class="primary">发送</button>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

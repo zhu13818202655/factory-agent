@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 
 class MesEnvelope(BaseModel):
@@ -54,10 +54,15 @@ class CredentialBundleResponse(BaseModel):
 
     Contract source: ``docs/product/AI问答对外接口-整理.md`` §2.1. ``roles``
     is the authoritative role code (00 员工 / 01 组长 / 02 管理 / 99 老板);
-    ``dept`` is the bound department. ``boundDepts`` carries the full bound
-    department/workshop set when the MES returns multiple bindings (managers
-    may bind across workshops; the single-``dept`` fallback applies
-    otherwise — 绑定集合的多值形态待真实环境联调确认，Mock 按决策点先行).
+    ``dept`` is the home department.
+
+    Bound-department set (真实环境 2026-09-04 联调确认，差异台账 #1):
+    the customer's live ``/api/system/token`` returns the multi-department
+    binding as a **comma-separated string** named ``manageDept`` (e.g. role 02
+    returns ``dept="001"`` with ``manageDept="001,005"``). The Mock era
+    ``boundDepts`` array is not emitted by the live system but is still
+    accepted so both shapes validate; ``manageDept`` wins when non-empty
+    (split in ``token_gateway._bound_dept_codes``).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -75,6 +80,8 @@ class CredentialBundleResponse(BaseModel):
     timestamp: int
     roles: tuple[str, ...] = ()
     boundDepts: tuple[str, ...] = ()
+    #: Live-environment multi-dept binding (comma-separated); see class docs.
+    manageDept: str = ""
     permissions: tuple[str, ...] = ()
 
     @field_validator("roles", mode="before")
@@ -89,9 +96,38 @@ class _CustomerRow(BaseModel):
     Unknown fields (e.g. a Mock-internal ``company`` used for row filtering) are
     tolerated and dropped; documented fields remain required and type-checked,
     so drift that changes the shape of consumed values still fails closed.
+
+    Numeric tolerance (real-environment finding, 2026-09-04): the customer MES
+    returns amounts/counts/ids as JSON numbers (``id``/``fhsl``/``sl``/
+    ``price``/``je`` ...) and nullable timestamps (``inputtime_raw`` /
+    ``check_time_raw`` can be ``null``), whereas the Mock serialised them as
+    strings. Row models declare the consumed fields as ``str`` so downstream
+    compute is stable; this coercer normalises number → ``str`` and ``null`` →
+    ``""`` before validation so both shapes validate identically.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _coerce_scalars(cls, value: object, info: ValidationInfo) -> object:
+        field = cls.model_fields.get(info.field_name)
+        is_str_field = field is not None and field.annotation is str
+        # str-declared fields are normalised: null -> "" (nullable upstream
+        # timestamps like inputtime_raw) and numbers -> str (amounts/counts/ids).
+        # Non-str fields pass through untouched so their own type checks apply.
+        if not is_str_field:
+            return value
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, (int, float)):
+            # JSON numbers: keep a stable decimal-ish string (``1.0`` -> ``1``).
+            if isinstance(value, float) and value.is_integer():
+                return str(int(value))
+            return str(value)
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -175,17 +211,20 @@ class EmployeeRow(_CustomerRow):
     uid: str
     uname: str
     name_pk: str
-    mobile: str
-    movepassword: str
+    # 真实环境实测（2026-09-04）：弘兆 MES EmployeeQuery 员工行不下发 mobile /
+    # movepassword / employeeRule / move_admin_role（基础数据不含账号类字段），
+    # Mock 才填充。声明默认空串使两种形态都通过校验；当前无下游消费这些字段。
+    mobile: str = ""
+    movepassword: str = ""
     move_Login: str
     dept: str
     deptname: str
-    employeeRule: str
+    employeeRule: str = ""
     move_scan: int
     loginUserName: str
     zr_ck: str
     dy_gongzhong: str
-    move_admin_role: str
+    move_admin_role: str = ""
 
 
 class DeptRow(_CustomerRow):

@@ -149,7 +149,10 @@ def _model_list(registry: ModelRegistry) -> list[dict[str, Any]]:
         {
             "model_name": deployment.alias,
             "litellm_params": {
-                "model": deployment.model,
+                # Provider-qualified: an unqualified self-hosted id (e.g.
+                # "Qwen/...") makes Router construction fail with "LLM Provider
+                # NOT provided". See ResolvedDeployment.litellm_model.
+                "model": deployment.litellm_model,
                 "api_base": deployment.api_base,
                 "api_key": deployment.api_key,
                 "order": deployment.priority,

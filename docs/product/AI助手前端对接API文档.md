@@ -106,7 +106,16 @@
   "role": "assistant",
   "kind": "result_table",
   "sequence": 6,
-  "text": "已返回 12 行结果。"
+  "text": "已返回 12 行结果。",
+  "payload": {
+    "capability_id": "fr001_personal_output",
+    "columns": ["rq", "huohao", "worktype", "output_qty", "defective_qty"],
+    "row_count": 12,
+    "incomplete": false,
+    "incomplete_reason": null,
+    "artifact_id": "art_xxx",
+    "consistency": null
+  }
 }
 ```
 
@@ -123,6 +132,13 @@
 | `error` | 错误/拒绝/取消提示，`text` 为可直接展示的友好文案 | 错误提示气泡 |
 
 `sequence` 为该消息在轮内的单调递增序号，与 SSE 的 `id:` 同源。
+
+`payload`（可选，仅 `result_table` 消息返回）：结果卡片元数据，与 `interaction.result`
+事件的字段一致（`capability_id` / `columns` / `row_count` / `incomplete` /
+`incomplete_reason` / `artifact_id` / `consistency`）。前端可用它**重建结果卡片**：
+渲染列名、行数与完整性标记，并凭 `artifact_id` 提供导出入口；消息无 payload（如早期
+版本写入的记录）时该字段省略，前端回退为仅展示 `text` 摘要。SSE 事件不含 `payload`
+字段，两者互不影响。
 
 ### 3.4 Artifact（导出产物）
 

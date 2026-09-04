@@ -68,6 +68,7 @@ class BoundedPager:
         operation_id: str,
         base_params: dict[str, Any],
         item_model: type[BaseModel],
+        list_key: str = "list",
     ) -> PagedResult:
         from factory_agent.data_api.hongzhao import MesRequest
 
@@ -107,10 +108,12 @@ class BoundedPager:
                 footer = payload.footer
             try:
                 result = cast(dict[str, Any], payload.result)
-                raw_items = cast(list[Any], result["list"])
+                raw_items = cast(list[Any], result[list_key])
                 total = int(result["total"])
             except (KeyError, TypeError, ValueError) as error:
-                raise UpstreamInvalidError("list envelope failed validation") from error
+                raise UpstreamInvalidError(
+                    f"list envelope failed validation (list_key={list_key!r})"
+                ) from error
             try:
                 validated_items = tuple(
                     item_model.model_validate(cast(dict[str, Any], item)) for item in raw_items

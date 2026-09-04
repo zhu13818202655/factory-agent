@@ -56,6 +56,10 @@ class MessageView(BaseModel):
     kind: str
     sequence: int
     text: str
+    # Result-card metadata for kind=result_table (columns/row_count/artifact_id/
+    # incomplete...), so clients can re-render the card after a page reload.
+    # Absent for every other kind; omitted when the stored message has none.
+    payload: dict[str, object] | None = None
 
 
 class MessagePageView(BaseModel):
@@ -153,7 +157,11 @@ async def cancel_interaction(
     )
 
 
-@session_router.get("/sessions/{session_id}/messages", response_model=MessagePageView)
+@session_router.get(
+    "/sessions/{session_id}/messages",
+    response_model=MessagePageView,
+    response_model_exclude_none=True,
+)
 async def list_messages(
     session_id: str,
     request: Request,
@@ -185,6 +193,7 @@ async def list_messages(
                 kind=message.kind.value,
                 sequence=message.sequence,
                 text=message.text,
+                payload=message.payload or None,
             )
             for message in page.items
         ],

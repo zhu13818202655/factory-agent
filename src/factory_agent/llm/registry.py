@@ -24,13 +24,31 @@ DEFAULT_MODELS_PATH = Path("configs/knowledge/models.yaml")
 
 
 class ModelDeploymentEntry(BaseModel):
-    """One upstream deployment behind a logical alias."""
+    """One upstream deployment behind a logical alias.
+
+    ``api_key_env`` is mandatory: a key is never written into the reviewed
+    document. ``api_base_env`` / ``model_env`` are optional overrides — when
+    set and the named variable is non-empty, the environment wins over the
+    checked-in ``api_base`` / ``model`` defaults. That keeps one reviewed
+    topology in git while local/dev deployments retarget a self-hosted or
+    staging endpoint purely through the environment (see ADR-0006).
+
+    ``provider`` is the LiteLLM provider prefix (``openai``, ``deepseek``, ...)
+    used to qualify the model id. Self-hosted OpenAI-compatible endpoints
+    (vLLM / SGLang) serve model ids that LiteLLM cannot map to a provider on
+    its own — routing ``Qwen/...`` unqualified raises "LLM Provider NOT
+    provided" at Router construction. Declaring it here keeps the qualification
+    reviewed rather than guessed.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model: str = Field(min_length=1)
     api_base: str = Field(min_length=1)
     api_key_env: str = Field(min_length=1)
+    provider: str | None = None
+    api_base_env: str | None = None
+    model_env: str | None = None
     priority: int = Field(default=1, ge=1)
 
 
@@ -58,6 +76,21 @@ class ResolvedDeployment:
     api_base: str
     api_key: str
     priority: int
+    provider: str | None = None
+
+    @property
+    def litellm_model(self) -> str:
+        """Provider-qualified model id handed to the router.
+
+        Self-hosted OpenAI-compatible servers expose arbitrary model ids that
+        LiteLLM cannot map on its own, so an explicit ``provider`` wins. A model
+        id already carrying that prefix is returned untouched, so
+        ``deepseek/deepseek-chat`` is never double-qualified.
+        """
+        if not self.provider:
+            return self.model
+        prefix = f"{self.provider}/"
+        return self.model if self.model.startswith(prefix) else f"{prefix}{self.model}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,13 +158,22 @@ def _resolve_alias(
         resolved.append(
             ResolvedDeployment(
                 alias=entry.alias,
-                model=deployment.model,
-                api_base=deployment.api_base,
+                model=_override(deployment.model_env, deployment.model, environ),
+                api_base=_override(deployment.api_base_env, deployment.api_base, environ),
                 api_key=api_key,
                 priority=deployment.priority,
+                provider=deployment.provider,
             )
         )
     return tuple(resolved)
+
+
+def _override(env_name: str | None, default: str, environ: Mapping[str, str]) -> str:
+    """Environment override with a non-empty-value guard; default otherwise."""
+    if env_name is None:
+        return default
+    candidate = environ.get(env_name, "").strip()
+    return candidate or default
 
 
 def _reject_duplicate_aliases(document: ModelRegistryDocument) -> None:

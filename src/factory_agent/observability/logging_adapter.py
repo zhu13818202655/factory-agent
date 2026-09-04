@@ -61,6 +61,8 @@ def _json_sink(message: Any) -> None:  # pragma: no cover - exercised via loggin
 
 
 def _console_sink(message: Any) -> None:  # pragma: no cover - local development only
+    import traceback as _traceback
+
     record = message.record
     context = current_log_context()
     request_id = context.get("request_id", "-")
@@ -69,6 +71,11 @@ def _console_sink(message: Any) -> None:  # pragma: no cover - local development
         f"{request_id} | {record['extra'].get('component', 'app')} | "
         f"{redact_text(record['message'])}\n"
     )
+    # Attach the real traceback so local debugging never hides the root cause
+    # behind a structured marker (e.g. ``interaction.execution_failed``).
+    if record["exception"] is not None:
+        rendered = "".join(_traceback.format_exception(*record["exception"]))
+        sys.stdout.write(redact_text(rendered) + "\n")
 
 
 def configure_logging(settings: FactoryAgentSettings) -> None:

@@ -241,7 +241,9 @@ class HongzhaoMesAdapter:
         if item_model is None:
             raise UnsupportedOperationError("operation resource has no response model")
         params = self._resource_params(operation_id, filters, time_range, page_size, extra_params)
-        paged = await self._pager.fetch_all(operation_id, params, item_model)
+        paged = await self._pager.fetch_all(
+            operation_id, params, item_model, list_key=operation.list_key
+        )
         return ResourceFetchResult(
             rows=tuple(row_to_plain_dict(row) for row in paged.items),
             total=paged.total,
@@ -391,12 +393,20 @@ class HongzhaoMesAdapter:
     def _build_body(self, operation: CatalogOperation, params: Mapping[str, Any]) -> dict[str, Any]:
         """Inject public parameters from the bundle; reject unknown sources.
 
-        Credential-sourced values come exclusively from the active
-        ``MesCredentialBundle`` — never from filters, user text, or model
-        output.
+        Credential-sourced values (``app_key`` / ``timestamp`` / ``sign``) come
+        exclusively from the active ``MesCredentialBundle`` — never from
+        filters, user text, or model output — and stay at the top level.
+
+        Business parameters are grouped under a single ``param`` object:
+        verified against the real customer MES (2026-09-04) where a flat body
+        is rejected (``请求参数缺少app_key、timestamp、sign``) while the wrapped
+        shape ``{app_key, timestamp, sign, param: {...}}`` succeeds across the
+        Baseinfo / Plan / Sclzd / print families. Mock MES mirrors the shape in
+        ``_json_body`` so both sides stay in lockstep.
         """
         bundle = self._active_bundle()
         body: dict[str, Any] = {}
+        business: dict[str, Any] = {}
         for parameter, source in operation.parameter_sources.items():
             if source == "credential":
                 if parameter == "app_key":
@@ -410,10 +420,12 @@ class HongzhaoMesAdapter:
                 if value is None and parameter in operation.required_params:
                     raise InvalidRequestError(f"missing required parameter: {parameter}")
                 if value is not None:
-                    body[parameter] = value
+                    business[parameter] = value
         for parameter in operation.required_params:
-            if parameter not in body:
+            if parameter not in business and parameter not in body:
                 raise InvalidRequestError(f"missing required parameter: {parameter}")
+        if business:
+            body["param"] = business
         return body
 
     def _map_status(self, response: httpx.Response) -> Any:

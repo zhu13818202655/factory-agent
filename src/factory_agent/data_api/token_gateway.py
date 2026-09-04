@@ -268,6 +268,21 @@ def _principal_from_bundle(bundle: MesCredentialBundle) -> ResolvedPrincipal:
     )
 
 
+def _bound_dept_codes(result: CredentialBundleResponse) -> tuple[str, ...]:
+    """Resolve the bound-department set across both MES shapes.
+
+    Live customer environment (2026-09-04 联调): multi-dept bindings arrive as
+    the comma-separated ``manageDept`` string (role 02 → ``"001,005"`` while
+    ``dept`` stays ``"001"``). Mock-era deployments emit the ``boundDepts``
+    array instead. ``manageDept`` is authoritative when non-empty; the array
+    form is the fallback so neither shape silently narrows a manager's scope.
+    """
+    from_manage = tuple(part.strip() for part in result.manageDept.split(",") if part.strip())
+    if from_manage:
+        return from_manage
+    return tuple(result.boundDepts)
+
+
 def _bundle_from_response(result: CredentialBundleResponse, now: datetime) -> MesCredentialBundle:
     expires_at = _parse_expiry(result.expiresAt, result.expiresIn, now)
     return MesCredentialBundle(
@@ -281,7 +296,7 @@ def _bundle_from_response(result: CredentialBundleResponse, now: datetime) -> Me
         roles=tuple(result.roles),
         permissions=tuple(result.permissions),
         dept=result.dept,
-        bound_depts=tuple(result.boundDepts),
+        bound_depts=_bound_dept_codes(result),
     )
 
 
