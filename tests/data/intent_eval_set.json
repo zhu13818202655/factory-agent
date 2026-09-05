@@ -6,7 +6,8 @@
     {"capability_id": "FR-001", "title": "查看本人产量", "required_slots": ["time_range"]},
     {"capability_id": "FR-005", "title": "查询订单进度", "required_slots": ["time_range", "order_codes"]},
     {"capability_id": "FR-007", "title": "组织产量对比", "required_slots": ["time_range", "dept_names"]},
-    {"capability_id": "FR-011", "title": "全厂计件统计", "required_slots": ["time_range"]}
+    {"capability_id": "FR-011", "title": "全厂计件统计", "required_slots": ["time_range"]},
+    {"capability_id": "chitchat", "title": "闲聊与常识问答", "required_slots": []}
   ],
   "cases": [
     {
@@ -298,6 +299,32 @@
         "missing": ["time_range"],
         "ambiguous": [],
         "clarification": "请补充时间范围，例如“本月”“上周”或“2026-08”。"
+      }
+    },
+    {
+      "id": "chitchat-greeting",
+      "group": "intent",
+      "utterance": "你好",
+      "model_payload": {"capability_id": "chitchat", "confidence": 0.9, "slots": {}},
+      "expect": {
+        "capability_id": "chitchat",
+        "time_range": null,
+        "missing": [],
+        "ambiguous": [],
+        "clarification": null
+      }
+    },
+    {
+      "id": "chitchat-general-knowledge",
+      "group": "intent",
+      "utterance": "介绍一下鲁迅",
+      "model_payload": {"capability_id": "chitchat", "confidence": 0.88, "slots": {}},
+      "expect": {
+        "capability_id": "chitchat",
+        "time_range": null,
+        "missing": [],
+        "ambiguous": [],
+        "clarification": null
       }
     }
   ]

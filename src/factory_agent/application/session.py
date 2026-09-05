@@ -25,7 +25,8 @@ from factory_agent.application.business_filters import (
     DirectoryError,
     ResolvedBusinessFilters,
 )
-from factory_agent.application.capability_map import fr_id_for
+from factory_agent.application.capability_map import CHITCHAT_CAPABILITY_ID, fr_id_for
+from factory_agent.application.chitchat import ChatResponder
 from factory_agent.application.consistency import (
     ConsistencyValidator,
     ConsistencyVerdict,
@@ -53,6 +54,7 @@ from factory_agent.application.usage import (
     set_usage_context,
 )
 from factory_agent.domain import (
+    INTERACTION_ANSWER,
     INTERACTION_CLARIFICATION,
     INTERACTION_HEARTBEAT,
     INTERACTION_PHASE,
@@ -164,6 +166,7 @@ class SessionService:
         validator: ConsistencyValidator | None = None,
         violations: ScopeViolationStore | None = None,
         audit: AuditSink | None = None,
+        chat: ChatResponder | None = None,
         validation_mode: str = "strict",
     ) -> None:
         self._store = store
@@ -178,6 +181,7 @@ class SessionService:
         self._sleep = sleep or asyncio.sleep
         self._exporter = exporter
         self._personalization = personalization
+        self._chat_responder = chat
         self._credential_binder = credential_binder
         self._time_range_max_days = time_range_max_days
         #: Role-consistency safety net (Story 2): runs post-fetch, pre-compose.
@@ -412,12 +416,23 @@ class SessionService:
             return
 
         state.last_intent = intent
+
         if intent.needs_clarification:
             if state.record.clarification_rounds + 1 >= self._limits.max_clarification_rounds:
                 async for event in self._fail(state, "clarification_exhausted", usage_events):
                     yield event
                 return
             async for event in self._clarify(state, intent, usage_events):
+                yield event
+            return
+
+        # Chit-chat is resolved by the same capability selector but never becomes
+        # a business capability: it is intercepted here, before the permission
+        # matrix or any MES call, and answered with free-form text. A chit-chat
+        # utterance that is low-confidence/ambiguous is clarified first instead
+        # of being answered.
+        if intent.capability_id is not None and str(intent.capability_id) == CHITCHAT_CAPABILITY_ID:
+            async for event in self._chat(state, history, usage_events):
                 yield event
             return
 
@@ -716,6 +731,106 @@ class SessionService:
         )
         return outcome.intent
 
+    async def _chat(
+        self,
+        state: _RunState,
+        history: tuple[ConversationTurn, ...],
+        usage_events: list[UsageEvent],
+    ) -> AsyncIterator[SessionEvent]:
+        """Answer a chit-chat turn with free-form text; zero business calls."""
+        responder = self._chat_responder
+        if responder is None:
+            async for event in self._fail(state, "capability_unresolved", usage_events):
+                yield event
+            return
+        logical_call_id = self._new_id()
+        now = self._clock.now()
+        try:
+            reply = await responder.reply(
+                state.record.input_text,
+                logical_call_id=logical_call_id,
+                history=history,
+            )
+        except ModelGatewayError as exc:
+            usage_events.append(
+                llm_call_event(
+                    self._usage_context(state.record),
+                    occurred_at=now,
+                    logical_call_id=logical_call_id,
+                    stage=ModelStage.CHAT,
+                    model_alias=responder.model_alias,
+                    actual_model="unknown",
+                    attempt=exc.attempt,
+                    duration_ms=exc.duration_ms,
+                    status="failed",
+                    error_category=exc.category.value,
+                )
+            )
+            async for event in self._fail(state, f"gateway_{exc.category.value}", usage_events):
+                yield event
+            return
+        except StructuredOutputError:
+            async for event in self._fail(state, "model_output_invalid", usage_events):
+                yield event
+            return
+        usage_events.append(
+            llm_call_event(
+                self._usage_context(state.record),
+                occurred_at=now,
+                logical_call_id=logical_call_id,
+                stage=ModelStage.CHAT,
+                model_alias=reply.model_alias,
+                actual_model=reply.actual_model,
+                attempt=reply.attempt,
+                prompt_tokens=reply.prompt_tokens,
+                completion_tokens=reply.completion_tokens,
+                cached_tokens=reply.cached_tokens,
+                reasoning_tokens=reply.reasoning_tokens,
+                duration_ms=reply.duration_ms,
+                status="completed",
+            )
+        )
+        answered = self._advance(state.record, SessionState.ANSWERED, "chat_answer")
+        answer_event = SessionEvent(
+            sequence=state.next_sequence(),
+            name=INTERACTION_ANSWER,
+            data={"text": reply.text},
+        )
+        terminal = SessionEvent(
+            sequence=state.next_sequence(),
+            name=terminal_event_name(InteractionStatus.COMPLETED),
+            data={
+                "interaction_id": str(state.record.interaction_id),
+                "status": "completed",
+            },
+        )
+        state.record = replace(
+            answered,
+            status=InteractionStatus.COMPLETED,
+            last_event_sequence=terminal.sequence,
+            updated_at=now,
+            completed_at=now,
+        )
+        usage_events.append(self._completion_event(state.record, result=None, error_category=None))
+        await self._store.commit(
+            InteractionCommit(
+                interaction=state.record,
+                messages=(
+                    self._message(
+                        state.record,
+                        MessageRole.ASSISTANT,
+                        MessageKind.CHAT,
+                        terminal.sequence,
+                        reply.text,
+                    ),
+                ),
+                events=(answer_event, terminal),
+                usage_events=tuple(usage_events) + drain_mes_events(),
+            )
+        )
+        yield answer_event
+        yield terminal
+
     async def _clarify(
         self,
         state: _RunState,
@@ -1006,6 +1121,8 @@ class SessionService:
         """
         intent = state.last_intent
         if self._personalization is None or intent is None or intent.capability_id is None:
+            return
+        if str(intent.capability_id) == CHITCHAT_CAPABILITY_ID:
             return
         try:
             capability_id = CapabilityId(fr_id_for(str(intent.capability_id)))

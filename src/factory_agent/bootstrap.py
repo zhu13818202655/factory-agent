@@ -14,6 +14,7 @@ from factory_agent.application.business_filters import BusinessFilterResolver
 from factory_agent.application.cache import AuthAwareCache, CachedDirectorySource
 from factory_agent.application.capabilities import CapabilityRegistry
 from factory_agent.application.capability_map import default_capability_catalog
+from factory_agent.application.chitchat import ChatResponder
 from factory_agent.application.consistency import ConsistencyValidator
 from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
@@ -422,6 +423,12 @@ def _build_session_service(
         max_history_turns=settings.session_history_max_turns,
         max_history_chars=settings.session_history_max_chars,
     )
+    chat = ChatResponder(
+        model,
+        model_alias=settings.llm_summary_alias,
+        max_history_turns=settings.session_history_max_turns,
+        max_history_chars=settings.session_history_max_chars,
+    )
     return SessionService(
         interactions,
         authorization,
@@ -443,6 +450,7 @@ def _build_session_service(
         validator=ConsistencyValidator(),
         violations=_build_scope_violation_store(settings),
         audit=supplied.audit or InMemoryAuditSink(),
+        chat=chat,
         validation_mode=settings.validation_mode,
     )
 

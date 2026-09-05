@@ -126,6 +126,7 @@
 | 值 | 含义与建议渲染 |
 | --- | --- |
 | `plain_text` | 普通文本（用户提问） | 普通气泡 |
+| `chat` | 闲聊应答文本（问候/闲聊/常识问答等非业务轮，`role=assistant`，`text` 为可直接展示的回复） | 普通气泡，按 assistant 展示 |
 | `clarification` | 助手追问（缺时间、款号等条件时） | 追问气泡，引导用户补充 |
 | `phase` | 阶段变化记录 | 可折叠的过程信息 |
 | `result_table` | 结果卡片消息，`text` 为结果摘要（如"已返回 N 行结果。"） | 结果卡片 |
@@ -498,6 +499,7 @@ data: {JSON}
 | `interaction.started` | 本轮开始 | 否 |
 | `interaction.phase` | 阶段推进 | 否 |
 | `interaction.clarification` | 追问补全参数 | 否 |
+| `interaction.answer` | 闲聊应答全文（问候/闲聊/常识问答） | 否 |
 | `interaction.result` | 结果卡片数据 | 否 |
 | `interaction.heartbeat` | 保活 | 否 |
 | `interaction.completed` | 本轮正常结束（结果就绪或进入追问） | 是 |
@@ -586,7 +588,26 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 注意：`data.status` 有两种取值——`"completed"`（结果就绪）与 `"clarifying"`
 （本轮以追问收尾，等待用户补充后发起新一轮）。
 
-### 5.4 失败与取消事件
+### 5.4 闲聊应答（`interaction.answer`）
+
+当用户输入是问候、闲聊或与工厂业务无关的常识问答（例如"你好""介绍一下鲁迅"）时，本轮
+**不会**执行任何业务能力、不经过鉴权/取数/计算、不产出结果卡片：意图选择器选中保留能力
+`chitchat`，系统直接生成一段闲聊文本并经本事件送达。
+
+```text
+id: 5
+event: interaction.answer
+data: {"text":"你好呀！我是工厂助手，有什么可以帮你的吗？"}
+```
+
+- `text`：可直接展示的回复全文。涉及实时或无法核实的信息（如今天的天气、实时行情）时，
+  回复会说明"无法获取实时数据"，不会编造，也不会查询任何工厂数据。
+- 闲聊轮事件序列：`interaction.started` → `interaction.answer` →
+  `interaction.completed`（`status` 为 `"completed"`），无 `interaction.phase` 与
+  `interaction.result`；不占用追问轮次，不进入查询历史/收藏。
+- 回复同时以 `role=assistant`、`kind=chat` 消息持久化，历史消息接口（§4.5）可取回。
+
+### 5.5 失败与取消事件
 
 `interaction.failed`（终态）：
 
@@ -625,7 +646,7 @@ event: interaction.cancelled
 data: {"interaction_id":"it_xxx","reason":"user_requested"}
 ```
 
-### 5.5 完整成功序列示例（老板查全厂订单进度）
+### 5.6 完整成功序列示例（老板查全厂订单进度）
 
 ```text
 id: 1
@@ -670,7 +691,7 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 
 - **能力级"权限不足"不是 403**。HTTP 403 只出现在身份层拒绝；用户问了角色矩阵之外的
   能力时，请求照常受理（201），在事件流中以 `interaction.failed`（`error_category` =
-  `forbidden`）+ 友好文案收尾，文案会告知当前可查范围（§5.4），前端直接展示该文案即可。
+  `forbidden`）+ 友好文案收尾，文案会告知当前可查范围（§5.5），前端直接展示该文案即可。
 - 404 一律不暴露"存在但无权"的信息，前端按"不存在"处理。
 - 权限校验在任何业务取数之前完成：被拒绝的轮次不会产生任何业务数据调用。
 
@@ -683,7 +704,7 @@ data: {"interaction_id":"it_xxx","status":"completed"}
   前端不要按固定超时掐断，以终态事件为准。
 - `401` 出现时引导用户重新进入（凭据由宿主系统刷新）；`502` 可提示稍后重试。
 - 时间范围约束：查询上限为**近一年**（366 天），超范围请求不会取数，直接以友好提示
-  终止（§5.4 `time_range_exceeds_limit`）。
+  终止（§5.5 `time_range_exceeds_limit`）。
 
 ## 7. 前端实现注意事项
 
@@ -741,7 +762,9 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 | FR-012 | 员工工资查询（任一员工） | — | — | — | ✓ |
 
 说明：FR-001~FR-004 为个人能力（本人维度），四角色均可用；FR-005~FR-008 为管理能力，
-限组长/管理；FR-009~FR-012 为全厂能力，仅老板。矩阵外的请求以友好拒绝处理（§5.4）。
+限组长/管理；FR-009~FR-012 为全厂能力，仅老板。矩阵外的请求以友好拒绝处理（§5.5）。
+闲聊（保留能力 `chitchat`）不属于业务矩阵：四角色均可用、不占用追问轮次、不进查询历史/
+收藏。
 
 各角色数据范围（权限不足友好提示中引用的文案，`ROLE_DATA_RANGE`）：
 

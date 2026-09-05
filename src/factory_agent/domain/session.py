@@ -44,6 +44,7 @@ class SessionState(StrEnum):
 ALLOWED_TRANSITIONS: dict[SessionState, frozenset[SessionState]] = {
     SessionState.PARSING: frozenset(
         {
+            SessionState.ANSWERED,
             SessionState.CLARIFYING,
             SessionState.AUTHORIZING,
             SessionState.CANCELLED,
@@ -164,6 +165,7 @@ class MessageRole(StrEnum):
 
 class MessageKind(StrEnum):
     PLAIN_TEXT = "plain_text"
+    CHAT = "chat"
     CLARIFICATION = "clarification"
     PHASE = "phase"
     RESULT_TABLE = "result_table"
@@ -217,6 +219,7 @@ class SessionEvent:
 
 
 INTERACTION_STARTED = "interaction.started"
+INTERACTION_ANSWER = "interaction.answer"
 INTERACTION_PHASE = "interaction.phase"
 INTERACTION_CLARIFICATION = "interaction.clarification"
 INTERACTION_RESULT = "interaction.result"
@@ -292,6 +295,7 @@ class CapabilityIntent:
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "INTERACTION_ANSWER",
     "INTERACTION_CANCELLED",
     "INTERACTION_CLARIFICATION",
     "INTERACTION_COMPLETED",

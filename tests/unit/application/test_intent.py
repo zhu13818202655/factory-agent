@@ -30,6 +30,12 @@ CATALOG = CapabilityCatalog(
             title="查看订单进度",
             required_slots=("time_range", "order_codes"),
         ),
+        CapabilitySpec(
+            capability_id=CapabilityId("chitchat"),
+            title="闲聊与常识问答",
+            description="处理问候、寒暄以及与工厂业务无关的常识问答。",
+            required_slots=(),
+        ),
     )
 )
 
@@ -192,3 +198,53 @@ def test_clarification_is_none_for_a_complete_intent() -> None:
     )
 
     assert clarification_for(intent) is None
+
+
+@pytest.mark.asyncio
+async def test_greeting_selects_the_reserved_chitchat_capability() -> None:
+    gateway = ScriptedModelGateway(contents=[payload(capability_id="chitchat", slots={})])
+
+    outcome = await parser(gateway).parse("你好", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.capability_id == CapabilityId("chitchat")
+    assert outcome.intent.needs_clarification is False
+    assert outcome.intent.missing == ()
+    assert outcome.intent.ambiguous == ()
+    assert outcome.clarification is None
+
+
+@pytest.mark.asyncio
+async def test_chitchat_with_low_confidence_is_not_treated_as_confirmed() -> None:
+    gateway = ScriptedModelGateway(
+        contents=[payload(capability_id="chitchat", confidence=0.2, slots={})]
+    )
+
+    outcome = await parser(gateway).parse("随便聊聊", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.capability_id == CapabilityId("chitchat")
+    assert outcome.intent.needs_clarification is True
+    assert "capability" in outcome.intent.ambiguous
+
+
+def test_describe_lists_chinese_titles_descriptions_and_slot_labels() -> None:
+    catalog = CapabilityCatalog(
+        specs=(
+            CapabilitySpec(
+                capability_id=CapabilityId("fr001_personal_output"),
+                title="个人产量统计",
+                description="按日期、款号、工序统计本人的计件产量（合格件数，次品不计）。",
+                required_slots=("time_range",),
+            ),
+            CapabilitySpec(
+                capability_id=CapabilityId("chitchat"),
+                title="闲聊与常识问答",
+                description="处理问候、寒暄以及与工厂业务无关的常识问答。",
+            ),
+        )
+    )
+
+    text = catalog.describe()
+
+    assert "- fr001_personal_output（个人产量统计）：按日期" in text
+    assert "需要提供：时间范围" in text
+    assert "- chitchat（闲聊与常识问答）" in text

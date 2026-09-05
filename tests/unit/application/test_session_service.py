@@ -16,6 +16,7 @@ from factory_agent.application.business_filters import (
     DirectoryError,
     EmployeeRecord,
 )
+from factory_agent.application.chitchat import ChatResponder
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.intent import CapabilityCatalog, CapabilitySpec
 from factory_agent.application.session import (
@@ -26,6 +27,7 @@ from factory_agent.application.session import (
 )
 from factory_agent.application.usage import pseudonymous_subject
 from factory_agent.domain import (
+    INTERACTION_ANSWER,
     INTERACTION_CLARIFICATION,
     INTERACTION_RESULT,
     INTERACTION_STARTED,
@@ -34,6 +36,7 @@ from factory_agent.domain import (
     EmployeeId,
     InteractionId,
     InteractionStatus,
+    MessageKind,
     Role,
     SessionEvent,
     SessionId,
@@ -77,6 +80,12 @@ CATALOG = CapabilityCatalog(
             title="任一员工工资查询",
             required_slots=("time_range", "employee_names"),
         ),
+        CapabilitySpec(
+            capability_id=CapabilityId("chitchat"),
+            title="闲聊与常识问答",
+            description="处理问候、寒暄以及与工厂业务无关的常识问答。",
+            required_slots=(),
+        ),
     )
 )
 
@@ -91,6 +100,7 @@ ANY_EMPLOYEE_PAYLOAD = (
     '{"time_expression": "上个月", "employee_names": ["模拟员工甲"]}}'
 )
 INCOMPLETE_PAYLOAD = '{"capability_id": null, "confidence": 0.2, "slots": {}}'
+CHITCHAT_PAYLOAD = '{"capability_id": "chitchat", "confidence": 0.95, "slots": {}}'
 #: Explicit slot dates spanning more than the one-year ceiling (客户确认 2).
 TOO_WIDE_PAYLOAD = (
     '{"capability_id": "FR-001", "confidence": 0.95, "slots": '
@@ -144,6 +154,8 @@ def build(
     limits: SessionLimits | None = None,
     store: InMemoryInteractionStore | None = None,
     directory: FakeDirectory | None = None,
+    chat_text: str | None = None,
+    chat_failure: Exception | None = None,
 ) -> tuple[SessionService, InMemoryInteractionStore, RecordingCapabilityRunner]:
     from factory_agent.application.intent import CapabilityIntentParser
 
@@ -151,6 +163,15 @@ def build(
     parser = CapabilityIntentParser(
         gateway, CATALOG, model_alias="factory-fast", timezone_name="Asia/Shanghai"
     )
+    chat = None
+    if chat_text is not None or chat_failure is not None:
+        chat = ChatResponder(
+            ScriptedModelGateway(
+                contents=[chat_text] if chat_text is not None else [],
+                failures=[chat_failure] if chat_failure is not None else [],
+            ),
+            model_alias="factory-summary",
+        )
     resolved_store = store or InMemoryInteractionStore()
     resolved_runner = runner or RecordingCapabilityRunner()
     service = SessionService(
@@ -162,6 +183,7 @@ def build(
         new_id=SequentialIds(),
         limits=limits,
         sleep=_no_sleep,
+        chat=chat,
         business_filters=BusinessFilterResolver(directory or FakeDirectory()),
     )
     return service, resolved_store, resolved_runner
@@ -556,3 +578,88 @@ async def test_fr012_unresolved_employee_rejects_with_zero_business_calls() -> N
     assert runner.requests == []
     assert events[-1].name == "interaction.failed"
     assert store.interactions[str(record.interaction_id)].error_category == "filter_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Chit-chat turns (reserved capability, zero business calls).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chitchat_answers_free_form_text_with_zero_business_calls() -> None:
+    reply = "你好呀！我是工厂助手，今天想聊点什么？"
+    service, store, runner = build([CHITCHAT_PAYLOAD], chat_text=reply)
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    answer = next(event for event in events if event.name == INTERACTION_ANSWER)
+    assert answer.data["text"] == reply
+    assert events[-1].name == "interaction.completed"
+    stored = store.interactions[str(record.interaction_id)]
+    assert stored.state is SessionState.ANSWERED
+    assert stored.status is InteractionStatus.COMPLETED
+    assert stored.clarification_rounds == 0
+    assert stored.capability_id is None
+    assert [m.text for m in store.messages if m.kind is MessageKind.CHAT] == [reply]
+
+
+@pytest.mark.asyncio
+async def test_chitchat_records_only_extract_and_chat_llm_usage_events() -> None:
+    service, store, runner = build([CHITCHAT_PAYLOAD], chat_text="你好呀！")
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
+
+    await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    llm = [
+        event.payload
+        for event in store.usage_events
+        if event.payload["event_type"] == "llm_call_completed"
+    ]
+    assert [event["stage"] for event in llm] == ["extract", "chat"]
+    assert llm[1]["model_alias"] == "factory-summary"
+
+
+@pytest.mark.asyncio
+async def test_chitchat_without_a_responder_falls_back_safely() -> None:
+    service, store, runner = build([CHITCHAT_PAYLOAD])
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert events[-1].name == "interaction.failed"
+    stored = store.interactions[str(record.interaction_id)]
+    assert stored.error_category == "capability_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_chitchat_gateway_failure_is_a_friendly_failure() -> None:
+    service, store, runner = build(
+        [CHITCHAT_PAYLOAD],
+        chat_failure=ModelGatewayError(ModelErrorCategory.TIMEOUT, "chat upstream timed out"),
+    )
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert events[-1].name == "interaction.failed"
+    stored = store.interactions[str(record.interaction_id)]
+    assert stored.error_category == "gateway_timeout"
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_chitchat_is_clarified_not_answered() -> None:
+    payload = '{"capability_id": "chitchat", "confidence": 0.2, "slots": {}}'
+    service, store, runner = build([payload], chat_text="被忽略的回复")
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="随便聊聊"))
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert not any(event.name == INTERACTION_ANSWER for event in events)
+    assert any(event.name == INTERACTION_CLARIFICATION for event in events)
+    assert store.interactions[str(record.interaction_id)].clarification_rounds == 1

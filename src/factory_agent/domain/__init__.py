@@ -48,6 +48,7 @@ from factory_agent.domain.queries import (
     TimeRangeError,
 )
 from factory_agent.domain.session import (
+    INTERACTION_ANSWER,
     INTERACTION_CANCELLED,
     INTERACTION_CLARIFICATION,
     INTERACTION_COMPLETED,
@@ -80,6 +81,7 @@ from factory_agent.domain.session import (
 )
 
 __all__ = [
+    "INTERACTION_ANSWER",
     "INTERACTION_CANCELLED",
     "INTERACTION_CLARIFICATION",
     "INTERACTION_COMPLETED",

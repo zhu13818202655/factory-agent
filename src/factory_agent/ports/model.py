@@ -21,6 +21,7 @@ class ModelStage(StrEnum):
     EXTRACT = "extract"
     CLARIFY = "clarify"
     SUMMARIZE = "summarize"
+    CHAT = "chat"
     REPAIR = "repair"
 
 

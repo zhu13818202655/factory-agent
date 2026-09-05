@@ -51,6 +51,18 @@ REJECTED_SLOT_NAMES: frozenset[str] = frozenset(
     {"employee_ids", "dept_ids", "tenant_id", "user_id", "scope", "sql", "url"}
 )
 
+#: Chinese labels used when describing required slots in the capability list.
+#: The JSON slot keys the model emits stay English; these labels only make the
+#: prompt readable so the model can judge what information is still missing.
+_SLOT_LABELS_CN: dict[str, str] = {
+    "time_range": "时间范围",
+    "order_codes": "订单号",
+    "plan_codes": "计划单号",
+    "style_codes": "款号",
+    "dept_names": "车间或组别",
+    "employee_names": "员工姓名",
+}
+
 _CLARIFICATION_PROMPTS: dict[str, str] = {
     "time_range": "请补充时间范围，例如“本月”“上周”或“2026-08”。",
     "order_codes": "请提供具体的订单号。",
@@ -77,6 +89,7 @@ class ClarificationLimitError(Exception):
 class CapabilitySpec:
     capability_id: CapabilityId
     title: str
+    description: str = ""
     required_slots: tuple[str, ...] = ()
 
 
@@ -93,21 +106,34 @@ class CapabilityCatalog:
         return None
 
     def describe(self) -> str:
-        return "\n".join(
-            f"- {spec.capability_id}: {spec.title} (required: "
-            f"{', '.join(spec.required_slots) or 'none'})"
-            for spec in self.specs
-        )
+        lines: list[str] = []
+        for spec in self.specs:
+            line = f"- {spec.capability_id}（{spec.title}）"
+            if spec.description:
+                line = f"{line}：{spec.description}"
+            if spec.required_slots:
+                labels = "、".join(_SLOT_LABELS_CN.get(name, name) for name in spec.required_slots)
+                line = f"{line}（需要提供：{labels}）"
+            lines.append(line)
+        return "\n".join(lines)
 
 
 SYSTEM_PROMPT = (
-    "你是工厂业务助手的能力选择器。只能从给定的能力列表中选择一个 capability_id，"
+    "你是工厂业务助手的能力选择器，只能从给定的能力列表中选择一个 capability_id。\n"
+    "规则：\n"
+    "1. 用户询问产量、工资、订单/款号进度、车间对比、排名等工厂业务时，"
+    "选择对应的业务能力。\n"
+    "2. 用户只是问候、寒暄，或问与工厂业务无关的常识问题（如人物介绍、天气常识）时，"
+    "选择 chitchat。\n"
+    "3. 选中的业务能力缺少必填条件（如时间范围、订单号）时，把对应槽位留空，"
+    "不要臆造默认时间（如“本月”“今天”），由系统追问补全。\n"
+    "4. 无法判断应归属哪个能力时，capability_id 设为 null。\n"
     "不得发明新的能力，不得输出 SQL、URL、员工编号或部门编号。\n"
     "严格输出一个 JSON 对象：\n"
     '{"capability_id": "<列表中的 id 或 null>", "confidence": 0.0-1.0, '
     '"slots": {"time_expression": "...", "order_codes": [], "plan_codes": [], '
     '"style_codes": [], "dept_names": [], "employee_names": []}, "ambiguous": []}\n'
-    "无法判断时把 capability_id 设为 null。不要输出解释或代码块。"
+    "不要输出解释或代码块。"
 )
 
 

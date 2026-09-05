@@ -22,6 +22,7 @@ from factory_agent.application.authorization import (
     AuthorizationService,
     FixedScopeVersionAssigner,
 )
+from factory_agent.application.chitchat import ChatResponder
 from factory_agent.application.intent import (
     CapabilityCatalog,
     CapabilityIntentParser,
@@ -115,6 +116,11 @@ CATALOG = CapabilityCatalog(
             title="全厂计件统计",
             required_slots=("time_range",),
         ),
+        CapabilitySpec(
+            capability_id=CapabilityId("chitchat"),
+            title="闲聊与常识问答",
+            required_slots=(),
+        ),
     )
 )
 
@@ -123,6 +129,7 @@ OWNER_ONLY = (
     '{"capability_id": "FR-011", "confidence": 0.95, "slots": {"time_expression": "上个月"}}'
 )
 INCOMPLETE = '{"capability_id": null, "confidence": 0.2, "slots": {}}'
+CHITCHAT = '{"capability_id": "chitchat", "confidence": 0.95, "slots": {}}'
 
 
 def credential() -> TrustedCredential:
@@ -146,9 +153,15 @@ async def run_pipeline(
     role: Role = Role.EMPLOYEE,
     failure: Exception | None = None,
     cancel: bool = False,
+    chat_text: str | None = None,
 ) -> list[UsageEvent]:
     store = InMemoryInteractionStore()
     gateway = ScriptedModelGateway(contents=[payload], failures=[failure] if failure else [])
+    chat = None
+    if chat_text is not None:
+        chat = ChatResponder(
+            ScriptedModelGateway(contents=[chat_text]), model_alias="factory-summary"
+        )
     service = SessionService(
         store,
         authorization(role),
@@ -158,6 +171,7 @@ async def run_pipeline(
         RecordingCapabilityRunner(),
         FrozenClock(NOW),
         new_id=SequentialIds(),
+        chat=chat,
     )
     record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
     if cancel:
@@ -172,6 +186,7 @@ PIPELINES: dict[str, dict[str, Any]] = {
     "completed": {"payload": COMPLETE},
     "clarifying": {"payload": INCOMPLETE},
     "rejected": {"payload": OWNER_ONLY, "role": Role.EMPLOYEE},
+    "chat": {"payload": CHITCHAT, "chat_text": "你好呀！有什么可以帮你？"},
     "gateway_failure": {
         "payload": COMPLETE,
         "failure": ModelGatewayError(ModelErrorCategory.TIMEOUT, "upstream timed out"),
