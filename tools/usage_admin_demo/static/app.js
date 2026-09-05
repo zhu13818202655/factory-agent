@@ -399,12 +399,17 @@ async function toggleRegistry(act, appKey, name) {
 }
 async function createRegistry() {
   const name = $("reg-name").value.trim();
+  const appKey = $("reg-appkey").value.trim();
   if (!name) { toast("请填写工厂名称"); return; }
+  if (appKey && appKey.length < 4) { toast("AppKey 太短，请核对后填写或留空由平台生成"); return; }
   try {
+    // app_key 选填：留空时后端随机生成，仅适合演示；录入弘兆分配的 AppKey 才能让停用开关生效
+    const payload = { tenant_name: name, status: $("reg-status").value };
+    if (appKey) payload.app_key = appKey;
     const resp = await fetch("/admin/v1/tenants/registry", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenant_name: name, status: $("reg-status").value }),
+      body: JSON.stringify(payload),
     });
     const body = resp.ok ? await resp.json() : null;
     if (!resp.ok || !body) {
@@ -414,6 +419,7 @@ async function createRegistry() {
     }
     toast(`已创建：${body.tenant_name}。明文 AppKey（仅此一次）：${body.app_key}`, 8000);
     $("reg-name").value = "";
+    $("reg-appkey").value = "";
     loadRegistry();
   } catch (err) { toast(`创建失败：${err.message}`); }
 }

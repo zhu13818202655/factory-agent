@@ -68,6 +68,15 @@ class FactoryAgentSettings(BaseSettings):
     llm_allowed_fails: int = Field(default=2, ge=1)
     llm_cooldown_seconds: int = Field(default=30, ge=1)
 
+    # Thinking-mode policy, global across all aliases (ADR-0006 boundary).
+    # Default: thinking OFF (both current endpoints default to thinking ON, so
+    # the gateway sends an explicit disable). When enabled the effort defaults
+    # to "high"; accepted values low/medium/high/max are mapped per provider
+    # (Qwen chat_template_kwargs.thinking_effort only knows low/medium/high,
+    # DeepSeek reasoning_effort maps medium/xhigh to high).
+    llm_thinking_enabled: bool = False
+    llm_thinking_effort: Literal["low", "medium", "high", "max"] = "high"
+
     # Session orchestration bounds.
     factory_timezone: str = "Asia/Shanghai"
     session_max_input_chars: int = Field(default=2000, gt=0)

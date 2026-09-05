@@ -15,6 +15,14 @@
 # per-alias budgets survive unchanged), but they currently resolve to the same
 # physical deployment.
 #
+# Optional DeepSeek v4 backup (2026-09-05): every alias also declares a
+# priority-2 DeepSeek deployment that is skipped unless the environment
+# provides FACTORY_AGENT_LLM_KEY_DEEPSEEK, so a Qwen-only environment is
+# unchanged. Thinking policy is global and OFF by default
+# (FACTORY_AGENT_LLM_THINKING_ENABLED / _EFFORT); the gateway emits the correct
+# per-provider fields (Qwen chat_template_kwargs / DeepSeek thinking.type +
+# reasoning_effort) for whichever family the alias routes to.
+#
 # `api_base_env` / `model_env` let the endpoint and model id be retargeted from
 # the environment (see .env / .env.example) without editing this reviewed file.
 # The values below are the checked-in defaults used whenever those variables are
@@ -33,6 +41,11 @@ aliases:
         model_env: FACTORY_AGENT_LLM_MODEL
         api_base_env: FACTORY_AGENT_LLM_API_BASE
         priority: 1
+      - model: deepseek-v4-flash
+        api_base: https://api.deepseek.com/v1
+        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+        provider: deepseek
+        priority: 2
 
   - alias: factory-reasoning
     fallbacks: []
@@ -44,6 +57,11 @@ aliases:
         model_env: FACTORY_AGENT_LLM_MODEL
         api_base_env: FACTORY_AGENT_LLM_API_BASE
         priority: 1
+      - model: deepseek-v4-flash
+        api_base: https://api.deepseek.com/v1
+        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+        provider: deepseek
+        priority: 2
 
   - alias: factory-summary
     fallbacks: [factory-fast]
@@ -55,6 +73,11 @@ aliases:
         model_env: FACTORY_AGENT_LLM_MODEL
         api_base_env: FACTORY_AGENT_LLM_API_BASE
         priority: 1
+      - model: deepseek-v4-flash
+        api_base: https://api.deepseek.com/v1
+        api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
+        provider: deepseek
+        priority: 2
 
 # `provider: openai` is REQUIRED for this self-hosted vLLM endpoint. The served
 # model id (`Qwen/Qwen3.8-27B-FP8`) has no LiteLLM provider mapping, and an

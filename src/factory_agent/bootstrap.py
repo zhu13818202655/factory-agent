@@ -200,6 +200,8 @@ def build_container(
                 num_retries=settings.llm_num_retries,
                 allowed_fails=settings.llm_allowed_fails,
                 cooldown_seconds=settings.llm_cooldown_seconds,
+                thinking_enabled=settings.llm_thinking_enabled,
+                thinking_effort=settings.llm_thinking_effort,
             )
             model_status = "configured"
         else:

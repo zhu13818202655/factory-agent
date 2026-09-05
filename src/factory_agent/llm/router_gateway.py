@@ -23,7 +23,7 @@ from typing import Any, cast
 import litellm
 from litellm.router import Router
 
-from factory_agent.llm.registry import ModelRegistry
+from factory_agent.llm.registry import ModelRegistry, ResolvedDeployment
 from factory_agent.ports.model import (
     ModelErrorCategory,
     ModelGatewayError,
@@ -33,6 +33,28 @@ from factory_agent.ports.model import (
 )
 
 _JSON_OBJECT_RESPONSE_FORMAT: dict[str, str] = {"type": "json_object"}
+
+# Thinking-mode wire formats are provider-specific although both providers are
+# OpenAI-compatible:
+#   * Qwen3 / vLLM family:  chat_template_kwargs {enable_thinking, thinking_effort}
+#   * DeepSeek family:      thinking.type (enabled/disabled) + reasoning_effort
+# Product policy speaks one vocabulary (low/medium/high/max); each family maps
+# it to what its server accepts. DeepSeek official mapping (flash == pro):
+# low→low, medium→high, high→high, xhigh→high, max→max. Qwen only supports
+# low/medium/high, so max→high.
+_DEEPSEEK_EFFORT_MAP: dict[str, str] = {
+    "low": "low",
+    "medium": "high",
+    "high": "high",
+    "xhigh": "high",
+    "max": "max",
+}
+_QWEN_EFFORT_MAP: dict[str, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
 
 # litellm exception class names mapped to our categories. Matching by name keeps
 # this table readable and avoids importing litellm's exception module, whose
@@ -78,6 +100,8 @@ class LiteLlmRouterGateway:
         num_retries: int = 2,
         allowed_fails: int = 2,
         cooldown_seconds: int = 30,
+        thinking_enabled: bool = False,
+        thinking_effort: str = "high",
         router: Router | None = None,
     ) -> None:
         silence_litellm_global_state()
@@ -86,6 +110,8 @@ class LiteLlmRouterGateway:
         self._default_temperature = default_temperature
         self._default_top_p = default_top_p
         self._default_max_output_tokens = default_max_output_tokens
+        self._thinking_enabled = thinking_enabled
+        self._thinking_effort = (thinking_effort or "high").lower()
         self._router = router or Router(
             model_list=_model_list(registry),
             fallbacks=_fallbacks(registry),
@@ -141,7 +167,43 @@ class LiteLlmRouterGateway:
         }
         if request.json_output:
             options["response_format"] = dict(_JSON_OBJECT_RESPONSE_FORMAT)
+        thinking = self._thinking_body(request.model_alias)
+        if thinking:
+            options["extra_body"] = thinking
         return options
+
+    def _thinking_body(self, alias: str) -> dict[str, Any]:
+        """Provider-specific thinking request fields for one logical alias.
+
+        The wire format must match the deployment litellm actually serves.
+        The router routes by deployment priority first, so the format of the
+        alias's highest-priority usable deployment is used. A mixed-family
+        alias that falls over to a lower-priority provider of another family
+        receives the primary family's fields, which the secondary server
+        ignores (documented limitation of sharing one alias across providers).
+        """
+        if self._is_deepseek_alias(alias):
+            if not self._thinking_enabled:
+                return {"thinking": {"type": "disabled"}}
+            return {
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": _DEEPSEEK_EFFORT_MAP.get(self._thinking_effort, "high"),
+            }
+        if not self._thinking_enabled:
+            return {"chat_template_kwargs": {"enable_thinking": False}}
+        return {
+            "chat_template_kwargs": {
+                "enable_thinking": True,
+                "thinking_effort": _QWEN_EFFORT_MAP.get(self._thinking_effort, "high"),
+            }
+        }
+
+    def _is_deepseek_alias(self, alias: str) -> bool:
+        candidates = [item for item in self._registry.deployments if item.alias == alias]
+        if not candidates:
+            return False
+        primary = min(candidates, key=lambda item: item.priority)
+        return _is_deepseek_deployment(primary)
 
 
 def _model_list(registry: ModelRegistry) -> list[dict[str, Any]]:
@@ -177,6 +239,16 @@ def _fallbacks(registry: ModelRegistry) -> list[dict[str, list[str]]]:
 
 def _messages(request: ModelRequest) -> list[dict[str, str]]:
     return [{"role": message.role, "content": message.content} for message in request.messages]
+
+
+def _is_deepseek_deployment(deployment: ResolvedDeployment) -> bool:
+    """True when a deployment targets the DeepSeek family.
+
+    Env retargeting (model_env / api_base_env) can point an ``openai``-declared
+    deployment at DeepSeek, so provider, model id, and api_base are all checked.
+    """
+    haystack = " ".join((deployment.provider or "", deployment.model, deployment.api_base)).lower()
+    return "deepseek" in haystack
 
 
 def _as_mapping(raw: object) -> dict[str, Any]:

@@ -1,31 +1,40 @@
 """Dev-only test-frontend server for the four-role Factory Agent chat UI.
 
 Why a proxy: ``factory-agent`` deliberately has no CORS middleware and resolves
-identity exclusively from ``X-Factory-Credential`` (the customer MES app_key).
-A browser page on another origin cannot add that header. This tiny server
+identity exclusively from ``X-Factory-Credential``: the customer-issued
+per-user credential (the ``app_key`` field of the ``/api/system/token`` request
+body). A browser page on another origin cannot add that header. This tiny server
 
   * serves the static chat UI (``./static``) on http://127.0.0.1:8081, and
   * reverse-proxies every other route to the upstream factory-agent, injecting
     ``X-Factory-Credential`` from the role selected by the caller
     (``X-Dev-Role: 00|01|02|99`` header).
 
-The app_key therefore never reaches the browser; the UI only says which role it
-is acting as. SSE responses are streamed through untouched so
+The credential therefore never reaches the browser; the UI only says which role
+it is acting as. SSE responses are streamed through untouched so
 ``Last-Event-ID`` reconnect still works.
+
+Two different "app_key" values exist in the customer contract — do not confuse
+them:
+
+  * the per-user credential configured below (sent to ``/api/system/token``),
+  * the tenant AppKey returned by that endpoint, which identifies the factory.
+    It is never configured here.
 
 Run (from the repo root, factory-agent venv):
 
     set -a; source .env; set +a
     .venv/bin/python tools/test_frontend/server.py
 
-Required env (put the real keys in your git-ignored ``.env``):
+Required env (put the real values in your git-ignored ``.env``). Each role maps
+to one test user, so each needs its own customer-issued credential:
 
-    MES_APP_KEY_00   # 员工
-    MES_APP_KEY_01   # 组长
-    MES_APP_KEY_02   # 管理
-    MES_APP_KEY_99   # 老板
-    FA_FE_UPSTREAM   # optional, default http://127.0.0.1:8000
-    FA_FE_PORT       # optional, default 8081
+    MES_USER_CREDENTIAL_00   # 员工
+    MES_USER_CREDENTIAL_01   # 组长
+    MES_USER_CREDENTIAL_02   # 管理
+    MES_USER_CREDENTIAL_99   # 老板
+    FA_FE_UPSTREAM           # optional, default http://127.0.0.1:8000
+    FA_FE_PORT               # optional, default 8081
 """
 
 from __future__ import annotations
@@ -59,8 +68,9 @@ app = FastAPI(title="factory-agent test frontend (dev only)")
 _client: httpx.AsyncClient | None = None
 
 
-def _role_key(role: str) -> str | None:
-    return os.environ.get(f"MES_APP_KEY_{role}") or None
+def _role_credential(role: str) -> str | None:
+    """The customer-issued per-user credential for one demo role."""
+    return os.environ.get(f"MES_USER_CREDENTIAL_{role}") or None
 
 
 @app.get("/api/roles")
@@ -70,7 +80,7 @@ async def roles() -> list[dict[str, object]]:
             "code": code,
             "name": name,
             "scope": blurb,
-            "configured": _role_key(code) is not None,
+            "configured": _role_credential(code) is not None,
         }
         for code, name, blurb in ROLES
     ]
@@ -103,13 +113,18 @@ async def proxy(path: str, request: Request) -> Response:
 
     role = request.headers.get(ROLE_HEADER, "99")
     # Health endpoints need no credential; let the pill work before any role
-    # key is configured.
+    # credential is configured.
     needs_credential = not path.startswith("health/")
-    key = _role_key(role) if needs_credential else None
-    if needs_credential and key is None:
+    credential = _role_credential(role) if needs_credential else None
+    if needs_credential and credential is None:
         return JSONResponse(
             status_code=400,
-            content={"detail": f"role {role} has no configured app_key (MES_APP_KEY_{role})"},
+            content={
+                "detail": (
+                    f"role {role} has no configured user credential "
+                    f"(MES_USER_CREDENTIAL_{role})"
+                )
+            },
         )
 
     headers = {
@@ -117,8 +132,8 @@ async def proxy(path: str, request: Request) -> Response:
         for k, v in request.headers.items()
         if k.lower() not in {"host", ROLE_HEADER.lower(), CREDENTIAL_HEADER.lower(), "content-length"}
     }
-    if key is not None:
-        headers[CREDENTIAL_HEADER] = key
+    if credential is not None:
+        headers[CREDENTIAL_HEADER] = credential
 
     body = await request.body()
     upstream_request = _client.build_request(

@@ -148,7 +148,7 @@ class CapabilityIntentParser:
         timezone_name: str,
         max_repair_attempts: int = 1,
         max_history_turns: int = 8,
-        max_history_chars: int = 8192,
+        max_history_chars: int = 32768,
         min_confidence: float = MIN_CAPABILITY_CONFIDENCE,
     ) -> None:
         self._gateway = gateway

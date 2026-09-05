@@ -83,8 +83,39 @@ def registry(*aliases: str) -> ModelRegistry:
     )
 
 
-def gateway(router: StubRouter, *aliases: str) -> LiteLlmRouterGateway:
-    return LiteLlmRouterGateway(registry(*aliases), router=router)  # pyright: ignore[reportArgumentType]
+def qwen_registry(*aliases: str) -> ModelRegistry:
+    """A Qwen3/vLLM-family alias (self-hosted OpenAI-compatible endpoint)."""
+    names = aliases or ("factory-fast",)
+    return ModelRegistry(
+        version=1,
+        deployments=tuple(
+            ResolvedDeployment(
+                alias=name,
+                model="Qwen/Qwen3.8-27B-FP8",
+                api_base="http://117.184.148.14:21003/v1",
+                api_key=CANARY_KEY,
+                priority=1,
+                provider="openai",
+            )
+            for name in names
+        ),
+        fallbacks={name: () for name in names},
+    )
+
+
+def gateway(
+    router: StubRouter,
+    *aliases: str,
+    thinking_enabled: bool = False,
+    thinking_effort: str = "high",
+    reg: ModelRegistry | None = None,
+) -> LiteLlmRouterGateway:
+    return LiteLlmRouterGateway(
+        reg or registry(*aliases),
+        router=router,  # pyright: ignore[reportArgumentType]
+        thinking_enabled=thinking_enabled,
+        thinking_effort=thinking_effort,
+    )
 
 
 def request(alias: str = "factory-fast", *, json_output: bool = True) -> ModelRequest:
@@ -279,3 +310,74 @@ def test_construction_disables_litellm_prompt_logging() -> None:
     assert litellm.callbacks == []
     assert len(cast("list[object]", litellm.success_callback)) == 0  # pyright: ignore[reportUnknownMemberType]
     assert len(cast("list[object]", litellm.failure_callback)) == 0  # pyright: ignore[reportUnknownMemberType]
+
+
+# ---------------------------------------------------------------------------
+# Thinking-mode policy (global, default OFF; enabled effort defaults to high)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_thinking_is_off_by_default_and_deepseek_gets_explicit_disable() -> None:
+    router = StubRouter()
+
+    await gateway(router).complete(request())
+
+    # DeepSeek-family registry is the unit default; thinking OFF must be sent
+    # explicitly because DeepSeek servers default thinking to ON.
+    assert router.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.asyncio
+async def test_thinking_enabled_defaults_effort_to_high_for_deepseek() -> None:
+    router = StubRouter()
+
+    await gateway(router, thinking_enabled=True).complete(request())
+
+    assert router.calls[0]["extra_body"] == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+    }
+
+
+@pytest.mark.asyncio
+async def test_deepseek_effort_medium_is_mapped_to_high() -> None:
+    router = StubRouter()
+
+    await gateway(router, thinking_enabled=True, thinking_effort="medium").complete(request())
+
+    assert router.calls[0]["extra_body"]["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_effort_max_is_kept() -> None:
+    router = StubRouter()
+
+    await gateway(router, thinking_enabled=True, thinking_effort="max").complete(request())
+
+    assert router.calls[0]["extra_body"] == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "max",
+    }
+
+
+@pytest.mark.asyncio
+async def test_qwen_family_thinking_off_uses_chat_template_kwargs() -> None:
+    router = StubRouter()
+
+    await gateway(router, reg=qwen_registry()).complete(request())
+
+    assert router.calls[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+@pytest.mark.asyncio
+async def test_qwen_family_thinking_on_maps_effort_and_caps_max_to_high() -> None:
+    router = StubRouter()
+
+    await gateway(
+        router, thinking_enabled=True, thinking_effort="max", reg=qwen_registry()
+    ).complete(request())
+
+    assert router.calls[0]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": True, "thinking_effort": "high"}
+    }

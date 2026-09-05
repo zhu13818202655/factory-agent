@@ -14,6 +14,7 @@ Use the helper scripts from this directory:
 ./start.sh middleware  # PostgreSQL and Redis only
 ./check.sh all
 ./stop.sh all
+./reset.sh middleware  # destroy the data volumes and start again empty
 ```
 
 If you run `./start.sh` without an argument, it prompts you to choose `all` or `middleware` and
@@ -22,16 +23,40 @@ prints what each option means. The Makefile targets call the same scripts:
 ```bash
 make compose-up
 make middleware-up
+make middleware-reset   # destructive: wipes every local volume, then restarts
 ```
 
 PostgreSQL listens on `127.0.0.1:3432` and initializes one shared `factory_agent` database (used by
 both `agent-api` and `usage-admin`) plus a separate `mock_mes` database. Redis listens on
 `127.0.0.1:3379`. Override host ports with `POSTGRES_PORT` and `REDIS_PORT`. The checked-in
 usernames and passwords are development-only.
-Remove local data explicitly with:
+## Wiping local data
+
+`stop.sh` keeps the named volumes, so databases, migration state, and the Redis AOF survive a
+restart. `reset.sh` is the destructive counterpart: it runs `down --volumes`, which deletes the
+volumes so `postgres/init-databases.sql` runs again on the next start and you get a factory-fresh
+database.
 
 ```bash
-docker compose -f deploy/compose/middleware.yaml down --volumes
+./reset.sh middleware            # list the volumes, ask for "yes", wipe, restart
+./reset.sh middleware --no-start # wipe and leave everything stopped
+./reset.sh all -y                # complete stack, no confirmation prompt
+
+make middleware-reset            # same as ./reset.sh middleware
+make middleware-reset CONFIRM=1  # same as ./reset.sh middleware --yes
+make compose-reset               # same as ./reset.sh all
+```
+
+The target defaults to an interactive choice when you omit it, and the prompt is skipped only with
+`-y`/`--yes` (or `CONFIRM=1` through the Makefile). Non-interactive runs without that flag fail
+instead of deleting anything.
+
+A wiped volume comes back with no schema at all, so re-apply the migrations afterwards:
+
+```bash
+make middleware-reset
+make migrate       # factory-agent first, then usage-admin
+make migrate-status
 ```
 
 `compose.yaml` is a local development topology. Mock MES must not be included in a production

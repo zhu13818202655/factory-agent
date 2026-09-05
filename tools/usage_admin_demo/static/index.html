@@ -91,6 +91,12 @@
       <h3>工厂账户注册表（D8）<span class="tag">停用后不再发起新 MES 调用 · 不做物理删除</span></h3>
       <div class="reg-form">
         <input id="reg-name" placeholder="新工厂全称，如：温州制衣一厂" maxlength="200" />
+        <input
+          id="reg-appkey"
+          placeholder="弘兆分配的 AppKey（选填；留空则平台自动生成，生成的 key 与弘兆不一致）"
+          maxlength="128"
+          title="填入弘兆分配给该工厂的 AppKey，factory-agent 的停用守卫按此 key 匹配租户"
+        />
         <select id="reg-status">
           <option value="active">启用</option>
           <option value="disabled">停用</option>
@@ -101,7 +107,12 @@
         <thead><tr><th>工厂名称</th><th>AppKey（脱敏）</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead>
         <tbody id="reg-body"></tbody>
       </table>
-      <div class="muted" id="reg-note">新账户明文 AppKey 仅在创建响应返回一次，请立即保存。</div>
+      <div class="muted" id="reg-note">
+        新账户明文 AppKey 仅在创建响应返回一次，请立即保存。
+        AppKey 是工厂（租户）的唯一标识，来自 <code>/api/system/token</code> 响应的
+        <code>appkey</code> 字段——与弘兆发给每个用户的登录凭据不是同一个东西。录入弘兆分配的
+        AppKey，工厂的「停用」开关才会对真实调用生效。
+      </div>
     </div>
   </section>
 

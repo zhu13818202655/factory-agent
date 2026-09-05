@@ -89,7 +89,7 @@ function renderRoles(roles) {
       <div class="actions">
         ${r.configured
           ? `<button class="enter-btn">进入对话</button>`
-          : `<span class="unset">未配置凭据<br/><small>服务端 .env 缺少 MES_APP_KEY_${r.code}</small></span>`}
+          : `<span class="unset">未配置凭据<br/><small>服务端 .env 缺少 MES_USER_CREDENTIAL_${r.code}</small></span>`}
       </div>`;
     card.querySelector(".enter-btn")?.addEventListener("click", () => enterRole(r.code, r.name));
     roleGrid.appendChild(card);

@@ -10,6 +10,7 @@
     "configurations": [
         {
             "name": "factory-agent（客户真实 MES）",
+            "consoleName": "FA-MES",
             "type": "debugpy",
             "request": "launch",
             "module": "factory_agent.__main__",
@@ -25,6 +26,7 @@
         },
         {
             "name": "factory-agent（本地 Mock MES）",
+            "consoleName": "FA-Mock",
             "type": "debugpy",
             "request": "launch",
             "module": "factory_agent.__main__",
@@ -40,6 +42,7 @@
         },
         {
             "name": "usage-admin",
+            "consoleName": "UA",
             "type": "debugpy",
             "request": "launch",
             "module": "usage_admin.__main__",
@@ -84,6 +87,7 @@
         },
         {
             "name": "factory-agent-migrate（升级业务库）",
+            "consoleName": "FA-MIGRATE",
             "type": "debugpy",
             "request": "launch",
             "module": "factory_agent.persistence.migrations",
@@ -99,6 +103,7 @@
         },
         {
             "name": "factory-agent 测试前端（代理 + 静态页）",
+            "consoleName": "FA-Demo",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/tools/test_frontend/server.py",
@@ -110,6 +115,7 @@
         },
         {
             "name": "usage-admin 演示前端（代理 + 看板）",
+            "consoleName": "UA-Demo",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/tools/usage_admin_demo/server.py",
@@ -121,6 +127,7 @@
         },
         {
             "name": "usage-admin-migrate（升级运营库）",
+            "consoleName": "UA-MIGRATE",
             "type": "debugpy",
             "request": "launch",
             "module": "usage_admin.migrations",
