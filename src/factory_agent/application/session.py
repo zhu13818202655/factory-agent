@@ -35,7 +35,11 @@ from factory_agent.application.consistency import (
 )
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.filters import FilterNarrower, FilterRejectionError
-from factory_agent.application.intent import CapabilityIntentParser, clarification_for
+from factory_agent.application.intent import (
+    CapabilityIntentParser,
+    IntentParseOutcome,
+    clarification_for,
+)
 from factory_agent.application.permission_matrix import (
     ROLE_DATA_RANGE,
     Capability,
@@ -300,6 +304,13 @@ class SessionService:
 
         claimed = await self._store.claim_run(owner, interaction_id, self._clock.now())
         if claimed is not None:
+            if not history:
+                # Multi-turn context comes from this session's own terminal
+                # turns unless the caller supplied an explicit history; only the
+                # claiming executor rebuilds it (never a replayed connection).
+                history = await self._session_history(
+                    owner, claimed.session_id, exclude_interaction_id=claimed.interaction_id
+                )
             async for event in self._run(
                 owner, authorization, claimed, history, after_sequence, credential
             ):
@@ -420,7 +431,7 @@ class SessionService:
     ) -> AsyncIterator[SessionEvent]:
         usage_events: list[UsageEvent] = []
         try:
-            intent = await self._parse(state, history, usage_events)
+            parsed = await self._parse(state, history, usage_events)
         except ModelGatewayError as exc:
             async for event in self._fail(state, f"gateway_{exc.category.value}", usage_events):
                 yield event
@@ -430,6 +441,7 @@ class SessionService:
                 yield event
             return
 
+        intent = parsed.intent
         state.last_intent = intent
 
         if intent.needs_clarification:
@@ -437,18 +449,26 @@ class SessionService:
                 async for event in self._fail(state, "clarification_exhausted", usage_events):
                     yield event
                 return
-            async for event in self._clarify(state, intent, usage_events):
+            async for event in self._clarify(
+                state, intent, usage_events, rewrite_query=parsed.rewrite_query
+            ):
                 yield event
             return
 
         # Chit-chat is resolved by the same capability selector but never becomes
         # a business capability: it is intercepted here, before the permission
-        # matrix or any MES call, and answered with free-form text. A chit-chat
-        # utterance that is low-confidence/ambiguous is clarified first instead
-        # of being answered.
+        # matrix or any MES call. When the merged parse call already produced a
+        # reply (``content``) it is answered directly with zero extra LLM calls;
+        # the dedicated ChatResponder remains a fallback for empty/legacy
+        # payloads. A chit-chat utterance that is low-confidence/ambiguous is
+        # clarified first instead of being answered.
         if intent.capability_id is not None and str(intent.capability_id) == CHITCHAT_CAPABILITY_ID:
-            async for event in self._chat(state, history, usage_events):
-                yield event
+            if parsed.content:
+                async for event in self._chat_with_text(state, parsed.content, usage_events):
+                    yield event
+            else:
+                async for event in self._chat(state, history, usage_events):
+                    yield event
             return
 
         capability_id = intent.capability_id
@@ -721,7 +741,7 @@ class SessionService:
         state: _RunState,
         history: tuple[ConversationTurn, ...],
         usage_events: list[UsageEvent],
-    ) -> CapabilityIntent:
+    ) -> IntentParseOutcome:
         logical_call_id = self._new_id()
         now = self._clock.now()
         try:
@@ -760,7 +780,7 @@ class SessionService:
                 status="completed",
             )
         )
-        return outcome.intent
+        return outcome
 
     async def _chat(
         self,
@@ -768,7 +788,11 @@ class SessionService:
         history: tuple[ConversationTurn, ...],
         usage_events: list[UsageEvent],
     ) -> AsyncIterator[SessionEvent]:
-        """Answer a chit-chat turn with free-form text; zero business calls."""
+        """Fallback chit-chat generation: one dedicated CHAT model call.
+
+        Used only when the merged intent call carried no usable ``content``
+        (legacy or empty reply). Still zero business calls.
+        """
         responder = self._chat_responder
         if responder is None:
             async for event in self._fail(state, "capability_unresolved", usage_events):
@@ -821,11 +845,26 @@ class SessionService:
                 status="completed",
             )
         )
+        async for event in self._chat_with_text(state, reply.text, usage_events):
+            yield event
+
+    async def _chat_with_text(
+        self,
+        state: _RunState,
+        text: str,
+        usage_events: list[UsageEvent],
+    ) -> AsyncIterator[SessionEvent]:
+        """Persist and yield one free-form chit-chat answer without a model call.
+
+        Shared by the merged single-call path (text came from the intent call)
+        and the ChatResponder fallback (text came from a dedicated CHAT call).
+        """
+        now = self._clock.now()
         answered = self._advance(state.record, SessionState.ANSWERED, "chat_answer")
         answer_event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_ANSWER,
-            data={"text": reply.text},
+            data={"text": text},
         )
         terminal = SessionEvent(
             sequence=state.next_sequence(),
@@ -844,7 +883,7 @@ class SessionService:
         )
         _logger.info(
             "session.outcome.chat answer={answer}",
-            answer=reply.text,
+            answer=text,
             interaction_id=str(state.record.interaction_id),
             session_id=str(state.record.session_id),
         )
@@ -858,7 +897,7 @@ class SessionService:
                         MessageRole.ASSISTANT,
                         MessageKind.CHAT,
                         terminal.sequence,
-                        reply.text,
+                        text,
                     ),
                 ),
                 events=(answer_event, terminal),
@@ -873,8 +912,14 @@ class SessionService:
         state: _RunState,
         intent: CapabilityIntent,
         usage_events: list[UsageEvent],
+        *,
+        rewrite_query: str | None = None,
     ) -> AsyncIterator[SessionEvent]:
         question = clarification_for(intent) or "请补充更多信息。"
+        if rewrite_query and rewrite_query != state.record.input_text:
+            # A multi-turn follow-up was rewritten into a standalone query;
+            # echo it so the user can confirm the understood question.
+            question = f"您想问的是：“{rewrite_query}”。{question}"
         async for event in self._clarify_message(state, question, usage_events):
             yield event
 
@@ -1243,6 +1288,54 @@ class SessionService:
         if record is None:
             raise InteractionNotFoundError("interaction does not exist")
         return record
+
+    async def _session_history(
+        self,
+        owner: InteractionOwner,
+        session_id: SessionId,
+        *,
+        exclude_interaction_id: InteractionId,
+        page_size: int = 50,
+    ) -> tuple[ConversationTurn, ...]:
+        """Rebuild bounded multi-turn context from this session's own turns.
+
+        Reads are ownership-scoped (same tenant and user as the interaction),
+        the current interaction is excluded, and only terminal turns qualify.
+        Each prior turn is reduced to the caller's own question plus a
+        non-sensitive capability summary — never detail rows or scope IDs.
+        """
+        turns: list[ConversationTurn] = []
+        cursor: str | None = None
+        while True:
+            page = await self._store.list_interactions(owner, session_id, page_size, cursor)
+            turns.extend(
+                self._history_turn(record)
+                for record in page.items
+                if record.interaction_id != exclude_interaction_id
+                and record.status in _TERMINAL_STATUSES
+            )
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        return tuple(turns)
+
+    @staticmethod
+    def _history_turn(record: InteractionRecord) -> ConversationTurn:
+        """One compact, non-sensitive turn from a stored interaction row."""
+        capability = record.capability_id
+        if capability is not None and str(capability) == CHITCHAT_CAPABILITY_ID:
+            assistant_text = "上一轮是闲聊回复。"
+        elif capability is not None:
+            assistant_text = f"已返回 {fr_id_for(str(capability))} 查询结果。"
+        else:
+            assistant_text = "上一轮需要补充信息或未能完成。"
+        return ConversationTurn(
+            user_text=record.input_text.strip(),
+            assistant_text=assistant_text,
+            status=record.status,
+            capability_id=capability,
+            result_row_count=None,
+        )
 
     def _advance(
         self, record: InteractionRecord, target: SessionState, reason: str

@@ -19,9 +19,10 @@
 # ③DeptQuery 解析部门名称。人均工资 = 应发合计 ÷ 在册人数。「有产出人数」
 # 替代指标不再使用。
 #
-# FR-012 任一员工工资查询: 复用 FR-002 的 GongziMxQuery 汇总配方，Uid 改为目标
-# 员工（由应用层经 EmployeeQuery 在当前租户解析后进入 NarrowedFilters，任何
-# 工资调用前完成校验；解析不到或同名未定 uid 均零业务调用拒绝）。
+# FR-012 任一员工工资查询: 复用 FR-002 的 GongziMxQuery 取数与本地合计配方
+# （scheme="" 明细取数，真实 MES hz 汇总有缺陷，见 wage.yaml 文件头），Uid
+# 改为目标员工（由应用层经 EmployeeQuery 在当前租户解析后进入 NarrowedFilters，
+# 任何工资调用前完成校验；解析不到或同名未定 uid 均零业务调用拒绝）。
 # Uid 为选填（客户确认 2026-09-06）：点名某员工时传目标工号；不传则 MES 按角色
 # 返回管辖范围明细（不再执行「仅限老板传空」门禁）。
 version: 1
@@ -232,8 +233,9 @@ capabilities:
       - step_id: fetch_wages
         kind: api
         operation_id: GongziMxQuery
+        # scheme 为空 = 明细取数（真实 MES hz 汇总有缺陷，见 wage.yaml 文件头）。
         params:
-          scheme: "hz"
+          scheme: ""
           Type: "0,1,2"
           Flag: "0"
           queryFooter: "1"

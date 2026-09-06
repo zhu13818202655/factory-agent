@@ -240,6 +240,68 @@ async def test_chitchat_with_low_confidence_is_not_treated_as_confirmed() -> Non
     assert "capability" in outcome.intent.ambiguous
 
 
+@pytest.mark.asyncio
+async def test_chitchat_type_carries_content_from_the_same_call() -> None:
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                type="chitchat",
+                capability_id="chitchat",
+                slots={},
+                content="你好呀！我是工厂助手。",
+            )
+        ]
+    )
+
+    outcome = await parser(gateway).parse("你好", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.capability_id == CapabilityId("chitchat")
+    assert outcome.intent.needs_clarification is False
+    assert outcome.content == "你好呀！我是工厂助手。"
+
+
+@pytest.mark.asyncio
+async def test_capability_type_never_accepts_chitchat_content() -> None:
+    gateway = ScriptedModelGateway(contents=[payload(type="capability", content="不应出现")])
+
+    outcome = await parser(gateway).parse("上个月产量", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.capability_id == CapabilityId("FR-001")
+    assert outcome.content is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_payload_without_type_keeps_chitchat_routing_and_content() -> None:
+    gateway = ScriptedModelGateway(
+        contents=[payload(capability_id="chitchat", slots={}, content="老格式仍带答案")]
+    )
+
+    outcome = await parser(gateway).parse("你好", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.capability_id == CapabilityId("chitchat")
+    assert outcome.content == "老格式仍带答案"
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_rewrite_query_is_captured_with_the_intent() -> None:
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                type="capability",
+                capability_id="FR-001",
+                slots={"time_expression": "本月"},
+                rewrite_query="查询我这个月的工资明细",
+            )
+        ]
+    )
+
+    outcome = await parser(gateway).parse("那这个月呢？", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.capability_id == CapabilityId("FR-001")
+    assert outcome.rewrite_query == "查询我这个月的工资明细"
+    assert outcome.intent.slots.time_range_start is not None
+
+
 def test_describe_lists_chinese_titles_descriptions_and_slot_labels() -> None:
     catalog = CapabilityCatalog(
         specs=(

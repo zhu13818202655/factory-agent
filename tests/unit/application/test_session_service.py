@@ -691,3 +691,110 @@ async def test_low_confidence_chitchat_is_clarified_not_answered() -> None:
     assert not any(event.name == INTERACTION_ANSWER for event in events)
     assert any(event.name == INTERACTION_CLARIFICATION for event in events)
     assert store.interactions[str(record.interaction_id)].clarification_rounds == 1
+
+
+# ---------------------------------------------------------------------------
+# Merged chit-chat (single intent call) and multi-turn rewrite (Story).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chitchat_merged_content_answers_without_a_second_model_call() -> None:
+    """type=chitchat + content answers directly; zero CHAT stage calls."""
+    payload = (
+        '{"type": "chitchat", "capability_id": "chitchat", "confidence": 0.95, '
+        '"slots": {}, "content": "你好呀！我是工厂助手，今天想聊点什么？"}'
+    )
+    # chat is intentionally NOT configured: the merged content must answer.
+    service, store, runner = build([payload])
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    answer = next(event for event in events if event.name == INTERACTION_ANSWER)
+    assert answer.data["text"] == "你好呀！我是工厂助手，今天想聊点什么？"
+    assert events[-1].name == "interaction.completed"
+    stored = store.interactions[str(record.interaction_id)]
+    assert stored.status is InteractionStatus.COMPLETED
+    llm = [
+        event.payload
+        for event in store.usage_events
+        if event.payload["event_type"] == "llm_call_completed"
+    ]
+    assert [event["stage"] for event in llm] == ["extract"]
+
+
+@pytest.mark.asyncio
+async def test_chitchat_without_content_still_uses_the_responder_fallback() -> None:
+    """Backward-compatible path: legacy/empty payloads keep the CHAT call."""
+    reply = "你好呀！我是工厂助手。"
+    service, store, _ = build([CHITCHAT_PAYLOAD], chat_text=reply)
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
+
+    await drain(service, record.interaction_id)
+
+    answer = next(event for event in store.messages if event.kind is MessageKind.CHAT)
+    assert answer.text == reply
+    llm = [
+        event.payload
+        for event in store.usage_events
+        if event.payload["event_type"] == "llm_call_completed"
+    ]
+    assert [event["stage"] for event in llm] == ["extract", "chat"]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_auto_builds_history_from_the_same_session() -> None:
+    """The second interaction in a session sees the first turn as context.
+
+    Regression guard for the multi-turn root cause: the API never passed an
+    explicit history, so the pipeline must rebuild it from persisted rows.
+    """
+    from factory_agent.application.intent import CapabilityIntentParser
+
+    store = InMemoryInteractionStore()
+    gateway = ScriptedModelGateway(contents=[INTENT_PAYLOAD, INTENT_PAYLOAD])
+    service = SessionService(
+        store,
+        authorization(),
+        CapabilityIntentParser(
+            gateway, CATALOG, model_alias="factory-fast", timezone_name="Asia/Shanghai"
+        ),
+        RecordingCapabilityRunner(),
+        FrozenClock(NOW),
+        new_id=SequentialIds(),
+        sleep=_no_sleep,
+        business_filters=BusinessFilterResolver(FakeDirectory()),
+    )
+    first = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+    await drain(service, first.interaction_id)
+    second = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="那这个月呢？")
+    )
+    await drain(service, second.interaction_id)
+
+    assert len(gateway.requests) == 2
+    second_prompt = " ".join(message.content for message in gateway.requests[1].messages)
+    assert "上个月产量" in second_prompt
+    assert "FR-001" in second_prompt
+
+
+@pytest.mark.asyncio
+async def test_rewritten_follow_up_is_echoed_back_on_clarification() -> None:
+    """A rewritten query is surfaced when the follow-up still needs detail."""
+    payload = (
+        '{"type": "capability", "capability_id": null, "confidence": 0.9, '
+        '"slots": {}, "rewrite_query": "查询我这个月的工资明细"}'
+    )
+    service, store, _ = build([payload])
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="那这个月呢？")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    clarification = next(event for event in events if event.name == INTERACTION_CLARIFICATION)
+    question = clarification.data["question"]
+    assert "查询我这个月的工资明细" in question
+    assert store.interactions[str(record.interaction_id)].clarification_rounds == 1

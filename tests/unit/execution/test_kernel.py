@@ -1,9 +1,10 @@
 """Kernel capability runner vertical-slice tests.
 
 Uses a fake step executor returning the wages golden rows to prove that FR-002
-(summary) and FR-003 (detail) share the ``GongziMxQuery`` path, that the local
-aggregate reconciles against ``footer.je_total``, and that empty/pagination
-anomalies surface as structured states instead of fabricated numbers.
+(summary) and FR-003 (detail) both fetch ``GongziMxQuery`` detail rows (scheme
+empty) and differ only in local aggregation, that the aggregate reconciles
+against ``footer.je_total``, and that empty/pagination anomalies surface as
+structured states instead of fabricated numbers.
 """
 
 
@@ -68,18 +69,11 @@ _DETAIL_ROWS: tuple[dict[str, Any], ...] = (
     },
 )
 
-_SUMMARY_ROWS: tuple[dict[str, Any], ...] = (
-    {"type": "扫码产量", "worktype": "WT01", "sl": "9", "je": "11.2500"},
-    {"type": "扫码产量", "worktype": "WT03", "sl": "4", "je": "4.0000"},
-    {"type": "吊挂产量", "worktype": "WT03", "sl": "4", "je": "4.0000"},
-    {"type": "手工账产量", "worktype": "WT02", "sl": "3", "je": "2.4000"},
-)
-
 _FOOTER = {"sl_total": "20", "je_total": "21.6500"}
 
 
 class FakeStepExecutor:
-    """Implements ``StepExecutor``; returns the golden wages rows by scheme."""
+    """Implements ``StepExecutor``; returns the golden wage detail rows."""
 
     def __init__(self, *, complete: bool = True, reason: str | None = None) -> None:
         self.calls: list[tuple[str, dict[str, str]]] = []
@@ -94,11 +88,9 @@ class FakeStepExecutor:
         extra_params: dict[str, str] | None = None,
     ) -> ResourceFetchResult:
         self.calls.append((request.operation_id, dict(extra_params or {})))
-        scheme = (extra_params or {}).get("scheme", "")
-        rows = _SUMMARY_ROWS if scheme == "hz" else _DETAIL_ROWS
         return ResourceFetchResult(
-            rows=tuple(rows),
-            total=len(rows),
+            rows=tuple(_DETAIL_ROWS),
+            total=len(_DETAIL_ROWS),
             pages_fetched=1,
             complete=self._complete,
             reason=self._reason,

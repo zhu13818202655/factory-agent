@@ -24,7 +24,6 @@ Adapter semantics (contract: ``docs/product/AI问答对外接口-整理.md``):
 """
 
 
-
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol, cast
@@ -34,7 +33,12 @@ import httpx
 from factory_agent.data_api.catalog import ApiCatalog, CatalogOperation
 from factory_agent.data_api.credentials import CURRENT_BUNDLE, MesCredentialBundle
 from factory_agent.data_api.pagination import BoundedPager
-from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE, row_to_plain_dict
+from factory_agent.data_api.schemas import (
+    ROW_MODEL_BY_RESOURCE,
+    gongzi_mx_row_model_for,
+    is_gongzi_mx_summary_scheme,
+    row_to_plain_dict,
+)
 from factory_agent.domain.errors import (
     InvalidRequestError,
     MesError,
@@ -68,7 +72,6 @@ _INVALID_REQUEST_MESSAGES = (
 #: empty page when the employee has no detail rows in the queried window. The
 #: same Uid/window in detail mode returns ``code=1 total=0`` normally.
 _EMPTY_SUMMARY_MESSAGE = "Object reference not set to an instance of an object."
-_SUMMARY_SCHEME_VALUES = frozenset({"hz", "汇总", "HZ"})
 
 #: String forms the customer treats as boolean request values (contract example
 #: sends ``queryFooter: true``; a string form is rejected as a schema error on
@@ -107,7 +110,7 @@ class AdapterSettings:
     refresh_threshold_seconds: int = 5400
     #: Customer ``timestamp`` validity window; a bundle older than this is
     #: re-exchanged before the next business call (客户接口文档 §2.1).
-    timestamp_ttl_seconds: int = 60
+    timestamp_ttl_seconds: int = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +217,19 @@ class HongzhaoMesAdapter:
             await self._refresh_bundle()
 
         try:
+            _LOGGER.debug(
+                "mes.execute.request",
+                operation_id=operation.operation_id,
+                request_params=repr(request.params),
+            )
             envelope = await self._send(operation, request.params)
+            _LOGGER.debug(
+                "mes.execute.success",
+                operation_id=operation.operation_id,
+                envelope_code=envelope.code,
+                envelope_message=envelope.message,
+                envelope_result=repr(envelope.result),
+            )
         except UnauthenticatedError:
             # One refresh + one retry on expiry/signature failures.
             await self._refresh_bundle()
@@ -250,7 +265,7 @@ class HongzhaoMesAdapter:
         """True only for GongziMxQuery summary hit by the known empty-window NRE."""
         return (
             operation.operation_id == "GongziMxQuery"
-            and str(params.get("scheme", "")).strip() in _SUMMARY_SCHEME_VALUES
+            and is_gongzi_mx_summary_scheme(params.get("scheme"))
             and isinstance(getattr(envelope, "message", None), str)
             and envelope.message.strip() == _EMPTY_SUMMARY_MESSAGE
         )
@@ -293,10 +308,15 @@ class HongzhaoMesAdapter:
         operation = self._operation(operation_id)
         if operation.resource is None:
             raise InvalidRequestError("identity operations cannot fetch resource rows")
-        item_model = ROW_MODEL_BY_RESOURCE.get(operation.resource)
-        if item_model is None:
-            raise UnsupportedOperationError("operation resource has no response model")
         params = self._resource_params(operation_id, filters, time_range, page_size, extra_params)
+        if operation_id == "GongziMxQuery":
+            # One operation, two real response shapes selected by ``scheme``:
+            # the summary (hz) rows differ from the detail contract (§8.1).
+            item_model = gongzi_mx_row_model_for(params.get("scheme"))
+        else:
+            item_model = ROW_MODEL_BY_RESOURCE.get(operation.resource)
+            if item_model is None:
+                raise UnsupportedOperationError("operation resource has no response model")
         paged = await self._pager.fetch_all(
             operation_id, params, item_model, list_key=operation.list_key
         )

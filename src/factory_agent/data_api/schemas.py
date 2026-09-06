@@ -423,6 +423,8 @@ class WskRow(_CustomerRow):
 
 
 class GongziMxRow(_CustomerRow):
+    """GongziMxQuery detail row shape (scheme empty; contract §8.1)."""
+
     id: str
     type: str
     rq: str
@@ -444,6 +446,35 @@ class GongziMxRow(_CustomerRow):
     je: str
     inputtime_raw: str
     check_time_raw: str
+
+
+class GongziMxSummaryRow(_CustomerRow):
+    """Real-MES GongziMxQuery summary (scheme hz/HZ/汇总) row shape.
+
+    真实 MES 联调发现（2026-09-06，差异台账待客户确认）：汇总模式把明细行按
+    床号×款号×工序聚合，行结构与接口文档 §8.1 的明细结构不同——不含
+    id/rq/inputtime/…，而是 bs 与 huohao/worktype 的 *_raw/*_src 归一化字段；
+    该模式 footer 也只反映首行数值，合计不可信。产品配方统一用明细
+    （scheme=""）取数本地合计；本模型仅在 scheme 为汇总值时参与边界校验，
+    防止未建模的外部形状直接穿透到沙箱。
+    """
+
+    chuanghao: str
+    huohao: str
+    uid: str
+    uname: str
+    dept: str
+    type: str
+    worktype: str
+    bs: str
+    fhsl: str
+    sl: str
+    price: str
+    je: str
+    huohao_raw: str = ""
+    huohao_src: str = ""
+    worktype_raw: str = ""
+    worktype_src: str = ""
 
 
 class GongziJeOrderRow(_CustomerRow):
@@ -521,6 +552,23 @@ ROW_MODEL_BY_RESOURCE: dict[str, type[_CustomerRow]] = {
     "dg_cl": DgClRow,
 }
 
+
+def is_gongzi_mx_summary_scheme(scheme: object) -> bool:
+    """True when a GongziMxQuery ``scheme`` requests the summary response shape."""
+    return isinstance(scheme, str) and scheme.strip().lower() in {"hz", "汇总"}
+
+
+def gongzi_mx_row_model_for(scheme: object) -> type[_CustomerRow]:
+    """Row model for one GongziMxQuery response, by its ``scheme``.
+
+    scheme hz/汇总 selects the real summary shape (``GongziMxSummaryRow``);
+    the empty (default) detail mode uses ``GongziMxRow``. Both shapes are
+    validated so an unmodeled external shape never reaches the sandbox.
+    """
+    if is_gongzi_mx_summary_scheme(scheme):
+        return GongziMxSummaryRow
+    return GongziMxRow
+
 #: Base-data resources: the catalog's 基础数据 (9) group. These operations do
 #: NOT filter by role and return the full roster/directory (customer-confirmed
 #: rule 4, ``docs/product/需求及方案整理.md``「客户确认结论」), so their rows
@@ -558,8 +606,11 @@ def _plain(value: Any) -> Any:
 
 __all__ = [
     "CredentialBundleResponse",
+    "GongziMxSummaryRow",
     "ListResult",
     "MesEnvelope",
     "ROW_MODEL_BY_RESOURCE",
+    "gongzi_mx_row_model_for",
+    "is_gongzi_mx_summary_scheme",
     "row_to_plain_dict",
 ]

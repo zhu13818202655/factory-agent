@@ -107,7 +107,7 @@ class StepExecutor(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class KernelSettings:
-    """Conservative first-release bounds for the wage vertical slice."""
+    """Conservative first-release bounds for the wage vertical slice.""" 
 
     page_size: int = 200
     #: Call budget for fan-out API steps (FR-009 batch progress). A fan-out

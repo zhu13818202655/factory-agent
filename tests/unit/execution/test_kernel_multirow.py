@@ -119,14 +119,12 @@ class FakeMultiRowExecutor:
         elif operation == "DeptQuery":
             rows = _DEPT_ROWS
         elif operation == "GongziMxQuery":
-            scheme = params.get("scheme", "")
-            if scheme == "hz":
-                rows = (
-                    {"uid": "01001", "dept": "dept-a1", "je": "21.65", "sl": "20"},
-                    {"uid": "01002", "dept": "dept-a2", "je": "3.75", "sl": "3"},
-                )
-            else:
-                rows = ()
+            # Wage recipes fetch detail (scheme="") and aggregate locally; the
+            # fake only serves the uid/dept/je/sl columns the aggregate needs.
+            rows = (
+                {"uid": "01001", "dept": "dept-a1", "je": "21.65", "sl": "20"},
+                {"uid": "01002", "dept": "dept-a2", "je": "3.75", "sl": "3"},
+            )
         elif operation == "GongziJeOrderQuery":
             rows = (
                 {
@@ -388,11 +386,12 @@ async def test_fr012_target_employee_recipe_runs() -> None:
             time_range=_range(),
         )
     )
-    # The recipe reuses the FR-002 summary path (scheme=hz). Uid injection is
-    # adapter-side and covered by the integration slice + adapter tests.
+    # The recipe reuses the FR-002 fetch + local-aggregate path (scheme="");
+    # the real-MES summary mode (hz) is defective and no recipe uses it.
+    # Uid injection is adapter-side and covered by integration/adapter tests.
     gongzi_calls = [p for op, p in executor.calls if op == "GongziMxQuery"]
     assert gongzi_calls
-    assert all(p.get("scheme") == "hz" for p in gongzi_calls)
+    assert all(p.get("scheme") == "" for p in gongzi_calls)
     assert result.rows[0][0] == Decimal("25.40")
 
 

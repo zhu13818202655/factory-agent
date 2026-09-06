@@ -200,13 +200,36 @@ async def test_gongzi_mx_three_sources_merge_with_footer(client: AsyncClient) ->
 
     body = response.json()
     assert body["code"] == 1
-    types = {row["type"] for row in body["result"]["list"]}
+    rows = body["result"]["list"]
+    types = {row["type"] for row in rows}
     assert types <= {"扫码产量", "吊挂产量", "手工账产量"}
     footer = body["result"]["footer"]
     assert set(footer) == {"bs_total", "fhsl_total", "sl_total", "je_total"}
     # Summary rows aggregate across prices; footer equals the sum of rows.
-    je_sum = sum((Decimal(row["je"]) for row in body["result"]["list"]), Decimal())
+    je_sum = sum((Decimal(row["je"]) for row in rows), Decimal())
     assert Decimal(footer["je_total"]) == je_sum
+    # Real-MES summary shape (联调 2026-09-06): rows keyed chuanghao/huohao/…
+    # with bs + *_raw/*_src and NO §8.1 detail fields (id/rq/inputtime/…).
+    for row in rows:
+        assert {
+            "chuanghao",
+            "huohao",
+            "uid",
+            "uname",
+            "dept",
+            "type",
+            "worktype",
+            "bs",
+            "fhsl",
+            "sl",
+            "price",
+            "je",
+            "huohao_raw",
+            "huohao_src",
+            "worktype_raw",
+            "worktype_src",
+        } <= set(row)
+        assert "id" not in row and "rq" not in row
 
 
 @pytest.mark.asyncio

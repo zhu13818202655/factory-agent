@@ -119,18 +119,31 @@ class CapabilityCatalog:
 
 
 SYSTEM_PROMPT = (
-    "你是工厂业务助手的能力选择器，只能从给定的能力列表中选择一个 capability_id。\n"
-    "规则：\n"
-    "1. 用户询问产量、工资、订单/款号进度、车间对比、排名等工厂业务时，"
-    "选择对应的业务能力。\n"
-    "2. 用户只是问候、寒暄，或问与工厂业务无关的常识问题（如人物介绍、天气常识）时，"
-    "选择 chitchat。\n"
-    "3. 选中的业务能力缺少必填条件（如时间范围、订单号）时，把对应槽位留空，"
+    "你是工厂业务助手的能力选择器与追问改写器，只能从给定的能力列表中选择一个 capability_id。\n"
+    "输出类型 type：\n"
+    "1. 用户问候、寒暄，或问与工厂业务无关的常识问题（如人物介绍、天气常识）时，"
+    'type 填 "chitchat"，capability_id 填 "chitchat"，并在 content 中直接生成'
+    "可回复用户的简洁中文答案（一般不超过 200 字）。闲聊回复不得编造任何工厂/MES 的"
+    "生产、产量或工资数据；涉及实时数据或无法核实的信息（如今天天气、实时股价）时，"
+    "如实说明无法获取，不要猜测。\n"
+    "2. 用户询问产量、工资、订单/款号进度、车间对比、排名等工厂业务时，"
+    'type 填 "capability"，content 填空字符串，按下面的业务规则选择能力。\n'
+    "多轮改写 rewrite_query：\n"
+    "3. 当消息列表里已有历史对话（多轮）时，若当前问题是省略式/指代式追问"
+    "（如“那…呢”“这个/它/再呢”“上月呢”这类缺少主语或宾语、依赖上一轮的表述），"
+    "必须结合历史把它改写成语义完整、可独立理解的一句话填入 rewrite_query，"
+    "并按改写后的含义选择 capability_id 与 slots（可沿用上一轮的话题与已给条件，"
+    "例如上一轮查了某员工工资，本轮“那这个月呢”仍指该员工与本话题）。"
+    "不要臆造历史中不存在的员工、款号或时间。\n"
+    "4. 当没有历史对话（首轮）时，rewrite_query 填当前问题即可。\n"
+    "业务能力选择：\n"
+    "5. 选中的业务能力缺少必填条件（如时间范围、订单号）时，把对应槽位留空，"
     "不要臆造默认时间（如“本月”“今天”），由系统追问补全。\n"
-    "4. 无法判断应归属哪个能力时，capability_id 设为 null。\n"
+    "6. 无法判断应归属哪个能力时，capability_id 设为 null。\n"
     "不得发明新的能力，不得输出 SQL、URL、员工编号或部门编号。\n"
     "严格输出一个 JSON 对象：\n"
-    '{"capability_id": "<列表中的 id 或 null>", "confidence": 0.0-1.0, '
+    '{"type": "chitchat" 或 "capability", "content": "...", "rewrite_query": "...", '
+    '"capability_id": "<列表中的 id 或 null>", "confidence": 0.0-1.0, '
     '"slots": {"time_expression": "...", "order_codes": [], "plan_codes": [], '
     '"style_codes": [], "dept_names": [], "employee_names": []}, "ambiguous": []}\n'
     "不要输出解释或代码块。"
@@ -153,6 +166,21 @@ def build_intent_messages(
 
 
 @dataclass(frozen=True, slots=True)
+class ParsedIntent:
+    """Typed interpretation of one model payload, independent of any model call.
+
+    ``content`` carries the chit-chat reply when the same call produced one
+    (merged single-call path); ``rewrite_query`` carries the standalone query
+    the model produced for a multi-turn follow-up, when one was needed.
+    """
+
+    intent: CapabilityIntent
+    rejected_slots: tuple[str, ...] = ()
+    content: str | None = None
+    rewrite_query: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class IntentParseOutcome:
     intent: CapabilityIntent
     clarification: str | None
@@ -160,6 +188,8 @@ class IntentParseOutcome:
     actual_model: str
     duration_ms: int
     rejected_slots: tuple[str, ...] = ()
+    content: str | None = None
+    rewrite_query: str | None = None
 
 
 class CapabilityIntentParser:
@@ -213,20 +243,27 @@ class CapabilityIntentParser:
         result = await request_structured_object(
             self._gateway, request, max_repair_attempts=self._max_repair_attempts
         )
-        intent, rejected = self.interpret(result.payload, now=now)
+        parsed = self.interpret(result.payload, now=now)
         return IntentParseOutcome(
-            intent=intent,
-            clarification=clarification_for(intent),
+            intent=parsed.intent,
+            clarification=clarification_for(parsed.intent),
             attempts=result.attempts,
             actual_model=result.response.actual_model,
             duration_ms=result.response.duration_ms,
-            rejected_slots=rejected,
+            rejected_slots=parsed.rejected_slots,
+            content=parsed.content,
+            rewrite_query=parsed.rewrite_query,
         )
 
-    def interpret(
-        self, payload: dict[str, object], *, now: datetime
-    ) -> tuple[CapabilityIntent, tuple[str, ...]]:
-        """Validate a raw model payload into a typed intent."""
+    def interpret(self, payload: dict[str, object], *, now: datetime) -> ParsedIntent:
+        """Validate a raw model payload into a typed intent.
+
+        ``type`` discriminates chit-chat from business capability routing. The
+        schema is additive and backward compatible: a legacy payload without
+        ``type`` is still routed by ``capability_id == "chitchat"``, and an
+        absent ``content``/``rewrite_query`` is simply ``None``. Chit-chat
+        content is only ever accepted when the payload is a chit-chat.
+        """
         ambiguous = list(_string_list(payload.get("ambiguous")))
         confidence = _confidence(payload.get("confidence"))
         raw_slots = payload.get("slots")
@@ -236,17 +273,46 @@ class CapabilityIntentParser:
         rejected: tuple[str, ...] = tuple(
             sorted(name for name in slots_mapping if name in REJECTED_SLOT_NAMES)
         )
+        rewrite_query = _trimmed_text(payload.get("rewrite_query"))
+        is_chitchat = _is_chitchat(payload.get("type"), payload.get("capability_id"))
+
+        if is_chitchat:
+            spec = self._catalog.get("chitchat")
+            if spec is None:
+                ambiguous.append("capability")
+                return ParsedIntent(
+                    intent=CapabilityIntent(
+                        capability_id=None,
+                        confidence=confidence,
+                        ambiguous=tuple(dict.fromkeys(ambiguous)),
+                    ),
+                    rejected_slots=rejected,
+                    rewrite_query=rewrite_query,
+                )
+            if confidence < self._min_confidence:
+                ambiguous.append("capability")
+            return ParsedIntent(
+                intent=CapabilityIntent(
+                    capability_id=spec.capability_id,
+                    confidence=confidence,
+                    ambiguous=tuple(dict.fromkeys(ambiguous)),
+                ),
+                rejected_slots=rejected,
+                content=_trimmed_text(payload.get("content")),
+                rewrite_query=rewrite_query,
+            )
 
         spec = self._resolve_capability(payload.get("capability_id"))
         if spec is None:
             ambiguous.append("capability")
-            return (
-                CapabilityIntent(
+            return ParsedIntent(
+                intent=CapabilityIntent(
                     capability_id=None,
                     confidence=confidence,
                     ambiguous=tuple(dict.fromkeys(ambiguous)),
                 ),
-                rejected,
+                rejected_slots=rejected,
+                rewrite_query=rewrite_query,
             )
         if confidence < self._min_confidence:
             ambiguous.append("capability")
@@ -254,15 +320,16 @@ class CapabilityIntentParser:
         slots, slot_ambiguity = self._build_slots(slots_mapping, now=now)
         ambiguous.extend(slot_ambiguity)
         missing = tuple(name for name in spec.required_slots if name not in slots.filled_names())
-        return (
-            CapabilityIntent(
+        return ParsedIntent(
+            intent=CapabilityIntent(
                 capability_id=spec.capability_id,
                 confidence=confidence,
                 slots=slots,
                 missing=missing,
                 ambiguous=tuple(dict.fromkeys(ambiguous)),
             ),
-            rejected,
+            rejected_slots=rejected,
+            rewrite_query=rewrite_query,
         )
 
     def _resolve_capability(self, raw: object) -> CapabilitySpec | None:
@@ -330,6 +397,25 @@ def _string_list(raw: object) -> tuple[str, ...]:
     return tuple(item.strip() for item in items if isinstance(item, str) and item.strip())
 
 
+def _is_chitchat(raw_type: object, raw_capability: object) -> bool:
+    """Chit-chat when ``type`` says so; legacy payloads infer from the id."""
+    if isinstance(raw_type, str):
+        lowered = raw_type.strip().lower()
+        if lowered in {"chitchat", "闲聊"}:
+            return True
+        if lowered in {"capability", "能力"}:
+            return False
+    return isinstance(raw_capability, str) and raw_capability.strip().lower() == "chitchat"
+
+
+def _trimmed_text(raw: object) -> str | None:
+    """Optional free-text field (``content`` / ``rewrite_query``), trimmed."""
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
 def _code_list(raw: object) -> tuple[str, ...]:
     items = _string_list(raw)
     return tuple(dict.fromkeys(item[:_MAX_CODE_CHARS] for item in items))[:_MAX_LIST_ITEMS]
@@ -370,6 +456,7 @@ __all__ = [
     "CapabilitySpec",
     "ClarificationLimitError",
     "IntentParseOutcome",
+    "ParsedIntent",
     "build_intent_messages",
     "clarification_for",
     "dump_intent",

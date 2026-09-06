@@ -88,7 +88,7 @@ class MesCredentialBundle:
 
         Refresh is triggered a few seconds before the window closes so clock
         skew between the agent and the MES never produces a spurious
-        ``请求已过期`` failure (default window 60 s, 客户接口文档 §2.1).
+        ``请求已过期`` failure (default window 600 s, 客户接口文档 §2.1).
         A zero timestamp marks a placeholder bundle and is never stale.
         """
         if self.timestamp <= 0:

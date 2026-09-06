@@ -59,7 +59,9 @@ def case_ids() -> list[str]:
 @pytest.mark.parametrize("case", CASES, ids=case_ids())
 def test_evaluation_case_matches_the_expected_interpretation(case: dict[str, Any]) -> None:
     expected = cast("dict[str, Any]", case["expect"])
-    intent, rejected = parser().interpret(case["model_payload"], now=NOW)
+    parsed = parser().interpret(case["model_payload"], now=NOW)
+    intent = parsed.intent
+    rejected = parsed.rejected_slots
 
     assert intent.capability_id == expected["capability_id"]
     assert list(intent.missing) == expected["missing"]
@@ -88,7 +90,9 @@ def test_every_evaluation_group_is_represented() -> None:
 
 def test_grounding_cases_never_leak_a_rejected_slot_into_the_intent() -> None:
     for case in (entry for entry in CASES if entry["group"] == "grounding"):
-        intent, rejected = parser().interpret(case["model_payload"], now=NOW)
+        parsed = parser().interpret(case["model_payload"], now=NOW)
+        intent = parsed.intent
+        rejected = parsed.rejected_slots
 
         assert rejected, f"{case['id']} must record the stripped slots"
         serialized = json.dumps(asdict(intent.slots), default=str, ensure_ascii=False)

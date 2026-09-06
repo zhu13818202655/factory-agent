@@ -746,43 +746,78 @@ async def gongzi_mx_query(request: Request) -> JSONResponse:
         }
 
     if summary_mode:
-        grouped: dict[tuple[str, str, str], Record] = {}
+        # Real-MES summary shape/granularity (联调 2026-09-06, 差异台账待确认):
+        # one row per 员工×床号×款号×工序×来源, keyed chuanghao/huohao/… with
+        # bs and huohao/worktype *_raw/*_src (NO id/rq/inputtime/…, unlike the
+        # §8.1 明细 shape). Product recipes no longer call scheme=hz — its real
+        # footer is defective (bs_total=行数, fhsl/sl/je_total=首行值), so this
+        # branch only backs manual/dev queries and keeps contract-correct sums.
+        grouped: dict[tuple[str, str, str, str, str], Record] = {}
         for row in rows:
-            key = (str(row["uid"]), str(row["worktype"]), str(row["type"]))
+            key = (
+                str(row["uid"]),
+                str(row["chuanghao"]),
+                str(row["huohao"]),
+                str(row["worktype"]),
+                str(row["type"]),
+            )
             entry = grouped.setdefault(
                 key,
                 {
-                    "id": "",
-                    "type": row["type"],
-                    "rq": row["rq"],
-                    "inputtime": "",
-                    "uid": row["uid"],
-                    "uname": row["uname"],
-                    "dept": row["dept"],
-                    "chuanghao": "",
-                    "baohao": "",
-                    "huohao": "",
-                    "color": "",
-                    "chima": "",
-                    "worktype": row["worktype"],
-                    "ischeck": 0,
-                    "check_time": "",
-                    "fhsl": "0",
-                    "sl": "0",
-                    "price": "0",
-                    "je": "0",
-                    "inputtime_raw": "",
-                    "check_time_raw": "",
+                    "chuanghao": str(row["chuanghao"]),
+                    "huohao": str(row["huohao"]),
+                    "uid": str(row["uid"]),
+                    "uname": str(row["uname"]),
+                    "dept": str(row["dept"]),
+                    "type": str(row["type"]),
+                    "worktype": str(row["worktype"]),
+                    "bs": 0,
+                    "fhsl": Decimal("0"),
+                    "sl": Decimal("0"),
+                    "price": str(row["price"]),
+                    "je": Decimal("0"),
+                    "huohao_raw": None,
+                    "huohao_src": None,
+                    "worktype_raw": None,
+                    "worktype_src": None,
                 },
             )
-            entry["sl"] = str(_d(entry["sl"]) + _d(row["sl"]))
-            entry["je"] = str(_d(entry["je"]) + _d(row["je"]))
-        items = sorted(grouped.values(), key=lambda item: str(item["uid"]))
+            entry["bs"] = int(entry["bs"]) + 1
+            entry["fhsl"] = _d(entry["fhsl"]) + _d(row["fhsl"])
+            entry["sl"] = _d(entry["sl"]) + _d(row["sl"])
+            entry["je"] = _d(entry["je"]) + _d(row["je"])
+
+        def _summary_plain(item: Record) -> Record:
+            return {
+                **item,
+                "bs": int(item["bs"]),
+                "fhsl": str(item["fhsl"]),
+                "sl": str(item["sl"]),
+                "je": str(item["je"]),
+            }
+
+        items = sorted(
+            grouped.values(),
+            key=lambda item: (
+                str(item["uid"]),
+                str(item["chuanghao"]),
+                str(item["huohao"]),
+                str(item["worktype"]),
+            ),
+        )
         page, size = page_size(body)
         sliced = items[(page - 1) * size : page * size]
-        result: dict[str, object] = {"list": sliced, "total": len(items)}
+        result: dict[str, object] = {
+            "list": [_summary_plain(item) for item in sliced],
+            "total": len(items),
+        }
         if body.get("queryFooter"):
-            result["footer"] = footer(items)
+            result["footer"] = {
+                "bs_total": str(len(items)),
+                "fhsl_total": sum_of(items, "fhsl"),
+                "sl_total": sum_of(items, "sl"),
+                "je_total": sum_of(items, "je"),
+            }
         return JSONResponse(content=ok(result))
 
     page, size = page_size(body)

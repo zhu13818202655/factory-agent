@@ -80,9 +80,11 @@ def run_case(
     case_id = str(case["id"])
     timezone_name = str(case.get("timezone", "Asia/Shanghai"))
     try:
-        intent, rejected = parser.interpret(
+        parsed = parser.interpret(
             cast("dict[str, object]", case["model_payload"]), now=reference_now
         )
+        intent = parsed.intent
+        rejected = parsed.rejected_slots
     except Exception as exc:  # noqa: BLE001 - scorer reports the failure
         return CaseResult(case_id, str(case.get("group", "")), False, f"raised: {exc!r}")
 
