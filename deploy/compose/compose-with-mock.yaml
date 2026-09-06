@@ -10,7 +10,7 @@ services:
       FACTORY_AGENT_ENV: development
       FACTORY_AGENT_HOST: 0.0.0.0
       FACTORY_AGENT_PORT: 8000
-      FACTORY_AGENT_CANONICAL_MES_BASE_URL: ${FACTORY_AGENT_CANONICAL_MES_BASE_URL:?FACTORY_AGENT_CANONICAL_MES_BASE_URL 未设置：请在 deploy/compose/.env 填写客户真实 MES 网关地址}
+      FACTORY_AGENT_CANONICAL_MES_BASE_URL: http://mock-mes:8010
       FACTORY_AGENT_POSTGRES_URL: ${FACTORY_AGENT_POSTGRES_URL:-postgresql://factory_agent:factory_agent_dev@postgres:5432/factory_agent}
       FACTORY_AGENT_REDIS_URL: ${FACTORY_AGENT_REDIS_URL:-redis://redis:6379/0}
     ports:
@@ -27,12 +27,52 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mock-mes:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
         - python
         - -c
         - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  mock-mes:
+    build:
+      context: ../..
+      dockerfile: mock-mes/Dockerfile
+    image: mock-mes:dev
+    environment:
+      MOCK_MES_HOST: 0.0.0.0
+      MOCK_MES_PORT: 8010
+      # Pinned to the compose-network DSN. The repository-root .env carries the
+      # host-side URLs (127.0.0.1:3432); letting it substitute here would make
+      # the container reach its own host, not the postgres service.
+      MOCK_MES_DATABASE_URL: postgresql://mock_mes:mock_mes_dev@postgres:5432/mock_mes
+      MOCK_MES_SCENARIO: small
+      MOCK_MES_SEED: 20260821
+      MOCK_MES_VIRTUAL_NOW: "2026-08-21T08:00:00Z"
+    ports:
+      - "${MOCK_MES_PORT:-8010}:8010"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/live', timeout=2)
       interval: 10s
       timeout: 3s
       retries: 3
