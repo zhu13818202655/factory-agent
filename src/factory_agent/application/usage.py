@@ -57,7 +57,7 @@ _INTERACTION_STATUS_MAP: dict[InteractionStatus, CompletionStatus] = {
 #: is executing. The MES adapter reads it at its single ``_send`` exit to build
 #: ``mes_call_completed`` events without threading identifiers through every
 #: executor layer.
-_usage_context_var: ContextVar[UsageContext | None] = ContextVar(
+_usage_context_var: ContextVar["UsageContext | None"] = ContextVar(
     "factory_agent_usage_context", default=None
 )
 
@@ -69,7 +69,7 @@ _mes_events_var: ContextVar[list[UsageEvent] | None] = ContextVar(
 )
 
 
-def set_usage_context(context: UsageContext | None) -> None:
+def set_usage_context(context: "UsageContext | None") -> None:
     if context is None:
         _mes_events_var.set(None)
     elif _mes_events_var.get() is None:
@@ -77,7 +77,7 @@ def set_usage_context(context: UsageContext | None) -> None:
     _usage_context_var.set(context)
 
 
-def current_usage_context() -> UsageContext | None:
+def current_usage_context() -> "UsageContext | None":
     return _usage_context_var.get()
 
 

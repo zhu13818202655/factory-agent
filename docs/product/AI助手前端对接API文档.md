@@ -629,7 +629,7 @@ data: {"interaction_id":"it_xxx","error_category":"forbidden"}
 | 值 | 场景 |
 | --- | --- |
 | `forbidden` | 能力不在当前角色可用范围（能力-角色矩阵拒绝，附友好提示与可查范围） |
-| `forbidden_*` | 执行层范围规则拒绝（如工资明细空参查全部仅限老板） |
+| `forbidden_*` | 执行层范围规则拒绝（如查询范围超出当前角色可查范围、越权绑定部门/员工等） |
 | `filter_*` | 订单号/款号/小组等业务条件解析失败或超出可查范围 |
 | `time_range_missing` | 缺少时间条件且无法追问补全 |
 | `time_range_exceeds_limit` | 时间范围超过近一年上限（友好终止，不发起取数） |

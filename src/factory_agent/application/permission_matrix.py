@@ -17,6 +17,7 @@ Matrix (customer-confirmed):
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Self
 
 from factory_agent.domain import DataScope, Role, TenantContext
 
@@ -91,7 +92,7 @@ class AuthorizationDecision:
     available_capabilities: tuple[str, ...] = ()
 
     @staticmethod
-    def deny(capability_id: str, reason: str, role: Role | None = None) -> AuthorizationDecision:
+    def deny(capability_id: str, reason: str, role: Role | None = None) -> Self:
         if role is not None:
             available = tuple(sorted(item.value for item in capabilities_for_role(role)))
         else:

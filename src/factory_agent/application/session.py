@@ -145,6 +145,21 @@ class StartRequest:
     clarification_rounds: int = 0
 
 
+@dataclass
+class _RunState:
+    record: InteractionRecord
+    sequence: int
+    started_monotonic: float = 0.0
+    last_intent: CapabilityIntent | None = None
+
+    def next_sequence(self) -> int:
+        self.sequence += 1
+        return self.sequence
+
+    def duration_ms(self) -> int:
+        return int((time.monotonic() - self.started_monotonic) * 1000)
+
+
 class SessionService:
     def __init__(
         self,
@@ -560,8 +575,8 @@ class SessionService:
                 )
             )
         except ForbiddenError as exc:
-            # Executor-level scope rule (e.g. GongziMxQuery 传空查全部仅限老板):
-            # surface as a friendly denial, never a generic failure.
+            # Executor-level scope rule: surface as a friendly denial, never a
+            # generic failure.
             async for event in self._reject_message(
                 state, f"forbidden_{exc.code.value}", exc.message, usage_events
             ):
@@ -1288,21 +1303,6 @@ class SessionService:
             result_row_count=len(result.rows) if result is not None else 0,
             error_category=error_category,
         )
-
-
-@dataclass
-class _RunState:
-    record: InteractionRecord
-    sequence: int
-    started_monotonic: float = 0.0
-    last_intent: CapabilityIntent | None = None
-
-    def next_sequence(self) -> int:
-        self.sequence += 1
-        return self.sequence
-
-    def duration_ms(self) -> int:
-        return int((time.monotonic() - self.started_monotonic) * 1000)
 
 
 _TERMINAL_STATUSES = frozenset(

@@ -9,7 +9,7 @@ pages, and enforcing page/row budgets. Any anomaly aborts with a structured
 
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -40,7 +40,7 @@ class PageFingerprint:
     key: tuple[str, ...]
 
     @classmethod
-    def of(cls, items: tuple[Any, ...]) -> PageFingerprint:
+    def of(cls, items: tuple[Any, ...]) -> Self:
         return cls(key=tuple(sorted(repr(item) for item in items)))
 
 
@@ -60,7 +60,7 @@ class PagedResult:
 class BoundedPager:
     """Fetch every page of an operation until the envelope proves completion."""
 
-    adapter: HongzhaoMesAdapter
+    adapter: "HongzhaoMesAdapter"
     budget: PagerBudget = field(default_factory=PagerBudget)
 
     async def fetch_all(

@@ -157,8 +157,7 @@ class InteractionStore(Protocol):
 class CapabilityRunRequest:
     """Everything the bounded executor needs; scope IDs arrive only via filters.
 
-    ``role`` is the authoritative token role; the executor uses it for the
-    reviewed payroll ``Uid`` rule. It can never broaden a scope.
+    ``role`` is the authoritative token role; it never broadens a scope.
     """
 
     capability_id: CapabilityId

@@ -67,7 +67,7 @@ class Role(str, Enum):
     OWNER = "owner"
 
     @classmethod
-    def from_mes_code(cls, code: str) -> Role:
+    def from_mes_code(cls, code: str) -> Self:
         """Map the customer ``roles`` code to the domain role.
 
         Unknown codes are rejected so an unreviewed role value can never enter
@@ -215,14 +215,14 @@ class DataScope:
         """
         return False
 
-    def narrow_to_employees(self, employee_ids: frozenset[EmployeeId]) -> DataScope | None:
+    def narrow_to_employees(self, employee_ids: frozenset[EmployeeId]) -> Self | None:
         """Intersect employee IDs into the scope; empty intersection yields None."""
         narrowed = self.employee_ids & employee_ids
         if not narrowed:
             return None
         return replace(self, employee_ids=narrowed)
 
-    def narrow_to_depts(self, dept_ids: frozenset[DeptId]) -> DataScope | None:
+    def narrow_to_depts(self, dept_ids: frozenset[DeptId]) -> Self | None:
         """Intersect department IDs into the scope; empty intersection yields None."""
         narrowed = self.dept_ids & dept_ids
         if not narrowed:
@@ -268,7 +268,7 @@ class ExpectedRange:
     whole_tenant: bool = False
 
     @classmethod
-    def from_context(cls, context: TenantContext, scope: DataScope) -> ExpectedRange:
+    def from_context(cls, context: TenantContext, scope: DataScope) -> Self:
         """Derive the range from the authoritative role and bound scope."""
         return cls(
             role=context.role,

@@ -11,7 +11,9 @@ ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     "domain": set(),
     "ports": {"domain"},
     "data_api": {"domain", "observability", "ports"},
-    "execution": {"domain", "ports"},
+    # kernel.py logs structured events via observability.logging_adapter, the
+    # same cross-cutting logger used by application/data_api/persistence.
+    "execution": {"domain", "observability", "ports"},
     "persistence": {"config", "domain", "observability", "ports"},
     "llm": {"domain", "ports"},
     "export": {"domain", "ports"},

@@ -193,7 +193,7 @@ class SequentialIds:
     """Deterministic identifier factory for reproducible snapshots."""
 
     prefix: str = "id"
-    counter: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
+    counter: itertools.count = field(default_factory=lambda: itertools.count(1))
 
     def __call__(self) -> str:
         return f"{self.prefix}-{next(self.counter)}"

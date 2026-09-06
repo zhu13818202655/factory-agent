@@ -35,7 +35,7 @@ _WIDE_RANGE = (
 class MesDirectorySource:
     """Directory + current-dept membership backed by the Hongzhao adapter."""
 
-    def __init__(self, adapter: HongzhaoMesAdapter, catalog: ApiCatalog) -> None:
+    def __init__(self, adapter: "HongzhaoMesAdapter", catalog: "ApiCatalog") -> None:
         self._adapter = adapter
         self._catalog = catalog
 

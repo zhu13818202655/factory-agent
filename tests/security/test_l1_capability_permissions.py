@@ -27,6 +27,7 @@ from factory_agent.application.filters import FilterNarrower, FilterRejectionErr
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
 from factory_agent.data_api.hongzhao import HongzhaoMesAdapter
+from factory_agent.data_api.schemas import BASE_DATA_RESOURCES, ROW_MODEL_BY_RESOURCE
 from factory_agent.domain import (
     CapabilityId,
     DataScope,
@@ -156,12 +157,25 @@ async def test_unavailable_columns_render_consistently_as_no_data_source(mock_me
     catalog = load_catalog()
     adapter = HongzhaoMesAdapter("http://test", _bundle("01009"), catalog, client=client)
     executor = ScopedExecutor(adapter=adapter, catalog=catalog)
+    # Mirrors bootstrap._build_capability_runner: pre-registered typed columns
+    # keep an empty/degraded fetch (upstream_invalid) a usable sandbox table for
+    # downstream local compute.
+    resource_columns: dict[str, tuple[str, ...]] = {}
+    base_data_operations: set[str] = set()
+    for operation_id in catalog.operation_ids:
+        operation = catalog.get(operation_id)
+        model = ROW_MODEL_BY_RESOURCE.get(operation.resource) if operation.resource else None
+        resource_columns[operation_id] = tuple(model.model_fields) if model else ()
+        if operation.resource in BASE_DATA_RESOURCES:
+            base_data_operations.add(operation_id)
     runner = KernelCapabilityRunner(
         executor,
         load_recipes(catalog.operation_ids),
         default_metric_registry(),
         settings=KernelSettings(page_size=2000, max_api_calls=300),
         clock=lambda: NOW,
+        resource_columns=resource_columns,
+        base_data_operations=frozenset(base_data_operations),
     )
     try:
         result = await runner.run(

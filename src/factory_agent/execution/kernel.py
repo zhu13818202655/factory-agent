@@ -617,7 +617,7 @@ class KernelCapabilityRunner:
         fetches: dict[str, ResourceFetchResult],
         call_count: int,
         started: float,
-        observed: OwnershipObservation | None = None,
+        observed: "OwnershipObservation | None" = None,
     ) -> CapabilityRunResult:
         column_names = tuple(column.name for column in table.columns)
         rows = tuple(

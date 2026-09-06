@@ -114,6 +114,21 @@
             "console": "integratedTerminal"
         },
         {
+            // 直连客户 MES 接口调试台（不经 factory-agent）：左侧接口菜单 / 中间参数 /
+            // 右侧格式化 JSON，自动换 token 并注入鉴权三参，结果可保存到 <仓库>/cache。
+            // 启动后浏览器打开 http://127.0.0.1:8095（端口可用 MES_CONSOLE_PORT 覆盖）。
+            "name": "MES 直连调试台（代理 + 页面）",
+            "consoleName": "MES-Console",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/mes_console/server.py",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": true,
+            "console": "integratedTerminal"
+        },
+        {
             "name": "usage-admin 演示前端（代理 + 看板）",
             "consoleName": "UA-Demo",
             "type": "debugpy",

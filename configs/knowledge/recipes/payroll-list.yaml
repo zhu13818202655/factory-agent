@@ -22,7 +22,8 @@
 # FR-012 任一员工工资查询: 复用 FR-002 的 GongziMxQuery 汇总配方，Uid 改为目标
 # 员工（由应用层经 EmployeeQuery 在当前租户解析后进入 NarrowedFilters，任何
 # 工资调用前完成校验；解析不到或同名未定 uid 均零业务调用拒绝）。
-# 老板可传空 Uid 查全部、管理传空不允许（客户确认），该规则由执行器在调用前强制。
+# Uid 为选填（客户确认 2026-09-06）：点名某员工时传目标工号；不传则 MES 按角色
+# 返回管辖范围明细（不再执行「仅限老板传空」门禁）。
 version: 1
 capabilities:
   - capability_id: fr004_group_income_rank

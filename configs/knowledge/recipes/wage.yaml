@@ -9,8 +9,9 @@
 #   - scheme empty = 明细 (FR-003), scheme "hz" = 汇总 (FR-002).
 # The `Type=0,1,2` three-source merge covers 扫码/吊挂/手工账 (客户口径).
 # `Flag` defaults to "0" (扫描日期；客户公共参数约定).
-# `Uid` is scope-sourced and never accepts user input; 传空查全部仅限老板角色
-# （客户确认），由执行器在调用前强制。
+# `Uid` is scope-sourced and never accepts user input; 选填（客户确认 2026-09-06）：
+# 传工号查该员工，不传则由 MES 按当前角色过滤（00=本人；组长/管理/老板=管辖范围）。
+# 产品端只在单员工场景（个人本人/点名查某员工）注入 Uid，不再做「仅限老板传空」门禁。
 #
 # Local compute runs inside the per-interaction read-only DuckDB sandbox. The
 # kernel registers a `_meta` table with the natural-day count; `daily_avg`

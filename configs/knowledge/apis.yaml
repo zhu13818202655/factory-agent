@@ -382,10 +382,9 @@ operations:
     path: /api/NetYf/Sclzd/GongziMxQuery
     kind: resource
     resource: gongzi_mx
-    # Uid is scope-sourced and optional so FR-011 (全厂工资统计) can
-    # call scheme=hz factory-wide without a single employee; MES row-level
-    # filtering decides the visible range. Personal/target queries
-    # inject Uid from NarrowedFilters.employee_ids.
+    # Uid is scope-sourced and optional (客户确认 2026-09-06): 传员工工号按该员工
+    # 查询；不传则由 MES 按当前角色过滤返回。产品端仅在单员工场景（个人本人/点名
+    # 查某员工）注入 Uid，来源只能是 NarrowedFilters.employee_ids。
     required_params: [queryFooter, Flag, Type, scheme, dates, datee]
     parameter_sources:
       app_key: credential

@@ -9,7 +9,7 @@ extension loading, ``ATTACH``, ``COPY``, DDL, and DML are all blocked.
 
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Self, Sequence
 
 import duckdb
 
@@ -178,7 +178,7 @@ class InteractionSandbox:
         self._registered.clear()
         self._closed = True
 
-    def __enter__(self) -> InteractionSandbox:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
