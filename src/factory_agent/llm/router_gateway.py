@@ -15,7 +15,7 @@ top-level package does not re-export it, and Pyright strict rejects the
 re-export as a private import.
 """
 
-from __future__ import annotations
+
 
 import time
 from typing import Any, cast

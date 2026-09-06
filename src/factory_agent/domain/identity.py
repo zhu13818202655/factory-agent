@@ -1,6 +1,6 @@
 """Authorization domain values for trusted identity and tenant scoping."""
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime

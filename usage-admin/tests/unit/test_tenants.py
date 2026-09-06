@@ -1,6 +1,6 @@
 """Tenant registry service tests (F2.1~F2.6, D10/D14)."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

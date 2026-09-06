@@ -1,6 +1,6 @@
 """MES category / failure / by-tenant / models / capabilities / errors queries."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timedelta, timezone
 

@@ -6,7 +6,7 @@ integration never calls these endpoints — it uses ``USAGE_ADMIN_API_TOKEN``
 (D16).
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime
 from typing import cast

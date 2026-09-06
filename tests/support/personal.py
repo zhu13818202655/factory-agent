@@ -4,7 +4,7 @@ These mirror the ownership semantics of the SQL stores: a record owned by
 another tenant/user is indistinguishable from one that does not exist.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from datetime import datetime

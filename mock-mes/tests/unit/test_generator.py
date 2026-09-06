@@ -6,7 +6,7 @@ factory-scale organisation (headcount / roles / departments) and the
 window-boundary behaviour without touching PostgreSQL.
 """
 
-from __future__ import annotations
+
 
 from datetime import date, datetime, timezone
 from decimal import Decimal

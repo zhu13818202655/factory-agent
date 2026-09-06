@@ -1,4 +1,4 @@
-from __future__ import annotations
+
 
 import json
 from datetime import datetime, timezone
@@ -74,6 +74,20 @@ async def test_relative_time_uses_the_factory_timezone_and_injected_clock() -> N
 
     assert outcome.intent.slots.time_range_start is not None
     assert outcome.intent.slots.time_range_start.isoformat() == "2026-06-30T16:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_bare_month_expression_fills_the_time_range_without_clarification() -> None:
+    """\"我7月的工资明细\" must resolve to 2026-07 instead of asking a follow-up."""
+    gateway = ScriptedModelGateway(contents=[payload(slots={"time_expression": "7月"})])
+
+    outcome = await parser(gateway).parse("我7月的工资明细是多少", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.needs_clarification is False
+    assert outcome.clarification is None
+    assert outcome.intent.slots.time_range_start is not None
+    assert outcome.intent.slots.time_range_start.isoformat() == "2026-06-30T16:00:00+00:00"
+    assert outcome.intent.slots.time_range_end.isoformat() == "2026-07-31T16:00:00+00:00"
 
 
 @pytest.mark.asyncio

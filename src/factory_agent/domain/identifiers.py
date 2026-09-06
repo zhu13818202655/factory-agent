@@ -1,6 +1,6 @@
 """Stable identifiers shared across application boundaries."""
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 

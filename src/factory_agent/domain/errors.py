@@ -5,7 +5,7 @@ credentials, employee/dept ID lists, or business quantities). Callers pass
 sanitized, category-level text only.
 """
 
-from __future__ import annotations
+
 
 from enum import StrEnum
 

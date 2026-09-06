@@ -7,7 +7,7 @@ behind ports. Authorization always completes before any business-data call, and
 scope identifiers reach the executor only through ``NarrowedFilters``.
 """
 
-from __future__ import annotations
+
 
 import asyncio
 import time
@@ -654,6 +654,22 @@ class SessionService:
             last_event_sequence=terminal.sequence,
             completed_at=self._clock.now(),
         )
+        # Final user-visible outcome on the result path: structured metadata
+        # only — capability, columns, row_count and completeness. Raw result
+        # rows are deliberately never logged (sensitive business values).
+        _logger.info(
+            "session.outcome.result capability={capability_id} rows={row_count} "
+            "incomplete={incomplete} reason={incomplete_reason} "
+            "artifact={artifact_id} columns=[{columns}]",
+            capability_id=str(capability_id),
+            row_count=len(result.rows),
+            incomplete=result.incomplete,
+            incomplete_reason=result.incomplete_reason,
+            artifact_id=artifact_id,
+            columns=",".join(result.column_names),
+            interaction_id=str(state.record.interaction_id),
+            session_id=str(state.record.session_id),
+        )
         usage_events.append(
             self._completion_event(state.record, result=result, error_category=None)
         )
@@ -811,6 +827,12 @@ class SessionService:
             updated_at=now,
             completed_at=now,
         )
+        _logger.info(
+            "session.outcome.chat answer={answer}",
+            answer=reply.text,
+            interaction_id=str(state.record.interaction_id),
+            session_id=str(state.record.session_id),
+        )
         usage_events.append(self._completion_event(state.record, result=None, error_category=None))
         await self._store.commit(
             InteractionCommit(
@@ -870,6 +892,12 @@ class SessionService:
             last_event_sequence=terminal.sequence,
             updated_at=now,
             completed_at=now,
+        )
+        _logger.info(
+            "session.outcome.clarify question={question}",
+            question=question,
+            interaction_id=str(state.record.interaction_id),
+            session_id=str(state.record.session_id),
         )
         usage_events.append(self._completion_event(state.record, result=None, error_category=None))
         await self._store.commit(
@@ -984,6 +1012,14 @@ class SessionService:
         )
         usage_events.append(
             self._completion_event(state.record, result=None, error_category=category)
+        )
+        _logger.info(
+            "session.outcome.terminated state={state} status={status} category={category}",
+            state=target.value,
+            status=status.value,
+            category=category,
+            interaction_id=str(state.record.interaction_id),
+            session_id=str(state.record.session_id),
         )
         await self._store.commit(
             InteractionCommit(

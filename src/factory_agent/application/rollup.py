@@ -11,7 +11,7 @@ separate. Call counts come from fact row counts; ``page_count`` is never summed
 (D6).
 """
 
-from __future__ import annotations
+
 
 from collections import defaultdict
 from collections.abc import Callable

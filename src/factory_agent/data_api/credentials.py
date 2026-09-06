@@ -17,7 +17,7 @@ and ``docs/product/需求及方案整理.md``「客户确认结论」):
   timestamp triggers a token re-exchange before the next business call.
 """
 
-from __future__ import annotations
+
 
 from contextvars import ContextVar
 from dataclasses import dataclass

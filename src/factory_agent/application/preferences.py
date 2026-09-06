@@ -1,6 +1,6 @@
 """Preferences service (Story 3B): read/update + role-filtered options."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 from typing import Protocol

@@ -7,7 +7,7 @@ frozen, a totals row reflects the same numbers as the result card, and
 cell values are neutralised against spreadsheet formula injection.
 """
 
-from __future__ import annotations
+
 
 from datetime import date, datetime
 from decimal import Decimal

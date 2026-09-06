@@ -8,7 +8,7 @@ authorizes every fetch (pull 形态 + 站内记录), then delivered through the 
 channel port (local fake channel in this story).
 """
 
-from __future__ import annotations
+
 
 import hashlib
 from dataclasses import dataclass

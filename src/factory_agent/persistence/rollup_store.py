@@ -6,7 +6,7 @@ classify MES calls at aggregation time; the classification is never stored in
 the events themselves.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime
 

@@ -37,7 +37,7 @@ to one test user, so each needs its own customer-issued credential:
     FA_FE_PORT               # optional, default 8081
 """
 
-from __future__ import annotations
+
 
 import os
 from pathlib import Path

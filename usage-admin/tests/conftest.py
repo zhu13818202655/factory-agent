@@ -1,6 +1,6 @@
 """Test bootstrap: expose the usage-admin test support package on sys.path."""
 
-from __future__ import annotations
+
 
 import sys
 from pathlib import Path

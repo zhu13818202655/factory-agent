@@ -11,7 +11,7 @@ fallback really crosses a process boundary. A single request can still override
 the scenario with the ``X-Test-Scenario`` header.
 """
 
-from __future__ import annotations
+
 
 import subprocess
 import sys

@@ -495,6 +495,10 @@ const INCOMPLETE_REASON_LABEL = {
   "pagination_duplicate_page": "分页未取全：服务端忽略分页参数",
   "pagination_page_budget_exhausted": "分页未取全：超过翻页上限",
   "row_budget_exhausted": "结果超出行数上限",
+  "upstream_invalid": "数据源返回错误，本次结果不完整",
+  "upstream_unavailable": "数据源暂不可达，本次结果不完整",
+  "upstream_timeout": "数据源响应超时，本次结果不完整",
+  "upstream_rate_limited": "数据源限流，本次结果不完整",
 };
 function reasonLabel(r) { return r ? (INCOMPLETE_REASON_LABEL[r] || r) : ""; }
 

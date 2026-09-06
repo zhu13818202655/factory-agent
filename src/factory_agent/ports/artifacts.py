@@ -8,7 +8,7 @@ re-validating ownership. "回头再取" is served by history/favorite re-ask
 (重新执行 → 直接下载), never by a stored file.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from typing import Protocol

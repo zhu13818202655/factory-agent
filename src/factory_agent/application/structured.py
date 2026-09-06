@@ -5,7 +5,7 @@ application. Gateway transport failures stay ``ModelGatewayError``; a model that
 answers but does not satisfy the schema raises ``StructuredOutputError``.
 """
 
-from __future__ import annotations
+
 
 import json
 import re

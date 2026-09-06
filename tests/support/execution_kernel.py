@@ -1,6 +1,6 @@
 """In-process stubs for execution kernel unit tests."""
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime

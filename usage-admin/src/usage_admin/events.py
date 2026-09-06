@@ -9,7 +9,7 @@ Payload validation happens on the writer side (factory-agent) before a row is
 stored; there is no ingest path in this service.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from datetime import datetime

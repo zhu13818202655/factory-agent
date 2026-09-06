@@ -13,7 +13,7 @@ are owned by usage-admin and never declared here. The Alembic migration history
 definitions drive the disposable test schema.
 """
 
-from __future__ import annotations
+
 
 import sqlalchemy as sa
 

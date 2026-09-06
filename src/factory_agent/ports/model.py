@@ -5,7 +5,7 @@ logical aliases. Provider URLs, provider credentials, network retries, and
 provider fallback chains belong to LiteLLM and never appear in this contract.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from enum import StrEnum

@@ -1,6 +1,6 @@
 """Loguru-backed logging adapter; application code never imports Loguru."""
 
-from __future__ import annotations
+
 
 import logging
 import sys

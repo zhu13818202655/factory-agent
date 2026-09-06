@@ -7,7 +7,7 @@ from the trusted ``DataScope``. A low-confidence or incomplete result produces a
 short clarification question instead of an unbounded query.
 """
 
-from __future__ import annotations
+
 
 import json
 from dataclasses import dataclass

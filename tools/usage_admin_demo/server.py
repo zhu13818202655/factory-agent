@@ -37,7 +37,7 @@ SECURITY: the keyring file holds plaintext AppKeys on local disk. It lives in
 the git-ignored ``/data/`` directory and must never be copied anywhere else.
 """
 
-from __future__ import annotations
+
 
 import json
 import os

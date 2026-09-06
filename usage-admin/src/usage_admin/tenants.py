@@ -6,7 +6,7 @@ the operator, the target, and the before/after values. Deleting an account
 means disabling it (D10) — history is never physically removed.
 """
 
-from __future__ import annotations
+
 
 import secrets
 from collections.abc import Callable

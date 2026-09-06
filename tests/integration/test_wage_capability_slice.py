@@ -5,7 +5,7 @@ that the local aggregate reconciles against ``footer.je_total``, and that the
 detail total equals the summary gross total — all offline with the Mock MES.
 """
 
-from __future__ import annotations
+
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal

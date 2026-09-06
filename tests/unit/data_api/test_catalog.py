@@ -1,4 +1,4 @@
-from __future__ import annotations
+
 
 from pathlib import Path
 
@@ -47,6 +47,24 @@ def test_credential_sourced_params_are_never_filters_or_model_output() -> None:
         for parameter, source in operation.parameter_sources.items():
             if parameter in {"app_key", "timestamp", "sign"}:
                 assert source == "credential", (operation_id, parameter)
+
+
+def test_catalog_operations_carry_no_wire_body_style() -> None:
+    """Business params are flat for every operation (customer contract; real MES
+    2026-09-06 confirms wrapped ``param`` bodies are silently ignored across all
+    families), so the catalog no longer carries a per-operation body_style."""
+    catalog = load_catalog(DEFAULT_CATALOG_PATH)
+    assert catalog.operation_ids
+    for operation_id in catalog.operation_ids:
+        assert not hasattr(catalog.get(operation_id), "body_style"), operation_id
+
+
+def test_query_footer_boolean_params_are_declared_for_footer_operations() -> None:
+    """queryFooter must be sent as a real boolean (customer contract 2026-09-06)."""
+    catalog = load_catalog(DEFAULT_CATALOG_PATH)
+    for operation_id in ("GongziMxQuery", "GongziJeOrderQuery", "HuohaoWtCLQuery"):
+        assert catalog.get(operation_id).boolean_params == ("queryFooter",), operation_id
+    assert catalog.get("YskQuery").boolean_params == ()
 
 
 def test_malformed_catalog_fails_closed(tmp_path: Path) -> None:

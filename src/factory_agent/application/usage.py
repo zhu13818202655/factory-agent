@@ -11,7 +11,7 @@ commit; the payload shape is validated before write. A metering failure is
 alerted and never blocks the interaction.
 """
 
-from __future__ import annotations
+
 
 import hashlib
 import uuid

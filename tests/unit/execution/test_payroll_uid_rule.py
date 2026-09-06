@@ -5,7 +5,7 @@ detail query for every role below boss *before* any MES traffic. Contract:
 ``docs/product/需求及方案整理.md``「客户确认结论」.
 """
 
-from __future__ import annotations
+
 
 import pytest
 

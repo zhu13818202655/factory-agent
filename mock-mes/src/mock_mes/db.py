@@ -5,7 +5,7 @@ generator process opens its own write connections and commits inside explicit
 transactions. Credentials come only from the environment (``MOCK_MES_DATABASE_URL``).
 """
 
-from __future__ import annotations
+
 
 from typing import Any
 

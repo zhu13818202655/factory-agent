@@ -11,7 +11,7 @@ renderer and the transient buffer; the session/application layers depend only
 on the ``ArtifactExporter`` port.
 """
 
-from __future__ import annotations
+
 
 import hashlib
 import time

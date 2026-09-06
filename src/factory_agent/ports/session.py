@@ -6,7 +6,7 @@ or user filter, and an interaction owned by another user is indistinguishable
 from one that does not exist.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from datetime import datetime

@@ -6,7 +6,7 @@ assumption is surfaced as a warning marker, and an ``incomplete`` result is
 labelled explicitly rather than presented as complete.
 """
 
-from __future__ import annotations
+
 
 from decimal import Decimal
 

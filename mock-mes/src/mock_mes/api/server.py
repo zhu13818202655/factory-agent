@@ -6,7 +6,7 @@ missing ``MOCK_MES_DATABASE_URL`` is a loud startup error, and readiness checks
 the live database connection.
 """
 
-from __future__ import annotations
+
 
 from contextlib import asynccontextmanager
 from typing import Literal

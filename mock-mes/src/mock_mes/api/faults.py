@@ -5,7 +5,7 @@ faults (duplicate page, missing page, wrong total, footer/list mismatch, null
 fields, field drift) are applied to list responses inside the envelope.
 """
 
-from __future__ import annotations
+
 
 import asyncio
 import json

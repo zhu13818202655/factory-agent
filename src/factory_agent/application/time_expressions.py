@@ -5,7 +5,7 @@ computed here from an injected clock and the configured factory timezone, so
 relative-time behaviour is reproducible in tests.
 """
 
-from __future__ import annotations
+
 
 import re
 from datetime import date, datetime, time, timedelta, timezone
@@ -17,6 +17,14 @@ _RECENT_DAYS = re.compile(r"^(?:近|最近|过去)\s*(\d{1,3})\s*天$")
 _ISO_DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _ISO_MONTH = re.compile(r"^(\d{4})-(\d{2})$")
 _CN_MONTH = re.compile(r"^(\d{4})\s*年\s*(\d{1,2})\s*月$")
+#: Bare months: "7月" / "7月份" / "七月" -> the nearest occurrence of that
+#: month (this year when it is not in the future, otherwise the previous year).
+_BARE_MONTH = re.compile(r"^(\d{1,2})\s*月(?:份)?$")
+_CN_BARE_MONTH = re.compile(r"^([一二三四五六七八九十]{1,3})\s*月(?:份)?$")
+_CN_MONTH_NUMBERS = {
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+    "七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12,
+}
 
 
 class TimeExpressionError(ValueError):
@@ -91,7 +99,28 @@ def _resolve_pattern(phrase: str, today: date) -> tuple[date, date] | None:
     if month_match:
         start = _safe_date(int(month_match.group(1)), int(month_match.group(2)), 1)
         return start, _add_month(start)
+
+    bare = _BARE_MONTH.match(phrase)
+    if bare:
+        return _bare_month_bounds(int(bare.group(1)), today)
+
+    cn_bare = _CN_BARE_MONTH.match(phrase)
+    if cn_bare:
+        month = _CN_MONTH_NUMBERS.get(cn_bare.group(1))
+        if month is None:
+            raise TimeExpressionError("time expression is not a valid month")
+        return _bare_month_bounds(month, today)
     return None
+
+
+def _bare_month_bounds(month: int, today: date) -> tuple[date, date]:
+    """Resolve a bare month to its nearest occurrence at or before today."""
+    if not 1 <= month <= 12:
+        raise TimeExpressionError("time expression is not a valid month")
+    start = date(today.year, month, 1)
+    if start > today:
+        start = date(today.year - 1, month, 1)
+    return start, _add_month(start)
 
 
 def _safe_date(year: int, month: int, day: int) -> date:

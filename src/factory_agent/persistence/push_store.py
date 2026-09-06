@@ -1,6 +1,6 @@
 """SQLAlchemy push stores (Story 3B): preferences + delivery log."""
 
-from __future__ import annotations
+
 
 from datetime import datetime
 

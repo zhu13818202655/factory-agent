@@ -1,4 +1,4 @@
-from __future__ import annotations
+
 
 from datetime import UTC, datetime
 from typing import Any
@@ -205,4 +205,173 @@ async def test_schema_drift_raises_upstream_invalid_without_payload_leak() -> No
     with pytest.raises(UpstreamInvalidError) as error_info:
         await adapter.execute(_request())
     assert "nested" not in str(error_info.value)
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_all_operations_send_business_params_flat() -> None:
+    """Every operation sends business params top-level flat (no ``param`` wrapper).
+
+    Real customer MES 2026-09-06 (all families): a wrapped ``param`` body is
+    silently ignored and returns canned pages with constant tenant totals, so
+    the adapter never wraps; flat bodies are the customer contract.
+    """
+    import json as _json
+
+    recorded: list[dict[str, Any]] = []
+
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            recorded.append(_json.loads(request.content))
+            return httpx.Response(
+                200,
+                json=_envelope(1, "成功", result={"list": [], "total": 0}),
+                request=request,
+            )
+
+    def _client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=RecordingTransport(), base_url="http://mock.invalid")
+
+    gongzi = HongzhaoMesAdapter("http://mock.invalid", _bundle(), _catalog(), client=_client())
+    await gongzi.execute(
+        MesRequest(
+            "GongziMxQuery",
+            {
+                "Flag": "0",
+                "Type": "0,1,2",
+                "scheme": "",
+                "queryFooter": True,
+                "dates": "2026-09-01",
+                "datee": "2026-09-05",
+                "Uid": "01001",
+                "page": 1,
+                "size": 200,
+            },
+        )
+    )
+    flat = recorded[-1]
+    assert "param" not in flat
+    assert flat["app_key"] == "APPKEY-A"
+    assert flat["dates"] == "2026-09-01"
+    assert flat["Uid"] == "01001"
+    assert flat["page"] == 1
+    await gongzi.aclose()
+
+    recorded.clear()
+    ysk = HongzhaoMesAdapter("http://mock.invalid", _bundle(), _catalog(), client=_client())
+    await ysk.execute(
+        MesRequest("YskQuery", {"Uid": "01001", "dates": "2026-07-01", "datee": "2026-08-31"})
+    )
+    flat_ysk = recorded[-1]
+    assert "param" not in flat_ysk
+    assert flat_ysk["Uid"] == "01001"
+    assert flat_ysk["dates"] == "2026-07-01"
+    assert flat_ysk["app_key"] == "APPKEY-A"
+    await ysk.aclose()
+
+
+def _summary_request(*, scheme: str, uid: str = "01001") -> MesRequest:
+    return MesRequest(
+        "GongziMxQuery",
+        {
+            "Flag": "0",
+            "Type": "0,1,2",
+            "scheme": scheme,
+            "queryFooter": True,
+            "dates": "2026-09-01",
+            "datee": "2026-09-05",
+            "Uid": uid,
+            "page": 1,
+            "size": 200,
+        },
+    )
+
+
+_NRE = "Object reference not set to an instance of an object."
+
+
+@pytest.mark.asyncio
+async def test_gongzi_mx_summary_empty_window_nre_is_absorbed_as_empty() -> None:
+    """Ledger #21: summary over an empty window returns a .NET NRE (code=0)
+    instead of zero rows; the adapter absorbs that exact case as an empty page
+    so the product can answer "本月无计件数据" rather than failing the run."""
+    from tests.support.http_stubs import JsonBodyTransport
+
+    adapter = _adapter(
+        client=JsonBodyTransport(_envelope(0, _NRE)).client(),
+    )
+    result = await adapter.execute(_summary_request(scheme="hz"))
+    assert result.result == {"list": [], "total": 0}
+    assert result.footer is None
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gongzi_mx_detail_same_nre_message_still_raises() -> None:
+    """The empty-window absorption is summary-only; detail mode keeps failing."""
+    from tests.support.http_stubs import JsonBodyTransport
+
+    adapter = _adapter(
+        client=JsonBodyTransport(_envelope(0, _NRE)).client(),
+    )
+    with pytest.raises(UpstreamInvalidError):
+        await adapter.execute(_summary_request(scheme=""))
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gongzi_mx_query_normalizes_query_footer_to_boolean() -> None:
+    """queryFooter arrives as the recipe string "1" but must be sent as a real
+    boolean; some tenant backends reject the string form as a schema error
+    ("请求参数缺少app_key、timestamp、sign", real MES 2026-09-06)."""
+    import json as _json
+
+    recorded: list[dict[str, Any]] = []
+
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            recorded.append(_json.loads(request.content))
+            return httpx.Response(
+                200,
+                json=_envelope(1, "成功", result={"list": [], "total": 0}),
+                request=request,
+            )
+
+    adapter = HongzhaoMesAdapter(
+        "http://mock.invalid",
+        _bundle(),
+        _catalog(),
+        client=httpx.AsyncClient(transport=RecordingTransport(), base_url="http://mock.invalid"),
+    )
+    await adapter.execute(
+        MesRequest(
+            "GongziMxQuery",
+            {
+                "Flag": "0",
+                "Type": "0,1,2",
+                "scheme": "",
+                "queryFooter": "1",
+                "dates": "2026-09-01",
+                "datee": "2026-09-05",
+                "Uid": "01001",
+                "page": 1,
+                "size": 200,
+            },
+        )
+    )
+    flat = recorded[-1]
+    assert flat["queryFooter"] is True
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gongzi_mx_summary_other_code_zero_message_still_raises() -> None:
+    """A non-NRE upstream failure on the summary path must not be swallowed."""
+    from tests.support.http_stubs import JsonBodyTransport
+
+    adapter = _adapter(
+        client=JsonBodyTransport(_envelope(0, "some other upstream failure")).client(),
+    )
+    with pytest.raises(UpstreamInvalidError):
+        await adapter.execute(_summary_request(scheme="hz"))
     await adapter.aclose()

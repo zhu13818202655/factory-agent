@@ -5,7 +5,7 @@ require ``MOCK_MES_TEST_DATABASE_URL`` pointing at a disposable database; tests
 that need PG skip when it is not set (same convention as usage-admin).
 """
 
-from __future__ import annotations
+
 
 import os
 from datetime import date, datetime

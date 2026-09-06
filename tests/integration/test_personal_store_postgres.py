@@ -5,7 +5,7 @@ skipped otherwise. Proves ownership filtering and the migration are durable,
 not just in-memory behavior.
 """
 
-from __future__ import annotations
+
 
 import os
 from datetime import datetime, timezone

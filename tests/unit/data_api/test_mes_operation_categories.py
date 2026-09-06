@@ -8,7 +8,7 @@ the catalog — fails here so a new MES interface can never be added without
 being classified (D5).
 """
 
-from __future__ import annotations
+
 
 import re
 from pathlib import Path

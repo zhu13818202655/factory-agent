@@ -5,7 +5,7 @@ exhaustion, partial failure marking, sandbox escapes, interaction isolation,
 and sensitive canary containment.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime

@@ -5,7 +5,7 @@ must carry a Chinese title and a one-line usage description, and the reserved
 ``chitchat`` entry must be present but never map to a recipe.
 """
 
-from __future__ import annotations
+
 
 from factory_agent.application.capability_map import (
     CHITCHAT_CAPABILITY_ID,

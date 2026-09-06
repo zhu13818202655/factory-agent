@@ -1,6 +1,6 @@
 """Fixtures for integration tests that need the real mock-mes database."""
 
-from __future__ import annotations
+
 
 import pytest
 from mock_mes.testing import TEST_DATABASE_URL

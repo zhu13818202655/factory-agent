@@ -1,12 +1,3 @@
-"""Push preferences and morning-report endpoints (Story 3B).
-
-The daily morning report is default-on and not configurable; the monthly/weekly
-push preferences are user-scoped and their content items are filtered by the
-caller's role data range (推送项按角色数据范围展示).
-"""
-
-from __future__ import annotations
-
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request, status

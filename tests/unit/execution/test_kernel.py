@@ -6,7 +6,7 @@ aggregate reconciles against ``footer.je_total``, and that empty/pagination
 anomalies surface as structured states instead of fabricated numbers.
 """
 
-from __future__ import annotations
+
 
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -17,6 +17,7 @@ import pytest
 from factory_agent.application.filters import NarrowedFilters
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.domain import CapabilityId, EmployeeId, TenantId, TimeRange
+from factory_agent.domain.errors import InvalidRequestError, UpstreamInvalidError
 from factory_agent.execution.executor import ExecutionRequest
 from factory_agent.execution.kernel import KernelCapabilityRunner
 from factory_agent.execution.recipes import load_recipes
@@ -254,6 +255,71 @@ async def test_pagination_incomplete_surfaces_structured_state() -> None:
     )
     assert result.incomplete is True
     assert result.incomplete_reason == "pagination_total_drift"
+
+
+@pytest.mark.asyncio
+async def test_upstream_failure_degrades_to_incomplete_not_abort() -> None:
+    """Option A: an upstream data-source failure marks the capability incomplete
+    (upstream_*) instead of aborting the whole interaction."""
+
+    class RaisingExecutor(FakeStepExecutor):
+        async def execute_full_step(
+            self,
+            filters: Any,
+            request: ExecutionRequest,
+            active_scope: Any | None = None,
+            extra_params: dict[str, str] | None = None,
+        ) -> ResourceFetchResult:
+            self.calls.append((request.operation_id, dict(extra_params or {})))
+            raise UpstreamInvalidError("upstream payload failed validation")
+
+    runner = KernelCapabilityRunner(
+        RaisingExecutor(),
+        load_recipes(load_catalog().operation_ids),
+        default_metric_registry(),
+    )
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr003_personal_wage_detail"),
+            filters=_filters(),
+            time_range=_range(),
+        )
+    )
+    assert result.incomplete is True
+    assert result.incomplete_reason == "upstream_invalid"
+    assert result.rows == ()
+    assert any("数据源返回错误" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_credential_and_programming_errors_still_propagate() -> None:
+    """InvalidRequestError (params/credential) is not an upstream data failure and
+    must keep propagating so it is never masked as an incomplete result."""
+
+    class RaisingExecutor(FakeStepExecutor):
+        async def execute_full_step(
+            self,
+            filters: Any,
+            request: ExecutionRequest,
+            active_scope: Any | None = None,
+            extra_params: dict[str, str] | None = None,
+        ) -> ResourceFetchResult:
+            self.calls.append((request.operation_id, dict(extra_params or {})))
+            raise InvalidRequestError("missing required parameter")
+
+    runner = KernelCapabilityRunner(
+        RaisingExecutor(),
+        load_recipes(load_catalog().operation_ids),
+        default_metric_registry(),
+    )
+    with pytest.raises(InvalidRequestError):
+        await runner.run(
+            CapabilityRunRequest(
+                capability_id=CapabilityId("fr003_personal_wage_detail"),
+                filters=_filters(),
+                time_range=_range(),
+            )
+        )
 
 
 def _runner() -> KernelCapabilityRunner:

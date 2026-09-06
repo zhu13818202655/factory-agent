@@ -1,6 +1,6 @@
 """Fault injection tests adapted to the customer envelope (PG-backed)."""
 
-from __future__ import annotations
+
 
 from typing import Any, cast
 

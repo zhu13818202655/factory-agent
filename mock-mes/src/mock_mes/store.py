@@ -21,7 +21,7 @@ side always filters by tenant/role/uid/date first so whole tables are never
 loaded into memory.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from datetime import date

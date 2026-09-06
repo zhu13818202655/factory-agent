@@ -5,7 +5,7 @@ morning report is default-on and deliberately NOT represented here (不可配置
 关闭). Preferences are non-sensitive: dates, times, and content-item ids only.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from typing import Protocol

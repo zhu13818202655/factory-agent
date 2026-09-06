@@ -7,7 +7,7 @@ never raw question text, work numbers, wage/output amounts, or ``DataScope`` ID
 lists.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from datetime import datetime

@@ -6,7 +6,7 @@ matrix plus tenant binding, while actual data visibility is enforced by
 MES-side row filtering.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

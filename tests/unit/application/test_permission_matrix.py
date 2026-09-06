@@ -8,7 +8,7 @@ FR-009..FR-012 to the owner. Data visibility inside an allowed capability is
 still enforced by MES-side row filtering (``DataScope.mes_filtered``).
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

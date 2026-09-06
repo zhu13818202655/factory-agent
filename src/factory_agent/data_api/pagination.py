@@ -6,7 +6,7 @@ pages, and enforcing page/row budgets. Any anomaly aborts with a structured
 ``incomplete`` status instead of silently truncating results.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast

@@ -5,7 +5,7 @@ foreign/unknown ids are indistinguishable (None); the buffer is bounded; and a
 renderer failure degrades to a structured error without touching results.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 from decimal import Decimal

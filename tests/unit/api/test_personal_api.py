@@ -5,7 +5,7 @@ configured credential header and the (fake) token gateway resolves the
 principal. Quick questions are role-aware, asserted per role below.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

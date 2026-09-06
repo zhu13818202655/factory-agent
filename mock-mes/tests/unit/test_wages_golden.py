@@ -14,7 +14,7 @@ Any change to the generator must update this golden file and record the reason
 with the change, otherwise the invariant test fails.
 """
 
-from __future__ import annotations
+
 
 import json
 from datetime import datetime

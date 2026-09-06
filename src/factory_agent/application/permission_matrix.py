@@ -13,7 +13,7 @@ Matrix (customer-confirmed):
 - FR-009..FR-012 factory-wide capabilities: 99 老板 only.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from enum import StrEnum

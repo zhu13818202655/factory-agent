@@ -5,7 +5,7 @@ assistant text: requests must use ``ModelStage.CHAT`` with JSON output off and
 a persona that never fabricates factory data.
 """
 
-from __future__ import annotations
+
 
 import pytest
 

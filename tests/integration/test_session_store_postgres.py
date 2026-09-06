@@ -10,7 +10,7 @@ Set ``FACTORY_AGENT_TEST_POSTGRES_URL`` to a disposable database to enable it.
 The suite creates and drops its own schema and never touches customer data.
 """
 
-from __future__ import annotations
+
 
 import os
 from collections.abc import AsyncIterator

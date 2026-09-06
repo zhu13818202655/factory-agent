@@ -7,7 +7,7 @@ audit retention only. Partition maintenance for ``usage_event`` is
 factory-agent's responsibility.
 """
 
-from __future__ import annotations
+
 
 import asyncio
 from datetime import datetime, timezone

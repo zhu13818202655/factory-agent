@@ -8,7 +8,7 @@ variable, which is resolved here into a ``SecretStr``. Nothing in this module
 returns a raw key, and ``__repr__`` of the resolved values stays redacted.
 """
 
-from __future__ import annotations
+
 
 import os
 from collections.abc import Mapping

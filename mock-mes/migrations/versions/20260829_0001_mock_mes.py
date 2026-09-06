@@ -14,7 +14,7 @@ Revises:
 Create Date: 2026-08-29
 """
 
-from __future__ import annotations
+
 
 import sqlalchemy as sa
 from alembic import op

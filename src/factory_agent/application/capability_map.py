@@ -10,7 +10,7 @@ between the two; a product id can own several recipes (FR-002/FR-003 share the
 same operation with a different ``scheme``).
 """
 
-from __future__ import annotations
+
 
 from factory_agent.application.capabilities import CapabilityRegistry
 from factory_agent.application.intent import CapabilityCatalog, CapabilitySpec

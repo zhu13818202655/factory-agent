@@ -6,7 +6,7 @@ a table whitelist, and is destroyed afterward. File reads, external scans,
 extension loading, ``ATTACH``, ``COPY``, DDL, and DML are all blocked.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence

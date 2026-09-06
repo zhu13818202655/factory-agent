@@ -6,7 +6,7 @@ budgets, propagates structured cancellation, and marks optional-step failures
 as explicit ``incomplete`` data instead of fabricating numbers.
 """
 
-from __future__ import annotations
+
 
 import asyncio
 import time

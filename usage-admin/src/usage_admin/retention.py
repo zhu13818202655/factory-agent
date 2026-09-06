@@ -5,7 +5,7 @@ task. Export artifacts are covered by the main service's 3-month cleanup; here
 we only maintain the audit log that usage-admin owns.
 """
 
-from __future__ import annotations
+
 
 from collections.abc import Callable
 from dataclasses import dataclass

@@ -1,6 +1,6 @@
 """Filename and spreadsheet-cell safety: traversal and formula injection."""
 
-from __future__ import annotations
+
 
 from factory_agent.export.sanitize import (
     build_export_filename,

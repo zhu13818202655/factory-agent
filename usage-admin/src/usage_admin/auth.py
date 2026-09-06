@@ -14,7 +14,7 @@ Passwords are stored hashed (bcrypt) and never logged; login failures and
 account changes are recorded in ``admin_audit``.
 """
 
-from __future__ import annotations
+
 
 import base64
 import hashlib

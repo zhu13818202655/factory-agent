@@ -5,7 +5,7 @@ Uses a fake step executor returning golden rows per operation so the recipe
 DAG (including the FR-005/FR-009 chained progress chain) is exercised offline.
 """
 
-from __future__ import annotations
+
 
 from datetime import UTC, datetime
 from decimal import Decimal

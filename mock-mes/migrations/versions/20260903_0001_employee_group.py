@@ -12,7 +12,7 @@ Revises: 20260829_0001_mock_mes
 Create Date: 2026-09-03
 """
 
-from __future__ import annotations
+
 
 import sqlalchemy as sa
 from alembic import op

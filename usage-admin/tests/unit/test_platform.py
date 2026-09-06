@@ -1,6 +1,6 @@
 """PlatformScope RBAC tests."""
 
-from __future__ import annotations
+
 
 import pytest
 from usage_admin.platform import (

@@ -1,6 +1,6 @@
 """In-memory cache store with optional fault injection for tests."""
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 

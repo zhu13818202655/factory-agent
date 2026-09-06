@@ -12,7 +12,7 @@ constructs customer URLs, auth headers, or unbounded calls; scope identifiers
 reach the executor only through ``NarrowedFilters`` and reviewed recipe params.
 """
 
-from __future__ import annotations
+
 
 import itertools
 import time
@@ -22,7 +22,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Protocol, cast
 
 from factory_agent.domain import CapabilityId, TimeRange
-from factory_agent.domain.errors import InvalidRequestError
+from factory_agent.domain.errors import (
+    InvalidRequestError,
+    MesTimeoutError,
+    RateLimitedError,
+    UpstreamInvalidError,
+    UpstreamUnavailableError,
+)
 from factory_agent.execution.executor import ExecutionRequest
 from factory_agent.execution.recipes import (
     BUSINESS_FILTER_KEYS,
@@ -32,6 +38,7 @@ from factory_agent.execution.recipes import (
 )
 from factory_agent.execution.result_table import MetricRegistry, ResultColumnMeta, ResultTable
 from factory_agent.execution.sandbox_runtime import InteractionSandbox, SandboxTable
+from factory_agent.observability.logging_adapter import get_logger
 from factory_agent.ports.contracts import (
     UNAVAILABLE_VALUE,
     RenderColumn,
@@ -47,6 +54,39 @@ _METADATA_TABLE = "_meta"
 _FILTER_PARAM_KEYS = frozenset(
     {"scheme", "Type", "Flag", "queryFooter", "userid", "huohao", "dh", "detailId"}
 )
+
+_LOGGER = get_logger("factory_agent.execution.kernel")
+
+#: Upstream data-source failures degrade one API step to an explicit
+#: ``incomplete``/``upstream_*`` state instead of aborting the whole
+#: interaction. Credential, scope, and recipe/programming failures are NOT
+#: included so they keep propagating and are never masked.
+_UPSTREAM_DEGRADE_TYPES = (
+    UpstreamInvalidError,
+    UpstreamUnavailableError,
+    RateLimitedError,
+    MesTimeoutError,
+)
+
+_UPSTREAM_WARNING_BY_REASON = {
+    "upstream_invalid": "数据源返回错误，本次取数未完成",
+    "upstream_unavailable": "数据源暂不可达，本次取数未完成",
+    "upstream_timeout": "数据源响应超时，本次取数未完成",
+    "upstream_rate_limited": "数据源限流，本次取数未完成",
+}
+
+
+def _upstream_reason(error: Exception) -> str:
+    """Structured reason label for an upstream data-source failure."""
+    if isinstance(error, UpstreamInvalidError):
+        return "upstream_invalid"
+    if isinstance(error, RateLimitedError):
+        return "upstream_rate_limited"
+    if isinstance(error, MesTimeoutError):
+        return "upstream_timeout"
+    if isinstance(error, UpstreamUnavailableError):
+        return "upstream_unavailable"
+    return "upstream_error"
 
 
 class StepExecutor(Protocol):
@@ -207,16 +247,39 @@ class KernelCapabilityRunner:
             if step.operation_id is None:
                 raise InvalidRequestError(f"api step {step.step_id} has no operation")
             static_params = self._reviewed_params(step.params)
-            if step.param_bindings:
-                fetched = await self._fetch_fanned(
-                    sandbox, step, static_params, filters, time_range, call_count, role
+            try:
+                if step.param_bindings:
+                    fetched = await self._fetch_fanned(
+                        sandbox, step, static_params, filters, time_range, call_count, role
+                    )
+                    call_count += fetched.pages_fetched
+                else:
+                    fetched = await self._fetch_one(
+                        step.operation_id, filters, time_range, static_params, role
+                    )
+                    call_count += 1
+            except _UPSTREAM_DEGRADE_TYPES as error:
+                # Upstream data-source failure (option A): degrade this API step
+                # to an explicit incomplete state with an empty page instead of
+                # aborting the whole interaction. The capability still completes
+                # and is visibly marked ``incomplete``/``upstream_*`` — the empty
+                # page is never presented as a fabricated "no data" result.
+                reason = _upstream_reason(error)
+                _LOGGER.warning(
+                    "kernel.api_step.upstream_degraded",
+                    capability_id=str(recipe.capability_id),
+                    step_id=step.step_id,
+                    operation_id=step.operation_id,
+                    reason=reason,
                 )
-                call_count += fetched.pages_fetched
-            else:
-                fetched = await self._fetch_one(
-                    step.operation_id, filters, time_range, static_params, role
+                fetched = ResourceFetchResult(
+                    rows=(),
+                    total=0,
+                    pages_fetched=0,
+                    complete=False,
+                    reason=reason,
+                    footer=None,
                 )
-                call_count += 1
             columns = self._table_columns_for(step, fetched.rows, recipe)
             sandbox.register_table(
                 SandboxTable(
@@ -351,9 +414,17 @@ class KernelCapabilityRunner:
 
         for fetch in fetches.values():
             if not fetch.complete:
-                incomplete = True
-                incomplete_reason = f"pagination_{fetch.reason or 'incomplete'}"
-                warnings.append(f"分页拉取未完整：{fetch.reason}")
+                reason = fetch.reason or "incomplete"
+                if reason.startswith("upstream_"):
+                    incomplete = True
+                    incomplete_reason = reason
+                    warnings.append(
+                        _UPSTREAM_WARNING_BY_REASON.get(reason, f"数据源取数失败：{reason}")
+                    )
+                else:
+                    incomplete = True
+                    incomplete_reason = f"pagination_{reason}"
+                    warnings.append(f"分页拉取未完整：{reason}")
 
         compute_outputs = self._run_compute_steps(sandbox, recipe, fetches, filters)
         source_ops_by_step = _source_operations(recipe)

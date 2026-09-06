@@ -11,7 +11,7 @@ Proves the four data-capability guarantees on the new recipes:
    summary and are never fabricated into numbers.
 """
 
-from __future__ import annotations
+
 
 import zipfile
 from datetime import UTC, datetime, timedelta

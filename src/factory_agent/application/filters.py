@@ -3,7 +3,7 @@
 Every rejection path here must happen before any MES business call.
 """
 
-from __future__ import annotations
+
 
 from factory_agent.domain import DataScope, DeptId, EmployeeId, NarrowedFilters
 

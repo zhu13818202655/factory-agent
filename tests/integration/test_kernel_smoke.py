@@ -5,7 +5,7 @@ customer token endpoint, scope injection through the executor, customer rows
 validated at the adapter boundary, and aggregation in the DuckDB sandbox.
 """
 
-from __future__ import annotations
+
 
 from datetime import UTC, datetime
 from decimal import Decimal

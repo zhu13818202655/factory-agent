@@ -1,6 +1,6 @@
 """Platform ops service tests over the in-memory store."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timedelta, timezone
 

@@ -7,7 +7,7 @@ implementations live in ``data_api/`` and never leak customer payload shapes
 past this boundary.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from typing import Protocol

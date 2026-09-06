@@ -5,7 +5,7 @@ The mock-mes app is PG-backed; tests that need it require
 fixed test window are applied once per session.
 """
 
-from __future__ import annotations
+
 
 import logging
 from collections.abc import Iterator

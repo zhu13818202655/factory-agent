@@ -28,7 +28,7 @@ The declared row semantics per capability are data, reviewed like recipes:
 changing a rule or a mapping is a semantics change requiring human review.
 """
 
-from __future__ import annotations
+
 
 import hashlib
 from dataclasses import dataclass

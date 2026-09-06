@@ -11,7 +11,7 @@ transaction. The metering transaction is intentionally separate from the
 business commit — a metering failure can therefore never roll back an answer.
 """
 
-from __future__ import annotations
+
 
 from collections.abc import Callable, Sequence
 from typing import Any

@@ -118,12 +118,14 @@ Since code modifications are typically performed under the `root` user, but the 
 ## Coding Standards
 
 - Python 3.12+, uv, Ruff, Pyright strict mode, pytest, and typed public boundaries.
-- Put `from __future__ import annotations` at the top of Python modules.
+- **Do NOT add `from __future__ import annotations`.** Python 3.12 natively supports all modern type syntax (`list[str]`, `X | Y`, `Self`, etc.) without it; including this import is redundant and conflicts with our baseline version.
+- **Do NOT add module-level docstrings unless necessary.** File and directory names are the primary source of truth for module purpose. Only add a top-level docstring when the module contains non-obvious invariants, cross-cutting concerns, or architectural context that cannot be inferred from its name and location. Prefer class/function-level docstrings for localized complexity.
 - Use Pydantic models at external boundaries and immutable domain values internally.
 - Inject clocks, IDs, clients, repositories, and model gateways in tested code.
 - Use `Decimal` with explicit rounding for money and timezone-aware datetimes.
 - Do not add an abstraction without a current second use or a boundary reason.
 - Generated clients and `uv.lock` change only through their generators or uv.
+- **Do NOT add changelog-style or historical comments in code.** Code must reflect only the current intended behavior. Never annotate what a previous implementation looked like, when or why something was changed, or what a customer originally specified versus what they later revised. If the rationale for a non-obvious decision is not evident from the code itself, record it in an ADR or Story checklist—not in inline comments. Git history and Story files are the sole provenance for change context.
 
 ## Permission and Privacy Tests
 

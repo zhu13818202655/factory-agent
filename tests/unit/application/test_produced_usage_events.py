@@ -10,7 +10,7 @@ that used to be enforced by the contract schemas:
 2. no event carries a sensitive canary (question text, employee id, ...).
 """
 
-from __future__ import annotations
+
 
 import json
 from datetime import datetime, timezone

@@ -30,7 +30,7 @@ Revises:
 Create Date: 2026-08-24 (rewritten 2026-09-02 as single development baseline)
 """
 
-from __future__ import annotations
+
 
 import sqlalchemy as sa
 from alembic import op

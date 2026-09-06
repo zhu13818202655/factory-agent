@@ -6,7 +6,7 @@ The recorder is a protocol, so this suite
 injects a recording fake and asserts adapter behaviour without a database.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime

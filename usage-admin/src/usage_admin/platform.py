@@ -7,7 +7,7 @@ trusted gateway injects the principal via headers; request bodies never carry
 identity.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from enum import Enum

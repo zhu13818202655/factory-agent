@@ -23,7 +23,7 @@ Adapter semantics (contract: ``docs/product/AI问答对外接口-整理.md``):
   (default 60 s) is about to close, plus exactly one reactive refresh-retry.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -62,6 +62,32 @@ _INVALID_REQUEST_MESSAGES = (
     "无效app_key",
     "加密信息解析失败",
 )
+
+#: Known customer defect (ledger #21, real MES 2026-09-05): ``GongziMxQuery``
+#: summary mode returns this .NET NullReference with ``code=0`` instead of an
+#: empty page when the employee has no detail rows in the queried window. The
+#: same Uid/window in detail mode returns ``code=1 total=0`` normally.
+_EMPTY_SUMMARY_MESSAGE = "Object reference not set to an instance of an object."
+_SUMMARY_SCHEME_VALUES = frozenset({"hz", "汇总", "HZ"})
+
+#: String forms the customer treats as boolean request values (contract example
+#: sends ``queryFooter: true``; a string form is rejected as a schema error on
+#: some tenant backends, e.g. "请求参数缺少app_key、timestamp、sign").
+_BOOL_TRUE = frozenset({"1", "true", "yes", "on"})
+_BOOL_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def _as_bool(value: object) -> object:
+    """Normalize a declared boolean parameter to ``bool`` when recognized."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _BOOL_TRUE:
+            return True
+        if lowered in _BOOL_FALSE:
+            return False
+    return value
 
 
 class TokenRefresher(Protocol):
@@ -197,7 +223,37 @@ class HongzhaoMesAdapter:
             if envelope.result is None:
                 raise UpstreamInvalidError("successful response has no result")
             return self._unwrap(envelope)
+        if self._absorb_empty_summary_nre(operation, request.params, envelope):
+            # Customer defect (ledger #21): summary over an empty window is
+            # reported as this error rather than zero rows. Absorb it as an
+            # empty page so the product can answer "本月无计件数据" instead of
+            # failing the whole interaction; never treats other failures as
+            # empty. Semantics still pending customer confirmation.
+            _LOGGER.info(
+                "mes.gongzi_mx.empty_summary.absorbed",
+                operation_id=operation.operation_id,
+            )
+            return MesResponse(result={"list": [], "total": 0}, footer=None)
+        # Surface the customer rejection in logs for joint debugging: the raw
+        # envelope carries only code + message (never credentials or payloads).
+        _LOGGER.warning(
+            "mes.upstream.rejected",
+            operation_id=operation.operation_id,
+            code=envelope.code,
+            message=envelope.message,
+        )
         raise map_message_to_error(envelope.message)
+
+    def _absorb_empty_summary_nre(
+        self, operation: CatalogOperation, params: Mapping[str, Any], envelope: Any
+    ) -> bool:
+        """True only for GongziMxQuery summary hit by the known empty-window NRE."""
+        return (
+            operation.operation_id == "GongziMxQuery"
+            and str(params.get("scheme", "")).strip() in _SUMMARY_SCHEME_VALUES
+            and isinstance(getattr(envelope, "message", None), str)
+            and envelope.message.strip() == _EMPTY_SUMMARY_MESSAGE
+        )
 
     async def _assert_tenant_enabled(self) -> None:
         """A disabled AppKey is rejected before any MES request."""
@@ -397,12 +453,9 @@ class HongzhaoMesAdapter:
         exclusively from the active ``MesCredentialBundle`` — never from
         filters, user text, or model output — and stay at the top level.
 
-        Business parameters are grouped under a single ``param`` object:
-        verified against the real customer MES (2026-09-04) where a flat body
-        is rejected (``请求参数缺少app_key、timestamp、sign``) while the wrapped
-        shape ``{app_key, timestamp, sign, param: {...}}`` succeeds across the
-        Baseinfo / Plan / Sclzd / print families. Mock MES mirrors the shape in
-        ``_json_body`` so both sides stay in lockstep.
+        Business parameters are always sent flat at the top level next to the
+        three credential parameters (customer contract; a wrapped ``param``
+        body is silently ignored upstream). Mock MES mirrors this shape.
         """
         bundle = self._active_bundle()
         body: dict[str, Any] = {}
@@ -420,12 +473,13 @@ class HongzhaoMesAdapter:
                 if value is None and parameter in operation.required_params:
                     raise InvalidRequestError(f"missing required parameter: {parameter}")
                 if value is not None:
+                    if parameter in operation.boolean_params:
+                        value = _as_bool(value)
                     business[parameter] = value
         for parameter in operation.required_params:
             if parameter not in business and parameter not in body:
                 raise InvalidRequestError(f"missing required parameter: {parameter}")
-        if business:
-            body["param"] = business
+        body.update(business)
         return body
 
     def _map_status(self, response: httpx.Response) -> Any:

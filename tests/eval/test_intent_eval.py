@@ -6,7 +6,7 @@ grounding, and fault-recovery groups. A regression in the interpreter fails
 here, independent of any model choice.
 """
 
-from __future__ import annotations
+
 
 import json
 from pathlib import Path

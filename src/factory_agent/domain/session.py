@@ -8,7 +8,7 @@ every non-terminal state, terminal states can never restart, and every applied
 transition records ``from``, ``to``, and ``reason``.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from datetime import datetime

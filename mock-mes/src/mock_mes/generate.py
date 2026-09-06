@@ -12,7 +12,7 @@ Examples::
     mock-mes-generate --start 2026-08-01 --end 2026-08-31
 """
 
-from __future__ import annotations
+
 
 import argparse
 import asyncio

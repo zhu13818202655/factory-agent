@@ -7,7 +7,7 @@ value, and merging resets the stale ``missing``/``ambiguous`` diagnostics so the
 completeness check can repopulate them.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, replace
 from datetime import datetime

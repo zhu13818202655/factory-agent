@@ -6,7 +6,7 @@ the metering chain. This suite runs the real event constructors and the MES
 adapter recorder with credential canaries and asserts absence.
 """
 
-from __future__ import annotations
+
 
 import json
 import logging

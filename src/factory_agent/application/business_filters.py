@@ -12,7 +12,7 @@ regardless of role (客户确认结论 4), so a resolved target employee carries
 customer MES.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 

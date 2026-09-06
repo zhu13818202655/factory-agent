@@ -6,7 +6,7 @@ durations. K3 confirms performance limits are out of scope for this version, so
 these numbers are a baseline only — never an acceptance gate.
 """
 
-from __future__ import annotations
+
 
 import time
 from datetime import datetime, timezone

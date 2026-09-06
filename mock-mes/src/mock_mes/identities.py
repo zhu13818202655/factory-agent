@@ -13,7 +13,7 @@ All values are deterministic development fixtures, never real customer
 identities.
 """
 
-from __future__ import annotations
+
 
 Record = dict[str, object]
 

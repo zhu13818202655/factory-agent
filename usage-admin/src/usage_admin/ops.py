@@ -8,7 +8,7 @@ explicit incomplete state so consumers never mistake a bounded result for a
 complete one.
 """
 
-from __future__ import annotations
+
 
 from collections import Counter, defaultdict
 from collections.abc import Callable

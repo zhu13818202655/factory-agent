@@ -1,6 +1,6 @@
 """In-memory push fakes for tests (Story 3B)."""
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 

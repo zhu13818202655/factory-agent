@@ -7,7 +7,7 @@ provable range with ``mes_filtered`` recorded at the adapter boundary, never
 here. Roles are display-only.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

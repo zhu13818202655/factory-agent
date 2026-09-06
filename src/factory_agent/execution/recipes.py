@@ -6,7 +6,7 @@ with dependencies and parallel groups, local computation, result columns,
 metric versions, and degradation rules. Unreviewed recipes can never register.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from pathlib import Path

@@ -1,6 +1,6 @@
 """Request-scoped correlation context bound via contextvars (ADR-0004)."""
 
-from __future__ import annotations
+
 
 import re
 import secrets

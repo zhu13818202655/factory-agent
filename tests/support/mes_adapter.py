@@ -7,7 +7,7 @@ tests can assert zero-call guarantees. It speaks the customer envelope
 boundary.
 """
 
-from __future__ import annotations
+
 
 from copy import deepcopy
 from dataclasses import dataclass, field

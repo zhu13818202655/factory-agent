@@ -7,7 +7,7 @@ boundaries (no future data), SQL row-level filtering and the "PG unavailable
 is a loud error, never a memory fallback" behaviour.
 """
 
-from __future__ import annotations
+
 
 from datetime import date, datetime
 from typing import Any

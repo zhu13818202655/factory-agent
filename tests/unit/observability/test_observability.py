@@ -1,6 +1,6 @@
 """Redaction, audit baseline, request context, and logging tests."""
 
-from __future__ import annotations
+
 
 import logging
 from datetime import datetime, timezone

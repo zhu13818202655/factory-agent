@@ -1,6 +1,6 @@
 """In-memory scope-violation store for tests (Story 2)."""
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from datetime import datetime

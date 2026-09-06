@@ -6,7 +6,7 @@ or test snapshots. Every outbound representation of an AppKey goes through this
 single function — no caller may truncate keys itself (Technology Notes).
 """
 
-from __future__ import annotations
+
 
 _MASK = "***"
 

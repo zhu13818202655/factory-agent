@@ -11,7 +11,7 @@ Proves the Story 2 dispositions end to end:
    observed-ownership channel is populated.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 from decimal import Decimal

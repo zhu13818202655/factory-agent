@@ -6,7 +6,7 @@ as usage-admin's ``usage-admin-retention``). The scope-review CLI runs the
 read-only deviation review once and prints a redacted report.
 """
 
-from __future__ import annotations
+
 
 import argparse
 import asyncio

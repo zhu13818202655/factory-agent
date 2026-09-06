@@ -1,6 +1,6 @@
 """XLSX renderer tests: valid workbook, formula neutralisation, totals."""
 
-from __future__ import annotations
+
 
 import zipfile
 from decimal import Decimal

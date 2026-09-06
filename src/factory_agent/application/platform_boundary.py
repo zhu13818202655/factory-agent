@@ -1,6 +1,6 @@
 """Runtime guard isolating platform operations from factory business paths."""
 
-from __future__ import annotations
+
 
 from factory_agent.domain import DataScope, PlatformScope
 

@@ -6,7 +6,7 @@ guarantee the safety net must prove — a well-scoped return is never flagged
 the kernel-level tests in ``tests/security/``.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

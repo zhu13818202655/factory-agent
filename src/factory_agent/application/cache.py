@@ -17,7 +17,7 @@ version (Mock rebuild / master-data change) or calling
 ``invalidate_base_data`` evicts the shared lines.
 """
 
-from __future__ import annotations
+
 
 import hashlib
 import json

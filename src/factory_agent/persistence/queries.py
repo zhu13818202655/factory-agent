@@ -5,7 +5,7 @@ pure so a unit test can compile them and prove that no statement can run without
 the trusted ``(tenant_id, user_id)`` predicate.
 """
 
-from __future__ import annotations
+
 
 import base64
 import binascii

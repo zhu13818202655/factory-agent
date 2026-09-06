@@ -5,7 +5,7 @@ reaches a browser; a payload that still contains a non-finite float is sanitized
 to ``null`` instead of breaking the stream.
 """
 
-from __future__ import annotations
+
 
 import json
 import math

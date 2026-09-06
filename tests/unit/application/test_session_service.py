@@ -1,4 +1,4 @@
-from __future__ import annotations
+
 
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -252,6 +252,21 @@ async def test_successful_run_reaches_the_answered_state_and_emits_a_result() ->
     assert stored.state is SessionState.ANSWERED
     assert stored.status is InteractionStatus.COMPLETED
     assert len(runner.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_successful_run_logs_the_final_outcome_metadata(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The final result sent to the front end is logged (metadata only)."""
+    service, _, _ = build()
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    caplog.set_level(0)
+    await drain(service, record.interaction_id)
+
+    assert "session.outcome.result" in caplog.text
+    assert "rows=" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -620,6 +635,19 @@ async def test_chitchat_records_only_extract_and_chat_llm_usage_events() -> None
     ]
     assert [event["stage"] for event in llm] == ["extract", "chat"]
     assert llm[1]["model_alias"] == "factory-summary"
+
+
+@pytest.mark.asyncio
+async def test_chitchat_logs_the_answer_text(caplog: pytest.LogCaptureFixture) -> None:
+    """The chat answer returned to the front end is logged."""
+    service, _, _ = build([CHITCHAT_PAYLOAD], chat_text="你好呀！")
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
+
+    caplog.set_level(0)
+    await drain(service, record.interaction_id)
+
+    assert "session.outcome.chat" in caplog.text
+    assert "你好呀！" in caplog.text
 
 
 @pytest.mark.asyncio

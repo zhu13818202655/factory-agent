@@ -6,7 +6,7 @@ entry, and returns a signed, short-lived download token. Download re-validates
 the signature and expiry — it never accepts an unscoped or expired link.
 """
 
-from __future__ import annotations
+
 
 import csv
 import hashlib

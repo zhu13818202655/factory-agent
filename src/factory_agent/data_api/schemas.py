@@ -13,7 +13,7 @@ is judged only as 1/0 — see ``docs/product/AI问答对外接口-整理.md`` §
 # Customer field names intentionally preserve mixed casing from the upstream API.
 # ruff: noqa: N815
 
-from __future__ import annotations
+
 
 from typing import Any, cast
 

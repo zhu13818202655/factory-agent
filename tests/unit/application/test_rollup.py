@@ -6,7 +6,7 @@ and per status, keep success and failure separate, and never re-count
 ``other`` so a stale mapping cannot silently drop traffic.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

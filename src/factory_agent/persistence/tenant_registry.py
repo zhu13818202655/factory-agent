@@ -7,7 +7,7 @@ declared in this service's ``tables.METADATA`` so the disposable test schema
 cannot accidentally create or drop it.
 """
 
-from __future__ import annotations
+
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine

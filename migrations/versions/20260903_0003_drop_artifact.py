@@ -9,7 +9,7 @@ Revises: 20260903_0002_scope_violation
 Create Date: 2026-09-03
 """
 
-from __future__ import annotations
+
 
 import sqlalchemy as sa
 from alembic import op

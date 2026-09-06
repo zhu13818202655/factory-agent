@@ -8,7 +8,7 @@ COMPANY-A range via MES row-level filtering; employee_ids=None on management
 capabilities lets MES decide.
 """
 
-from __future__ import annotations
+
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal

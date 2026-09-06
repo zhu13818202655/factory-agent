@@ -7,7 +7,7 @@ a real database and reflects the result back.
 Set ``FACTORY_AGENT_TEST_POSTGRES_URL`` to a disposable database to enable it.
 """
 
-from __future__ import annotations
+
 
 import os
 from collections.abc import Iterator

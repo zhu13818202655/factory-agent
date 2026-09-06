@@ -5,7 +5,7 @@ reads it. The port keeps the read behind a protocol so tests can inject a fake
 and the SQL implementation stays isolated.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from typing import Protocol

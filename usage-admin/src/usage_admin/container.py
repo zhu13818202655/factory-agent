@@ -1,6 +1,6 @@
 """Dependency container for the usage-admin API."""
 
-from __future__ import annotations
+
 
 import secrets
 from collections.abc import Callable

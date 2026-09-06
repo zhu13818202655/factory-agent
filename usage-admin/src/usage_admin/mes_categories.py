@@ -12,7 +12,7 @@ Categories: ``output`` (产量查询) / ``payroll`` (工资查询) / ``order`` (
 to the total MES call count and are displayed side by side.
 """
 
-from __future__ import annotations
+
 
 from collections.abc import Awaitable, Callable
 

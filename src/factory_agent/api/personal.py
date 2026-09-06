@@ -6,7 +6,7 @@ ownership-filtered by the trusted ``(tenant_id, user_id)`` pair. Quick
 questions are role-aware: the role is the authoritative token role.
 """
 
-from __future__ import annotations
+
 
 from typing import cast
 

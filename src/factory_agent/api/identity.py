@@ -13,7 +13,7 @@ exclusively from the token (customer contract §2). The fallback is deliberately
 narrow and never active alongside a configured gateway.
 """
 
-from __future__ import annotations
+
 
 from typing import cast
 

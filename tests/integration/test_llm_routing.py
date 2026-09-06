@@ -9,7 +9,7 @@ An always-failing upstream is started next to a healthy one, so a fallback here
 really crosses a process boundary. Nothing reaches the public network.
 """
 
-from __future__ import annotations
+
 
 from collections.abc import Iterator
 

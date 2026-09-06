@@ -7,7 +7,7 @@
 
 ## 1. 背景
 
-本项目不部署 LiteLLM Proxy（`deploy/compose/compose.yaml` 与 `deploy/k8s/` 中都没有该服务），
+本项目不部署 LiteLLM Proxy（`deploy/compose/compose.yaml`中没有该服务），
 但应用需要一个承担可靠性（fallback / 重试 / 冷却）的模型路由层：直连单个供应商无法在多
 供应商配置或供应商故障时切换。
 

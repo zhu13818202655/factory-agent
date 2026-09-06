@@ -6,7 +6,7 @@ JWT from ``/api/system/token``) names a generated account, so the four role
 tiers (00 员工 / 01 组长 / 02 管理 / 99 老板) are exercised against real data.
 """
 
-from __future__ import annotations
+
 
 import base64
 import json

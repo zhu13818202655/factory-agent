@@ -6,7 +6,7 @@ revision-id collisions. Startup code never creates tables; schema changes
 arrive only through this command.
 """
 
-from __future__ import annotations
+
 
 import argparse
 from pathlib import Path

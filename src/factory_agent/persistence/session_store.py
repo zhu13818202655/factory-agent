@@ -6,7 +6,7 @@ Metering writes happen in a separate transaction whose failures are isolated:
 failures are alerted and never roll back or block the answer.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime
 from typing import Any

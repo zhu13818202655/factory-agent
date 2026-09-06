@@ -1,4 +1,4 @@
-from __future__ import annotations
+
 
 from datetime import datetime, timedelta, timezone
 
@@ -33,12 +33,27 @@ def iso(expression: str) -> tuple[str, str]:
         ("2026年7月", ("2026-06-30T16:00:00+00:00", "2026-07-31T16:00:00+00:00")),
         ("2026-08-01", ("2026-07-31T16:00:00+00:00", "2026-08-01T16:00:00+00:00")),
         ("近7天", ("2026-08-17T16:00:00+00:00", "2026-08-24T16:00:00+00:00")),
+        # Bare months resolve to this year when not in the future (NOW is 2026-08-24).
+        ("7月", ("2026-06-30T16:00:00+00:00", "2026-07-31T16:00:00+00:00")),
+        ("7月份", ("2026-06-30T16:00:00+00:00", "2026-07-31T16:00:00+00:00")),
+        ("七月", ("2026-06-30T16:00:00+00:00", "2026-07-31T16:00:00+00:00")),
+        ("8月", ("2026-07-31T16:00:00+00:00", "2026-08-31T16:00:00+00:00")),
     ],
 )
 def test_relative_expressions_are_deterministic_in_the_factory_timezone(
     expression: str, expected: tuple[str, str]
 ) -> None:
     assert iso(expression) == expected
+
+
+def test_bare_month_in_the_future_rolls_back_to_the_previous_year() -> None:
+    january = datetime(2026, 1, 5, 6, 0, tzinfo=timezone.utc)
+
+    resolved = resolve_time_expression("12月", january, TZ)
+
+    # 2026-12 is still ahead on 2026-01-05, so "12月" means last December.
+    assert resolved.start.isoformat() == "2025-11-30T16:00:00+00:00"
+    assert resolved.end.isoformat() == "2025-12-31T16:00:00+00:00"
 
 
 def test_quarter_boundaries_use_the_factory_calendar() -> None:
@@ -64,7 +79,10 @@ def test_ranges_are_half_open() -> None:
     assert today.end == tomorrow.start
 
 
-@pytest.mark.parametrize("expression", ["", "   ", "下辈子", "2026-13", "2026-02-30", "近0天"])
+@pytest.mark.parametrize(
+    "expression",
+    ["", "   ", "下辈子", "2026-13", "2026-02-30", "近0天", "13月", "0月", "十三月"],
+)
 def test_unreviewed_expressions_are_rejected(expression: str) -> None:
     with pytest.raises(TimeExpressionError):
         resolve_time_expression(expression, NOW, TZ)

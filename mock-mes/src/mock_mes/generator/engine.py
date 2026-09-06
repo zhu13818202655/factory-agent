@@ -14,7 +14,7 @@ without a database; ``generate_day`` persists it with batch COPY and records a
 per-day batch row (``mock_generate_batch``) for replay/hash auditing.
 """
 
-from __future__ import annotations
+
 
 import hashlib
 import json

@@ -6,7 +6,7 @@ the ``InteractionFact`` / ``LlmCallFact`` / ``MesCallFact`` rows that the
 in-memory store reads.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

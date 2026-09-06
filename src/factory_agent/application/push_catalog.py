@@ -10,7 +10,7 @@ The morning report (每日早报) is default-on and NOT configurable off; it is
 composed per role from the personal/management/owner summary capabilities below.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 

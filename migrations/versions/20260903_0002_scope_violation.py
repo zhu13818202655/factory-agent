@@ -9,7 +9,7 @@ Revises: 20260824_0001_session
 Create Date: 2026-09-03
 """
 
-from __future__ import annotations
+
 
 import sqlalchemy as sa
 from alembic import op

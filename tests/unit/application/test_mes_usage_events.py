@@ -8,7 +8,7 @@ set must stay inside the whitelist enforced in
 ``SCHEMA_VERSION`` in ``factory_agent.application.usage``).
 """
 
-from __future__ import annotations
+
 
 import json
 from datetime import datetime, timezone

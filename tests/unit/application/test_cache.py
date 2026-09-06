@@ -1,6 +1,6 @@
 """Auth-aware cache: scope fingerprints, versioned keys, fallback, invalidation."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

@@ -9,7 +9,7 @@ its own API, so no interception bridge is installed here.
 startup (the API ``create_app`` entrypoint already does).
 """
 
-from __future__ import annotations
+
 
 import sys
 from typing import Any

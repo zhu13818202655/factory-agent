@@ -14,7 +14,7 @@ static fixture. There is no in-memory dataset and no fallback.
 Contract: docs/product/AI问答对外接口-整理.md and docs/product/需求及方案整理.md.
 """
 
-from __future__ import annotations
+
 
 import base64
 import hashlib
@@ -882,16 +882,6 @@ async def _json_body(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise MesError(400, "加密信息解析失败,请检查参数是否正确")
     body = cast(dict[str, Any], body)
-    # Real customer MES wraps business parameters under a single ``param``
-    # object (verified 2026-09-04): ``{app_key, timestamp, sign, param: {...}}``.
-    # Mock mirrors that shape, and also tolerates the legacy flat form so both
-    # are accepted by every endpoint below.
-    wrapped = body.get("param")
-    if isinstance(wrapped, dict):
-        merged: dict[str, Any] = dict(body)
-        merged.update(wrapped)
-        merged.pop("param", None)
-        return merged
     return body
 
 

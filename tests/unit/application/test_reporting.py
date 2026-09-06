@@ -1,6 +1,6 @@
 """Morning-report generation + local push channel tests (Story 3B)."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

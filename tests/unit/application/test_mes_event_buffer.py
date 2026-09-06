@@ -6,7 +6,7 @@ drains it at each commit via ``drain_mes_events`` without closing it, and
 a buffer, and calls outside a metered interaction are dropped.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime, timezone
 

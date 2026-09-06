@@ -1,6 +1,6 @@
 """Retention routine: 180-day admin audit purge."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timedelta, timezone
 

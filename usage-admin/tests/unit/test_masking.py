@@ -1,6 +1,6 @@
 """AppKey masking unit tests (D9)."""
 
-from __future__ import annotations
+
 
 from usage_admin.masking import mask_app_key
 

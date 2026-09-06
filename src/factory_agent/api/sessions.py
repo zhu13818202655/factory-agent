@@ -7,7 +7,7 @@ departments (customer contract §2). See ``factory_agent.api.identity`` for the
 degraded header fallback used only when no gateway is configured.
 """
 
-from __future__ import annotations
+
 
 from collections.abc import AsyncIterator
 from typing import cast

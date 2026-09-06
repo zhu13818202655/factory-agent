@@ -4,7 +4,7 @@ Events carry only whitelisted fields and irreversible scope digests; raw
 employee/dept ID lists, row data, and sensitive values never enter audit.
 """
 
-from __future__ import annotations
+
 
 import hashlib
 from dataclasses import dataclass

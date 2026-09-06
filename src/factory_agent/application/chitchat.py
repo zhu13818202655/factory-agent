@@ -7,7 +7,7 @@ factory data, and ``compact_history`` keeps business detail rows out of the
 prompt (result-bearing turns arrive only as row-count summaries).
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 

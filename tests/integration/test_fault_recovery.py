@@ -7,7 +7,7 @@ fault must surface as a structured failure or an explicit incomplete state —
 never a fabricated number.
 """
 
-from __future__ import annotations
+
 
 from datetime import UTC, datetime, timedelta
 from typing import Any

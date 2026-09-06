@@ -12,7 +12,7 @@ numbers beyond the minimal non-sensitive set (counts + digests already stored
 on each finding).
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone

@@ -1,6 +1,6 @@
 """Structured card builder tests: numbers only, no fabrication."""
 
-from __future__ import annotations
+
 
 from decimal import Decimal
 from typing import Any, cast

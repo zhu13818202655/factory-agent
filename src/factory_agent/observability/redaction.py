@@ -1,6 +1,6 @@
 """Centralized sensitive-field redaction aligned with SECURITY.md."""
 
-from __future__ import annotations
+
 
 import re
 from dataclasses import dataclass

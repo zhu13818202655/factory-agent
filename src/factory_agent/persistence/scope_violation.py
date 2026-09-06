@@ -1,6 +1,6 @@
 """SQLAlchemy store for role-consistency violation records (Story 2)."""
 
-from __future__ import annotations
+
 
 from datetime import datetime
 

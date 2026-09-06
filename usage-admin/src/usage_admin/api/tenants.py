@@ -5,7 +5,7 @@ AppKey values are masked in every response except the single create response
 that returns the plaintext key once (D9).
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime
 from typing import cast

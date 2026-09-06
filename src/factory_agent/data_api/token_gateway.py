@@ -19,7 +19,7 @@ Contract sources: ``docs/product/AI问答对外接口-整理.md`` §2 and
 ``docs/product/需求及方案整理.md``「客户确认结论」.
 """
 
-from __future__ import annotations
+
 
 import contextlib
 import hashlib

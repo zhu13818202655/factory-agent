@@ -24,7 +24,7 @@ or paste a JSON dict (or ``k=v k=v`` pairs) to override them.
 Stdlib-only (urllib), so it also runs with a plain ``python3``.
 """
 
-from __future__ import annotations
+
 
 import json
 import os

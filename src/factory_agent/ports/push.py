@@ -6,7 +6,7 @@ delivery record). Delivery records carry only the envelope — never the message
 body or business amounts.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from datetime import datetime

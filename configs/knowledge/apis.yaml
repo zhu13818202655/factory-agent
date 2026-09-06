@@ -157,7 +157,6 @@ operations:
       sign: credential
       uid: scope
     pagination: none
-    # 真实 MES 返回 {"employeeList": [...], "total": N}（2026-09-04 实测）。
     list_key: employeeList
     usage_category: other
     timeout_seconds: 10.0
@@ -173,7 +172,6 @@ operations:
       timestamp: credential
       sign: credential
     pagination: none
-    # 真实 MES 返回 {"deptList": [...], "total": N}（2026-09-04 实测）。
     list_key: deptList
     usage_category: other
     timeout_seconds: 10.0
@@ -289,6 +287,7 @@ operations:
       datee: filter
     pagination: list_total
     supports_footer: true
+    boolean_params: [queryFooter]
     usage_category: output
     timeout_seconds: 10.0
     sensitive_fields: [sssl]
@@ -402,6 +401,7 @@ operations:
       dates: filter
       datee: filter
     pagination: list_total
+    boolean_params: [queryFooter]
     supports_footer: true
     usage_category: payroll
     timeout_seconds: 10.0
@@ -425,6 +425,7 @@ operations:
     pagination: list_total
     supports_footer: true
     usage_category: payroll
+    boolean_params: [queryFooter]
     timeout_seconds: 10.0
     sensitive_fields: [je, bs, uname]
     related_keys: [uid, dept]

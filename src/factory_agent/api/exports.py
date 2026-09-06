@@ -9,7 +9,7 @@ through history/favorite re-ask. A download audit event records only the
 artifact ID, tenant, and outcome — never the row detail.
 """
 
-from __future__ import annotations
+
 
 from typing import cast
 from urllib.parse import quote

@@ -5,7 +5,7 @@ delivery goes through this port implementation which writes a structured log
 and an envelope-only delivery record. A failure never blocks the caller.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime
 from typing import Protocol

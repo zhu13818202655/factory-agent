@@ -6,7 +6,7 @@ quantization scheme. Model selection changes the payloads a real model produces;
 it must never change the rules asserted here.
 """
 
-from __future__ import annotations
+
 
 import json
 from dataclasses import asdict

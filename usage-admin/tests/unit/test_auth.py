@@ -1,6 +1,6 @@
 """Platform account registration, login, and token resolution (D14~D16)."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timedelta, timezone
 

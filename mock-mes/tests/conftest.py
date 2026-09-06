@@ -5,7 +5,7 @@ it is not set. The schema migration and the fixed test window are applied once
 per session.
 """
 
-from __future__ import annotations
+
 
 from typing import Any
 

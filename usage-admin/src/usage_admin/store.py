@@ -8,7 +8,7 @@ owns the writes to this service's tables (``tenant_registry`` /
 ``platform_principal`` / ``admin_audit`` / ``usage_export``).
 """
 
-from __future__ import annotations
+
 
 import json
 from dataclasses import dataclass, field
@@ -489,9 +489,14 @@ class PostgresUsageStore:
                     (list(tenant_ids), start, end),
                 )
             else:
+                # ``tenant_usage_daily`` stores the UTC day as a ``bucket_date``
+                # (Date) column with no ``bucket_start``; the day bucket's start,
+                # aligned with the hourly buckets, is UTC midnight of that date.
                 result = await connection.execute(
                     """
-                    SELECT tenant_id, bucket_start, metric, value, rollup_version, rolled_up_at
+                    SELECT tenant_id,
+                           (bucket_date::timestamp AT TIME ZONE 'UTC') AS bucket_start,
+                           metric, value, rollup_version, rolled_up_at
                     FROM tenant_usage_daily
                     WHERE tenant_id = ANY(%s) AND bucket_date >= %s AND bucket_date < %s
                     """,

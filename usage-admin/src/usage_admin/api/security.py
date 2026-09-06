@@ -7,7 +7,7 @@ development/test direct channel. Both channels produce the same
 identical).
 """
 
-from __future__ import annotations
+
 
 from fastapi import Request
 

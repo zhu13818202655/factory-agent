@@ -5,7 +5,7 @@ ownership pair; there is deliberately no "by id only" access path, matching the
 session store.
 """
 
-from __future__ import annotations
+
 
 from datetime import datetime
 from typing import Any

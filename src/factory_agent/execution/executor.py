@@ -11,7 +11,7 @@ injected by the adapter from ``MesCredentialBundle`` and can never be supplied
 through this path.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from datetime import datetime

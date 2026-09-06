@@ -1,4 +1,4 @@
-from __future__ import annotations
+
 
 from mock_mes.config import MockMesSettings
 

@@ -5,7 +5,7 @@ payload shapes are forbidden at this layer by design; only ``data_api/``
 translates these values into HTTP details.
 """
 
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from datetime import datetime

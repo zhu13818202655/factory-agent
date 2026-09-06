@@ -12,7 +12,7 @@ The app is started in-process against the database configured in the
 repository-root ``.env`` (``MOCK_MES_DATABASE_URL``).
 """
 
-from __future__ import annotations
+
 
 import asyncio
 import sys

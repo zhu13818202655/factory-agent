@@ -1,6 +1,6 @@
 """Scope-deviation review task tests (Story 2)."""
 
-from __future__ import annotations
+
 
 from datetime import datetime, timedelta, timezone
 

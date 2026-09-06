@@ -12,7 +12,7 @@ queries the ops layer relies on return correct aggregates — including the
 regression that hourly rollup rows never leak across to the daily projection.
 """
 
-from __future__ import annotations
+
 
 import os
 from datetime import datetime, timezone
@@ -203,3 +203,24 @@ async def test_summary_reads_seeded_metering_rows_without_cross_table_leak() -> 
     assert view.llm_logical_calls == 1
     assert view.durations["e2e_duration_ms"].p50_ms == 1000
     assert view.freshness == NOW
+
+
+@pytest.mark.asyncio
+async def test_daily_timeseries_reads_daily_rollup_rows_as_utc_midnight_buckets() -> None:
+    """Daily rollup rows (``bucket_date``) map to UTC-midnight buckets.
+
+    Regression: the daily SELECT used to reference a non-existent
+    ``bucket_start`` column on ``tenant_usage_daily`` and crashed with
+    ``UndefinedColumn``; it must derive the bucket start from ``bucket_date``.
+    """
+    await _seed_metering_rows(str(DATABASE_URL))
+    store = PostgresUsageStore(str(DATABASE_URL))
+
+    scope = PlatformScope("ops-1", PlatformRole.ANALYST, frozenset())
+    view = await OpsService(store, clock=lambda: NOW).timeseries(
+        scope, START, END, "day", ("questions",)
+    )
+
+    expected_bucket = datetime(START.year, START.month, START.day, tzinfo=timezone.utc)
+    assert [point.bucket for point in view.points] == [expected_bucket]
+    assert view.points[0].metrics["questions"] == 100.0
