@@ -13,6 +13,12 @@ services:
       FACTORY_AGENT_CANONICAL_MES_BASE_URL: ${FACTORY_AGENT_CANONICAL_MES_BASE_URL:?FACTORY_AGENT_CANONICAL_MES_BASE_URL 未设置：请在 deploy/compose/.env 填写客户真实 MES 网关地址}
       FACTORY_AGENT_POSTGRES_URL: ${FACTORY_AGENT_POSTGRES_URL:-postgresql://factory_agent:factory_agent_dev@postgres:5432/factory_agent}
       FACTORY_AGENT_REDIS_URL: ${FACTORY_AGENT_REDIS_URL:-redis://redis:6379/0}
+      # models.yaml resolves the LLM gateway from these (api_key_env etc.);
+      # an empty key drops every deployment -> gateway_not_configured.
+      FACTORY_AGENT_LLM_API_KEY: ${FACTORY_AGENT_LLM_API_KEY:-}
+      FACTORY_AGENT_LLM_API_BASE: ${FACTORY_AGENT_LLM_API_BASE:-}
+      FACTORY_AGENT_LLM_MODEL: ${FACTORY_AGENT_LLM_MODEL:-}
+      FACTORY_AGENT_LLM_KEY_DEEPSEEK: ${FACTORY_AGENT_LLM_KEY_DEEPSEEK:-}
     # Auto-migration on start: apply own Alembic baseline before serving.
     # Failure aborts startup; the step is idempotent (alembic version table).
     command:

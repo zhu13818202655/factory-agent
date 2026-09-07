@@ -66,6 +66,14 @@ service's Alembic version table), and a migration failure aborts that service's
 startup instead of serving against a wrong schema. Manual `make migrate` stays
 available for host-side runs.
 
+The LLM gateway is resolved from `configs/knowledge/models.yaml` through
+environment variables, so compose forwards `FACTORY_AGENT_LLM_API_KEY`,
+`FACTORY_AGENT_LLM_API_BASE`, `FACTORY_AGENT_LLM_MODEL`, and
+`FACTORY_AGENT_LLM_KEY_DEEPSEEK` into `agent-api`. Set them (at minimum the
+API key) in `deploy/compose/.env`; with an empty key every model deployment is
+dropped at startup and chat interactions fail fast with
+`gateway_not_configured`.
+
 `compose.yaml` is a local development topology. Mock MES must not be included in a production
 deployment.
 
