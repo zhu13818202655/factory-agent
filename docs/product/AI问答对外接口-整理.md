@@ -1399,6 +1399,45 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | Type | string | 是 | 工资类型：0 扫码产量 / 1 吊挂产量 / 2 手工账产量，可多选，如 "0,1,2" |
 | scheme | string | 是 | 为空时按明细查询，有值（汇总 / hz / HZ）时按汇总查询 |
 
+**scheme 取值与两种返回结构（客户确认 2026-09-07）**
+
+`scheme` 为空/不传时为**明细模式**，`scheme`=`hz`/`汇总`/`HZ` 时为**汇总模式**。两者都返回 `list + total (+footer)` 结构；两种模式 footer 返回的数据一致，差异只在 `list` 的行粒度与列集合：
+
+| 维度 | 明细（`scheme=""`） | 汇总（`scheme="hz"`） |
+| --- | --- | --- |
+| 每行含义 | 一条刷卡扫描记录（一包一次刷卡 × 每道工序一条） | 窗口内同一 **床号+货号+类型+工序+工价** 的记录合并成一行 |
+| 日期/审核粒度 | 保留 `rq`、`inputtime`、`ischeck`、`check_time` | 全部丢弃（无 `rq`/`inputtime`/审核列） |
+| 唯一 id | 有 `id` | 无 `id` |
+| 明细属性 | 有 `baohao`（包号）、`color`、`chima` | 丢弃包号/颜色/尺码 |
+| 数量口径 | 每行 `fhsl`/`sl`/`price`/`je` | 多出 `bs`（该组合的包/条数），`fhsl`/`sl`/`je` 为该组合求和 |
+| footer | `bs_total`/`fhsl_total`/`sl_total`/`je_total` = 真实全窗口合计 | 与明细一致（真实全窗口合计）；当前实现为**第一行**的值，客户已确认并修复中 |
+
+- footer 与 `scheme` 无关：在返回 footer 的情况下，`scheme=""` 与 `scheme="hz"` 返回的 footer 数据一致（全窗口合计）；两种模式的差异只在 `result.list`——`scheme="hz"` 将窗口内同一 **床号+货号+类型+工序+工价** 的记录合并成一行（真正的汇总发生在 `list`，不在 footer）。
+- 该接口本质是明细查询，默认 `scheme=""`（不传）；仅当用户明确要求“汇总”时才传 `scheme="hz"`。
+
+汇总模式 `result.list` 单项示例（真实 API 返回）：
+
+```json
+{
+    "chuanghao": "580",
+    "huohao": "T5401",
+    "uid": "3379",
+    "uname": "王小凤",
+    "dept": "001",
+    "type": "扫码产量",
+    "worktype": "成品剪线头",
+    "bs": 1,
+    "fhsl": 30,
+    "sl": 30,
+    "price": 0.5,
+    "je": 15,
+    "huohao_raw": null,
+    "huohao_src": null,
+    "worktype_raw": null,
+    "worktype_src": null
+}
+```
+
 **Uid 取值说明（客户确认 2026-09-06）**
 
 `Uid` 为选填，MES 内部按如下规则处理：
@@ -1469,6 +1508,8 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 ```
 
 **响应字段说明**
+
+> 下表为**明细模式（`scheme=""`）**的行结构；汇总模式（`scheme="hz"`）的行结构见上方「scheme 取值与两种返回结构」。
 
 | 参数名 | 类型 | 说明 |
 | --- | --- | --- |

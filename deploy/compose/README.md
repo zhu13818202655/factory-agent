@@ -59,6 +59,13 @@ make migrate       # factory-agent first, then usage-admin
 make migrate-status
 ```
 
+`start.sh all` and the compose files also apply migrations automatically: each
+service runs its own `python -m ...migrations upgrade head` before launching
+uvicorn (`migrate && exec uvicorn ...`). The step is idempotent (tracked by the
+service's Alembic version table), and a migration failure aborts that service's
+startup instead of serving against a wrong schema. Manual `make migrate` stays
+available for host-side runs.
+
 `compose.yaml` is a local development topology. Mock MES must not be included in a production
 deployment.
 

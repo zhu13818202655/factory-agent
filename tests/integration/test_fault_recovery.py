@@ -128,7 +128,7 @@ async def test_transport_5xx_fault_surfaces_as_structured_error(mock_mes_app: An
 
 
 @pytest.mark.asyncio
-async def test_footer_mismatch_is_reported_as_reconciliation_failed(mock_mes_app: Any) -> None:
+async def test_footer_mismatch_is_logged_without_failing(mock_mes_app: Any) -> None:
     runner, adapter, client = _runner(
         mock_mes_app, "footer_mismatch", **{"X-Mock-Footer-Field": "je_total"}
     )
@@ -138,10 +138,10 @@ async def test_footer_mismatch_is_reported_as_reconciliation_failed(mock_mes_app
         await adapter.aclose()
         await client.aclose()
 
-    assert result.incomplete is True
-    assert result.incomplete_reason == "reconciliation_failed"
-    # The local sum is kept, but the answer is never presented as complete.
-    assert any("footer" in warning for warning in result.warnings)
+    # The customer footer is trusted as authoritative: the mismatch is only
+    # logged and never marks the answer incomplete.
+    assert result.incomplete is False
+    assert result.incomplete_reason is None
 
 
 @pytest.mark.asyncio

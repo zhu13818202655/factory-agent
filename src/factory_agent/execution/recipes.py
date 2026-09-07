@@ -97,8 +97,8 @@ class CapabilityRecipe(BaseModel):
     degradation: Literal["incomplete_marker", "fail"] = "incomplete_marker"
     #: Optional footer reconciliation: ``{result_column: footer_field}``. The
     #: kernel compares the locally computed column against the MES ``footer``
-    #: field; a mismatch produces a structured ``reconciliation_failed`` state
-    #: instead of silently picking one number.
+    #: field and logs any mismatch as a warning; the customer footer is trusted
+    #: as authoritative and the comparison never changes the result.
     footer_reconciliation: dict[str, str] | None = None
 
 

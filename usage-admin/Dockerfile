@@ -29,8 +29,10 @@ WORKDIR /app
 RUN useradd --create-home --uid 10001 app
 
 COPY --from=builder /app/.venv /app/.venv
-COPY usage-admin/alembic.ini ./usage-admin/alembic.ini
-COPY usage-admin/migrations ./usage-admin/migrations
+# Alembic assets live at /app root so `python -m usage_admin.migrations` can
+# find them by walking up from site-packages (auto-migration entrypoint).
+COPY usage-admin/alembic.ini ./alembic.ini
+COPY usage-admin/migrations ./migrations
 
 USER app
 

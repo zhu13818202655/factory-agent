@@ -559,7 +559,7 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","h
 | `columns` | 结果列名列表（字符串数组），列序即报表列序 |
 | `row_count` | 结果行数 |
 | `incomplete` | 结果是否不完整（如分页拉取异常、个别指标不可用）；为 `true` 时必须向用户展示不完整提示 |
-| `incomplete_reason` | 不完整原因（如 `pagination_*`、`metric_unavailable:*`、`reconciliation_failed`），`null` 表示完整 |
+| `incomplete_reason` | 不完整原因（如 `pagination_*`、`metric_unavailable:*`），`null` 表示完整 |
 | `artifact_id` | 导出产物 ID；为 `null` 表示本次未生成导出，不展示导出按钮 |
 
 事件本身携带的是卡片元数据（列定义、行数、完整性、导出入口）；行级明细数据在导出文件

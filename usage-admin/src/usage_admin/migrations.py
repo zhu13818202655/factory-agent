@@ -24,12 +24,25 @@ def normalize_dsn(url: str) -> str:
     return f"postgresql+{DRIVER}://{remainder}"
 
 
+def _project_root() -> Path:
+    """Directory holding alembic.ini + migrations/ (repo root, /app in image).
+
+    Source-tree installs resolve via the package path; wheel installs
+    (--no-editable) land in site-packages where parents[N] arithmetic would
+    point into the venv, so walk upward for the alembic.ini marker instead.
+    """
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "alembic.ini").is_file() and (candidate / "migrations").is_dir():
+            return candidate
+    return Path(__file__).resolve().parents[2]
+
+
 def build_alembic_config() -> Config:
     settings = get_settings()
     if settings.database_url is None:
         raise SystemExit("USAGE_ADMIN_DATABASE_URL is required for migrations")
 
-    project_root = Path(__file__).resolve().parents[2]
+    project_root = _project_root()
     config = Config(project_root / "alembic.ini")
     config.set_main_option("script_location", str(project_root / "migrations"))
     config.set_main_option(

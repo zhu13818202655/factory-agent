@@ -11,12 +11,25 @@ from factory_agent.config import get_settings
 from factory_agent.persistence.engine import normalize_dsn
 
 
+def _project_root() -> Path:
+    """Directory holding alembic.ini + migrations/ (repo root, /app in image).
+
+    Source-tree installs resolve via the package path; wheel installs
+    (--no-editable) land in site-packages where parents[N] arithmetic would
+    point into the venv, so walk upward for the alembic.ini marker instead.
+    """
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "alembic.ini").is_file() and (candidate / "migrations").is_dir():
+            return candidate
+    return Path(__file__).resolve().parents[3]
+
+
 def build_alembic_config() -> Config:
     settings = get_settings()
     if settings.postgres_url is None:
         raise SystemExit("FACTORY_AGENT_POSTGRES_URL is required for migrations")
 
-    repository_root = Path(__file__).resolve().parents[3]
+    repository_root = _project_root()
     config = Config(repository_root / "alembic.ini")
     config.set_main_option("script_location", str(repository_root / "migrations"))
     config.set_main_option("sqlalchemy.url", normalize_dsn(str(settings.postgres_url)))

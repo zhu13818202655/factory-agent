@@ -161,7 +161,13 @@ async def test_fr003_detail_matches_summary_totals() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_failure_is_structured_not_silent() -> None:
+async def test_footer_mismatch_is_logged_without_failing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The customer footer is trusted as authoritative: a mismatch is only
+    logged as a warning and never marks the result incomplete."""
+    caplog.set_level(0)
+
     class BadFooterExecutor(FakeStepExecutor):
         async def execute_full_step(
             self,
@@ -191,9 +197,11 @@ async def test_reconciliation_failure_is_structured_not_silent() -> None:
             time_range=_range(),
         )
     )
-    assert result.incomplete is True
-    assert result.incomplete_reason == "reconciliation_failed"
-    assert any("对账失败" in warning for warning in result.warnings)
+
+    assert result.incomplete is False
+    assert result.incomplete_reason is None
+    assert not any("对账失败" in warning for warning in result.warnings)
+    assert "kernel.footer_reconciliation.mismatch" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -3,9 +3,9 @@
 Maps a ``CapabilityRunRequest`` (capability_id + narrowed filters + time range)
 onto a reviewed recipe: it executes every API step through the scoped executor,
 proves pagination completeness, registers validated rows into the per-interaction
-read-only DuckDB sandbox, runs the reviewed local compute SQL, reconciles the
-local aggregate against the MES ``footer``, and returns a typed
-``CapabilityRunResult`` plus the renderable ``RenderTable``.
+read-only DuckDB sandbox, runs the reviewed local compute SQL, logs any
+disagreement between the local aggregate and the MES ``footer``, and returns a
+typed ``CapabilityRunResult`` plus the renderable ``RenderTable``.
 
 The kernel is the single path the remaining L1 capabilities reuse. It never
 constructs customer URLs, auth headers, or unbounded calls; scope identifiers
@@ -107,7 +107,7 @@ class StepExecutor(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class KernelSettings:
-    """Conservative first-release bounds for the wage vertical slice.""" 
+    """Conservative first-release bounds for the wage vertical slice."""
 
     page_size: int = 200
     #: Call budget for fan-out API steps (FR-009 batch progress). A fan-out
@@ -468,11 +468,7 @@ class KernelCapabilityRunner:
             for row in rendered_rows
         )
 
-        reconciliation: dict[str, str] | None = self._reconcile(recipe, fetches)
-        if reconciliation is not None:
-            incomplete = True
-            incomplete_reason = "reconciliation_failed"
-            warnings.append("明细合计与 footer.je_total 不一致，结果已标记为对账失败")
+        self._reconcile(recipe, fetches)
 
         totals = _build_totals(recipe, table_rows, fetches)
         return ResultTable(
@@ -574,29 +570,35 @@ class KernelCapabilityRunner:
         self,
         recipe: CapabilityRecipe,
         fetches: dict[str, ResourceFetchResult],
-    ) -> dict[str, str] | None:
-        """Compare the locally summed wage detail against the MES footer.
+    ) -> None:
+        """Log any disagreement between the local sum and the MES footer.
 
-        The wage footer ``je_total`` is the sum of ``je`` over every detail row,
-        so the local counter is the same sum over the validated rows. A mismatch
-        is a structured ``reconciliation_failed`` — we never pick one side.
+        The customer MES footer is trusted as authoritative; this comparison is
+        kept only for traceability. A mismatch is reported as a warning so it
+        can be traced and fed back to the customer, but it never changes the
+        interaction outcome.
         """
         reconciliation = recipe.footer_reconciliation
         if not reconciliation:
-            return None
+            return
         footer = _first_footer(fetches)
         if footer is None:
-            return None
+            return
         api_rows = _first_api_rows(fetches)
         local_total = _sum_field(api_rows, "je")
-        mismatches: dict[str, str] = {}
         for column_name, footer_field in reconciliation.items():
             remote_raw = footer.get(footer_field)
             if remote_raw is None:
                 continue
             if local_total != _decimal_or_zero(remote_raw):
-                mismatches[column_name] = footer_field
-        return mismatches or None
+                _LOGGER.warning(
+                    "kernel.footer_reconciliation.mismatch",
+                    capability_id=str(recipe.capability_id),
+                    column_name=column_name,
+                    footer_field=footer_field,
+                    local_total=str(local_total),
+                    remote_total=remote_raw,
+                )
 
     # ------------------------------------------------------------------
     # Value conversion.

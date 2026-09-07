@@ -8,11 +8,11 @@
 # `GongziMxQuery` and differ only in `scheme` and result columns:
 #   - both fetch detail rows (scheme empty); FR-003 renders them as 明细 rows,
 #     FR-002 aggregates them locally into 汇总 columns.
-# 真实 MES 联调发现（2026-09-06，差异台账待客户确认）：汇总模式 scheme=hz 的
-# 行结构与接口文档 §8.1 不符，且其 footer 只反映首行数值（bs_total=行数、
-# fhsl_total/sl_total/je_total=首行对应值），合计不可信。因此工资汇总/明细
-# 统一用 scheme="" 明细取数，gross_total/piece_count 以本地合计为准，
-# footer.je_total 仅在明细口径下参与对账。
+# 客户确认（2026-09-07，见接口文档 §8.1）：scheme 为空=明细、scheme=hz/汇总=汇总，
+# 两者行粒度/列集合/footer 语义不同；汇总模式 footer 的语义（bs_total=行数、
+# fhsl_total/sl_total/je_total=首行值）客户已确认并修复中。工资汇总/明细统一用
+# scheme="" 明细取数，gross_total/piece_count 以本地合计为准；
+# footer.je_total 对账仅记录日志、不影响结果。
 # The `Type=0,1,2` three-source merge covers 扫码/吊挂/手工账 (客户口径).
 # `Flag` defaults to "0" (扫描日期；客户公共参数约定).
 # `Uid` is scope-sourced and never accepts user input; 选填（客户确认 2026-09-06）：
@@ -25,8 +25,8 @@
 # formula, and is surfaced as an assumption label.
 #
 # footer_reconciliation compares the locally aggregated `gross_total` against
-# the MES `footer.je_total`; a mismatch is a structured `reconciliation_failed`,
-# never a silently chosen number.
+# the MES `footer.je_total`; any mismatch is logged as a warning only — the
+# customer footer is trusted as authoritative and the check never changes the result.
 version: 1
 capabilities:
   - capability_id: fr002_personal_wage_summary

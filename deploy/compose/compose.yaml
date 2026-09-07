@@ -13,6 +13,13 @@ services:
       FACTORY_AGENT_CANONICAL_MES_BASE_URL: ${FACTORY_AGENT_CANONICAL_MES_BASE_URL:?FACTORY_AGENT_CANONICAL_MES_BASE_URL 未设置：请在 deploy/compose/.env 填写客户真实 MES 网关地址}
       FACTORY_AGENT_POSTGRES_URL: ${FACTORY_AGENT_POSTGRES_URL:-postgresql://factory_agent:factory_agent_dev@postgres:5432/factory_agent}
       FACTORY_AGENT_REDIS_URL: ${FACTORY_AGENT_REDIS_URL:-redis://redis:6379/0}
+    # Auto-migration on start: apply own Alembic baseline before serving.
+    # Failure aborts startup; the step is idempotent (alembic version table).
+    command:
+      - sh
+      - -c
+      - python -m factory_agent.persistence.migrations upgrade head
+        && exec uvicorn factory_agent.api.server:create_app --factory --host 0.0.0.0 --port 8000
     ports:
       - "${FACTORY_AGENT_PORT:-8000}:8000"
     read_only: true
@@ -48,6 +55,13 @@ services:
       USAGE_ADMIN_HOST: 0.0.0.0
       USAGE_ADMIN_PORT: 8020
       USAGE_ADMIN_DATABASE_URL: ${USAGE_ADMIN_DATABASE_URL:-postgresql://usage_admin:usage_admin_dev@postgres:5432/factory_agent}
+    # Auto-migration on start: usage-admin owns tenant_registry/admin_audit/...
+    # in the shared DB, version table alembic_version_usage_admin.
+    command:
+      - sh
+      - -c
+      - python -m usage_admin.migrations upgrade head
+        && exec uvicorn usage_admin.api.server:create_app --factory --host 0.0.0.0 --port 8020
     ports:
       - "${USAGE_ADMIN_PORT:-8020}:8020"
     read_only: true
