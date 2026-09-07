@@ -1,4 +1,6 @@
-FROM python:3.12-slim AS builder
+ARG TARGETARCH=amd64
+
+FROM --platform=linux/${TARGETARCH} python:3.12-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -16,7 +18,7 @@ COPY src ./src
 
 RUN uv sync --frozen --no-dev --package factory-agent --no-editable
 
-FROM python:3.12-slim AS runtime
+FROM --platform=linux/${TARGETARCH} python:3.12-slim AS runtime
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -29,6 +31,9 @@ RUN useradd --create-home --uid 10001 app
 COPY --from=builder /app/.venv /app/.venv
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
+# Reviewed knowledge: catalog/metrics/L1 recipes are read at startup (load_catalog,
+# model registry, recipe registry) and must be present in the runtime image.
+COPY configs ./configs
 
 USER app
 
