@@ -13,8 +13,11 @@ and ``docs/product/需求及方案整理.md``「客户确认结论」):
   99 老板) and ``dept`` the bound department; managers may bind multiple
   departments/workshops (``bound_depts``), returned by the token endpoint at
   login. Both feed ``TenantContext`` and the capability-role matrix.
-- The bundle ``timestamp`` has a short validity (default 60 seconds); a stale
-  timestamp triggers a token re-exchange before the next business call.
+- The bundle ``timestamp`` is sent with every business call; the customer
+  MES does not enforce a short validity window on it in the live deployment
+  (verified 2026-09-08: the same bundle succeeded at 185 s age), so refresh
+  is driven by the accessToken expiry threshold plus one reactive
+  refresh-retry on 「请求已过期」.
 """
 
 
@@ -76,25 +79,8 @@ class MesCredentialBundle:
         return int((self.expires_at - now).total_seconds())
 
     def needs_refresh(self, now: datetime, threshold_seconds: int) -> bool:
-        """Proactive refresh when inside the threshold (default 90 minutes)."""
+        """Proactive refresh when inside the threshold (default 5 minutes)."""
         return self.seconds_until_expiry(now) <= threshold_seconds
-
-    def timestamp_age_seconds(self, now: datetime) -> int:
-        """Age of the token-issued ``timestamp`` in seconds."""
-        return int(now.timestamp()) - self.timestamp
-
-    def timestamp_is_stale(self, now: datetime, ttl_seconds: int) -> bool:
-        """The customer ``timestamp`` is only valid for a short window.
-
-        Refresh is triggered a few seconds before the window closes so clock
-        skew between the agent and the MES never produces a spurious
-        ``请求已过期`` failure (default window 600 s, 客户接口文档 §2.1).
-        A zero timestamp marks a placeholder bundle and is never stale.
-        """
-        if self.timestamp <= 0:
-            return False
-        margin = min(5, max(ttl_seconds // 4, 1))
-        return self.timestamp_age_seconds(now) >= ttl_seconds - margin
 
 
 #: Live bundle for the interaction currently executing MES calls. Set by the

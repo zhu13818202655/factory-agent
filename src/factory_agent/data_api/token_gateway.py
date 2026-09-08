@@ -13,7 +13,7 @@ Runtime binding:
   any binding the adapter falls back to its injected default bundle.
 - Refresh re-exchanges the stored encrypted credential exactly once per
   failure ("请求已过期"/"签名无效") and proactively when the accessToken
-  approaches expiry or the short-lived ``timestamp`` window (60 s) closes.
+  approaches expiry (default 5 minutes before expiry).
 
 Contract sources: ``docs/product/AI问答对外接口-整理.md`` §2 and
 ``docs/product/需求及方案整理.md``「客户确认结论」.
@@ -81,7 +81,7 @@ class TokenCredentialExchange:
         client: httpx.AsyncClient | None = None,
         timeout_seconds: float = 10.0,
         clock: Any | None = None,
-        refresh_threshold_seconds: int = 5400,
+        refresh_threshold_seconds: int = 300,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._client = client

@@ -28,11 +28,8 @@ class FactoryAgentSettings(BaseSettings):
     # caller presents an encrypted app_key in this header; the agent exchanges
     # it at /api/system/token. Identity never arrives via any other header.
     credential_header: str = "X-Factory-Credential"
-    #: Proactive accessToken refresh threshold inside the 2h validity window.
-    mes_token_refresh_threshold_seconds: int = Field(default=5400, ge=60)
-    #: The customer ``timestamp`` validity window (default 60 s); a stale
-    #: bundle is re-exchanged before the next business call.
-    mes_timestamp_ttl_seconds: int = Field(default=60, ge=5)
+    #: Proactive accessToken refresh threshold (seconds before expiry).
+    mes_token_refresh_threshold_seconds: int = Field(default=300, ge=60)
 
     # Time-range policy. The customer confirms queries span at most the past
     # year; wider requests terminate with a friendly notice before any MES call.

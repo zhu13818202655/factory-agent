@@ -141,8 +141,6 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.roles | string | 角色（移动管理岗位）：00 员工 / 01 组长 / 02 管理 / 99 老板 |
 | result.permissions | array | 权限列表 |
 
-> 注意：`timestamp` 有有效期（默认 60 秒），若接口报「请求已过期」，请重新调用本接口获取最新认证信息。
-
 ### 2.2 测试权限
 
 **接口地址**：`/api/print/test-permissions`

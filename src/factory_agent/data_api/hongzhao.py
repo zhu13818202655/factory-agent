@@ -18,9 +18,9 @@ Adapter semantics (contract: ``docs/product/AI问答对外接口-整理.md``):
   ``加密信息解析失败`` → invalid_request; ``请求已过期``/``签名无效`` →
   unauthenticated (one refresh + one retry, never unbounded); HTTP 404 →
   upstream_unavailable (wrong endpoint); other ``code=0`` → upstream_invalid.
-- Refresh: proactive when the accessToken approaches expiry (default 90
-  minutes of the 2-hour validity) or the short-lived ``timestamp`` window
-  (default 60 s) is about to close, plus exactly one reactive refresh-retry.
+- Refresh: proactive when the accessToken approaches expiry (default 5
+  minutes before expiry), plus exactly one reactive refresh-retry on
+  「请求已过期」/「签名无效」.
 """
 
 
@@ -106,11 +106,8 @@ class AdapterSettings:
     timeout_seconds: float = 10.0
     max_retries: int = 2
     default_retry_after_seconds: int = 1
-    #: Proactive refresh threshold within the 2h token validity.
-    refresh_threshold_seconds: int = 5400
-    #: Customer ``timestamp`` validity window; a bundle older than this is
-    #: re-exchanged before the next business call (客户接口文档 §2.1).
-    timestamp_ttl_seconds: int = 600
+    #: Proactive accessToken refresh threshold (seconds before expiry).
+    refresh_threshold_seconds: int = 300
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,9 +207,8 @@ class HongzhaoMesAdapter:
         now = self._now()
         # Proactive refresh only when a refresher exists; otherwise there is no
         # credential to re-exchange and the reactive path below handles expiry.
-        if self._refresher is not None and (
-            bundle.needs_refresh(now, self._settings.refresh_threshold_seconds)
-            or bundle.timestamp_is_stale(now, self._settings.timestamp_ttl_seconds)
+        if self._refresher is not None and bundle.needs_refresh(
+            now, self._settings.refresh_threshold_seconds
         ):
             await self._refresh_bundle()
 

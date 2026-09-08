@@ -176,7 +176,6 @@ def build_container(
             refresher=GatewayTokenRefresher(credential_exchange),
             settings=AdapterSettings(
                 refresh_threshold_seconds=settings.mes_token_refresh_threshold_seconds,
-                timestamp_ttl_seconds=settings.mes_timestamp_ttl_seconds,
             ),
             recorder=mes_recorder,
             tenant_registry=tenant_registry,
