@@ -123,6 +123,25 @@ class InteractionStore(Protocol):
         """
         ...
 
+    async def fail_stale_run(
+        self,
+        owner: InteractionOwner,
+        interaction_id: InteractionId,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> InteractionRecord | None:
+        """Atomically fail a ``RUNNING`` interaction whose updates went stale.
+
+        Returns the failed record (with the terminal event sequence already
+        reserved in ``last_event_sequence``), or ``None`` when the interaction
+        is not running or still fresh. This compare-and-set is what lets a
+        reconnecting stream recover an interaction whose executor connection
+        died without persisting a terminal event.
+        """
+        ...
+
     async def get_interaction(
         self, owner: InteractionOwner, interaction_id: InteractionId
     ) -> InteractionRecord | None: ...
@@ -181,6 +200,8 @@ class CapabilityRunResult:
     #: assumptions without re-querying the MES or database.
     column_types: dict[str, str] | None = None
     column_units: dict[str, str] | None = None
+    #: Worker-facing Chinese display labels keyed by column name.
+    column_titles: dict[str, str] | None = None
     warnings: tuple[str, ...] = ()
     #: Ownership fields observed on the fetched business rows (role-consistency
     #: safety net, Story 2). Distinct work numbers and dept ids actually

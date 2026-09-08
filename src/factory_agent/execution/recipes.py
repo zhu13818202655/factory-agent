@@ -6,8 +6,6 @@ with dependencies and parallel groups, local computation, result columns,
 metric versions, and degradation rules. Unreviewed recipes can never register.
 """
 
-
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -72,12 +70,18 @@ class RecipeStep(BaseModel):
 
 
 class ResultColumn(BaseModel):
-    """One output column with optional type/unit for rendering."""
+    """One output column with optional display title, type, and unit.
+
+    ``name`` is the stable identifier (SQL column, totals key, tests);
+    ``title`` is the worker-facing Chinese label used by the card, the XLSX
+    header, and the composed answer.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
     source_step: str
+    title: str | None = None
     metric: str | None = None
     column_type: ColumnType | None = None
     unit: str | None = None

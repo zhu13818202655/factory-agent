@@ -109,7 +109,8 @@
   "text": "已返回 12 行结果。",
   "payload": {
     "capability_id": "fr001_personal_output",
-    "columns": ["rq", "huohao", "worktype", "output_qty", "defective_qty"],
+    "columns": ["rq", "huohao", "worktype", "output_qty"],
+    "column_titles": {"rq": "日期", "huohao": "款号", "worktype": "工序", "output_qty": "产量"},
     "row_count": 12,
     "incomplete": false,
     "incomplete_reason": null,
@@ -503,8 +504,14 @@ data: {JSON}
 | `interaction.result` | 结果卡片数据 | 否 |
 | `interaction.heartbeat` | 保活 | 否 |
 | `interaction.completed` | 本轮正常结束（结果就绪或进入追问） | 是 |
-| `interaction.failed` | 本轮失败（含权限不足友好拒绝） | 是 |
+| `interaction.failed` | 本轮失败（含权限不足友好拒绝）；`data.message` 携带面向用户的中文文案，建议直接展示，不要只显示「查询失败」 | 是 |
 | `interaction.cancelled` | 本轮被用户取消 | 是 |
+
+> **越权拒绝（`error_category=scope_forbidden`）**：用户请求超出其角色可查询范围的数据时
+> （如普通员工问「全组的工资明细」），服务在**任何业务取数之前**直接拒绝并返回友好文案，
+> 例：「抱歉，您没有权限查询全组的工资明细。您当前可查询的范围是：本人的产量与工资数据。」
+> 该文案同时持久化为 `error` 消息，历史回放可见。前端对 `interaction.failed` 应优先展示
+> `data.message`。
 
 ### 5.2 过程事件
 
@@ -548,7 +555,7 @@ data: {"question":"请问您要查询哪个时间范围的产量？","missing":[
 ```text
 id: 5
 event: interaction.result
-data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","huohao","customer_name","plan_qty","completed_qty","progress_ratio","delivery_warning","days_remaining"],"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx"}
+data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","huohao","customer_name","plan_qty","completed_qty","progress_ratio","delivery_warning","days_remaining"],"column_titles":{"order_code":"生产单号","huohao":"款号","customer_name":"客户名称","plan_qty":"订单数量","completed_qty":"完工数量","progress_ratio":"进度","delivery_warning":"交期预警","days_remaining":"距交期"},"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx","answer":"查询完成，共 12 行结果，详情请查看下方结果卡片。"}
 ```
 
 字段：
@@ -556,15 +563,18 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","h
 | 字段 | 说明 |
 | --- | --- |
 | `capability_id` | 本次执行的能力（recipe 形式 id，与附录 A 的 FR 编号一一对应，如 `fr009_factory_order_overview` ↔ FR-009） |
-| `columns` | 结果列名列表（字符串数组），列序即报表列序 |
+| `columns` | 结果列名列表（字符串数组），列序即报表列序；`name` 为稳定标识符（与导出文件、日志一致），**不是给工人看的文案** |
+| `column_titles` | 列名 → 中文展示名（如 `rq`→`日期`、`je`→`小计金额`）的映射；**面向用户展示列名时一律用此映射**（含导出文件表头，导出表头形如 `产量（件）`）；缺失某列时回退用 `columns` 中的原名 |
 | `row_count` | 结果行数 |
 | `incomplete` | 结果是否不完整（如分页拉取异常、个别指标不可用）；为 `true` 时必须向用户展示不完整提示 |
 | `incomplete_reason` | 不完整原因（如 `pagination_*`、`metric_unavailable:*`），`null` 表示完整 |
 | `artifact_id` | 导出产物 ID；为 `null` 表示本次未生成导出，不展示导出按钮 |
+| `answer` | 由模型结合用户问题与结果元数据生成的一句自然语言回答，可直接展示在结果卡片上方；**空结果（`row_count=0` 且 `incomplete=false`）表示该时间范围内没有查询到相关记录，属正常结果，前端不应展示"不完整"样式**。字段不出现或为空时按旧形态兼容处理 |
 
 事件本身携带的是卡片元数据（列定义、行数、完整性、导出入口）；行级明细数据在导出文件
 中。持久化的 `result_table` 消息（§3.3）是该结果的历史形态，`text` 为结果摘要
-（如"已返回 12 行结果。"）。
+（如"已返回 12 行结果。"）；回答文本同时以 `role=assistant`、`kind=plain_text`
+消息持久化。
 
 **交期预警标记（异常数据自动高亮）**：老板"各订单进度"（FR-009，全厂订单进度总览）的
 输出列中包含两个标记字段：

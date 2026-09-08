@@ -12,8 +12,6 @@ constructs customer URLs, auth headers, or unbounded calls; scope identifiers
 reach the executor only through ``NarrowedFilters`` and reviewed recipe params.
 """
 
-
-
 import itertools
 import time
 from dataclasses import dataclass
@@ -430,6 +428,11 @@ class KernelCapabilityRunner:
         source_ops_by_step = _source_operations(recipe)
         warnings_by_column: dict[str, str] = {}
 
+        if self._is_detail(recipe):
+            rendered_rows = self._render_detail_rows(recipe, fetches)
+        else:
+            rendered_rows = self._render_compute_rows(recipe, compute_outputs)
+
         column_metas: list[ResultColumnMeta] = []
         unavailable_columns: set[str] = set()
 
@@ -445,19 +448,20 @@ class KernelCapabilityRunner:
                     source_operations=source_ops,
                     column_type=column.column_type,
                     unit=column.unit,
+                    title=column.title,
                 )
             )
             if metric is not None and not metric.allows_numeric_rendering():
-                incomplete = True
-                incomplete_reason = f"metric_unavailable:{metric.name}"
-                warnings.append(f"口径未确认：{metric.name}（{metric.assumption_status}）")
                 warnings_by_column[column.name] = "unavailable"
                 unavailable_columns.add(column.name)
-
-        if self._is_detail(recipe):
-            rendered_rows = self._render_detail_rows(recipe, fetches)
-        else:
-            rendered_rows = self._render_compute_rows(recipe, compute_outputs)
+                # A fetch-level degradation is the stronger incompleteness
+                # cause and keeps precedence; an unavailable metric only marks
+                # the table incomplete when there are rows to render — an
+                # empty window is a normal answer, not an incomplete one.
+                if rendered_rows and incomplete_reason is None:
+                    incomplete = True
+                    incomplete_reason = f"metric_unavailable:{metric.name}"
+                    warnings.append(f"口径未确认：{metric.name}（{metric.assumption_status}）")
 
         for row in rendered_rows:
             for name in unavailable_columns:
@@ -503,7 +507,10 @@ class KernelCapabilityRunner:
                 raise InvalidRequestError(f"local step {step.step_id} has no compute")
             dependency_empty = _dependency_empty(step, fetches)
             if dependency_empty:
-                outputs[step.step_id] = [self._zero_aggregate(recipe, step.step_id)]
+                # A fully void dependency is a normal empty window: zero rows,
+                # never a fabricated zero aggregate. The composed answer states
+                # that no records exist for the window.
+                outputs[step.step_id] = []
                 continue
             bind_params = self._business_filter_params(step, filters)
             try:
@@ -529,10 +536,6 @@ class KernelCapabilityRunner:
             values = getattr(filters, filter_key, None)
             params[sql_param] = list(values) if values else []
         return params
-
-    def _zero_aggregate(self, recipe: CapabilityRecipe, step_id: str) -> dict[str, object]:
-        columns = _compute_columns(recipe, step_id)
-        return {column: _zero_for(column, recipe) for column in columns}
 
     def _render_compute_rows(
         self,
@@ -644,6 +647,9 @@ class KernelCapabilityRunner:
             column_units={
                 column.name: column.unit for column in table.columns if column.unit is not None
             },
+            column_titles={
+                column.name: column.title for column in table.columns if column.title is not None
+            },
             warnings=table.warnings,
             observed_uid_values=observed.uids if observed is not None else (),
             observed_dept_values=observed.depts if observed is not None else (),
@@ -674,6 +680,7 @@ def render_table_from_run_result(result: CapabilityRunResult) -> RenderTable:
             source_operations=result.source_operations,
             column_type=(result.column_types or {}).get(name),
             unit=(result.column_units or {}).get(name),
+            title=(result.column_titles or {}).get(name),
         )
         for name in result.column_names
     )
@@ -800,16 +807,12 @@ def _compute_columns(recipe: CapabilityRecipe, step_id: str) -> list[str]:
     return columns or ["value"]
 
 
-def _zero_for(column: str, recipe: CapabilityRecipe) -> object:
-    return Decimal("0")
-
-
 def _dependency_empty(step: Any, fetches: dict[str, ResourceFetchResult]) -> bool:
-    """Every api dependency fetched zero rows → the local step outputs zeros.
+    """Every api dependency fetched zero rows → the local step outputs no rows.
 
     Multi-step recipes keep computing when only one optional source
-    (e.g. WskQuery) is empty; a fully void result still degrades to a zero
-    aggregate instead of a fabricated number.
+    (e.g. WskQuery) is empty; a fully void result yields zero rows so the
+    composed answer states that no records exist for the window.
     """
     if not step.depends_on:
         return False

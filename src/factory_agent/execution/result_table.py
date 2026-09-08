@@ -247,13 +247,6 @@ def default_metric_registry() -> MetricRegistry:
                 assumption_status="客户口径：当前工序=最大已完成工序的下一道（需求及方案整理·管理取数方式）",
             ),
             MetricDefinition(
-                name="quality_defective",
-                version="unavailable-defective-v1",
-                description="Defective quantity: manual-entry cp only, no unified source",
-                status="unavailable",
-                assumption_status="无统一数据源：次品字段仅手工账接口提供（需求及方案整理·未直接映射接口表）",
-            ),
-            MetricDefinition(
                 name="progress_ratio",
                 version="customer-progress-v1",
                 description="Scanned worktype count over total worktype count",
@@ -301,6 +294,8 @@ class ResultColumnMeta:
     source_operations: tuple[str, ...]
     column_type: str | None = None
     unit: str | None = None
+    #: Worker-facing Chinese display label; ``name`` stays the stable identifier.
+    title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

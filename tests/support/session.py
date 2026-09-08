@@ -13,6 +13,7 @@ from factory_agent.domain import (
     MessageRecord,
     SessionEvent,
     SessionId,
+    SessionState,
     TenantId,
     UserId,
 )
@@ -45,6 +46,18 @@ class InMemoryInteractionStore:
         self.commits += 1
         record = commit.interaction
         self.interactions[str(record.interaction_id)] = record
+        # Mirror the ``agent_message_sequence_key`` unique constraint so a
+        # duplicate (interaction, sequence) pair fails here exactly like the
+        # PostgreSQL store would.
+        seen = {(m.interaction_id, m.sequence) for m in self.messages}
+        for message in commit.messages:
+            key = (message.interaction_id, message.sequence)
+            if key in seen:
+                raise ValueError(
+                    f"duplicate message sequence {message.sequence} "
+                    f"for interaction {message.interaction_id}"
+                )
+            seen.add(key)
         self.messages.extend(commit.messages)
         stored = self.events.setdefault(str(record.interaction_id), [])
         known = {event.sequence for event in stored}
@@ -69,6 +82,34 @@ class InMemoryInteractionStore:
         claimed = replace(record, status=InteractionStatus.RUNNING, updated_at=now)
         self.interactions[str(interaction_id)] = claimed
         return claimed
+
+    async def fail_stale_run(
+        self,
+        owner: InteractionOwner,
+        interaction_id: InteractionId,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> InteractionRecord | None:
+        record = await self.get_interaction(owner, interaction_id)
+        if (
+            record is None
+            or record.status is not InteractionStatus.RUNNING
+            or record.updated_at >= stale_before
+        ):
+            return None
+        failed = replace(
+            record,
+            status=InteractionStatus.FAILED,
+            state=SessionState.FAILED,
+            error_category=category,
+            updated_at=now,
+            completed_at=now,
+            last_event_sequence=record.last_event_sequence + 1,
+        )
+        self.interactions[str(interaction_id)] = failed
+        return failed
 
     async def list_events(
         self,

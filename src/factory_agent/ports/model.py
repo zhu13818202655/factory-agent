@@ -23,6 +23,7 @@ class ModelStage(StrEnum):
     SUMMARIZE = "summarize"
     CHAT = "chat"
     REPAIR = "repair"
+    SCOPE_GUARD = "scope_guard"
 
 
 @dataclass(frozen=True, slots=True)

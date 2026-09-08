@@ -7,8 +7,6 @@ frozen, a totals row reflects the same numbers as the result card, and
 cell values are neutralised against spreadsheet formula injection.
 """
 
-
-
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
@@ -42,7 +40,11 @@ def render_xlsx(table: RenderTable, *, sheet_title: str | None = None) -> bytes:
 
     columns = table.columns
     for index, column in enumerate(columns):
-        header = column.unit if column.unit else column.name
+        # Worker-facing header: Chinese display title with the unit appended;
+        # the stable identifier is only a fallback for unlabelled columns.
+        header = column.title or column.name
+        if column.unit:
+            header = f"{header}（{column.unit}）"
         worksheet.write(0, index, header, header_format)
         if column.column_type == "money":
             worksheet.set_column(index, index, 14, money_format)

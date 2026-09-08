@@ -211,9 +211,6 @@ confirmed_rules:
 
 # 未确认口径：被能力引用时必须产生显式 unavailable 列状态，禁止渲染为数字。
 unconfirmed_metrics:
-  quality.defective:
-    gap: 仅手工账有 cp 字段，无统一合格/次品数据源
-    source: 需求及方案整理·未直接映射接口表（次品字段仅手工账提供）
   plan.target_output:
     gap: 目标产量/达成率无数据源（功能表未给出取数口径）
     source: 需求及方案整理 功能表未确认

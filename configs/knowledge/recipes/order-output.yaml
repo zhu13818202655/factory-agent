@@ -52,15 +52,19 @@ capabilities:
           ORDER BY hw.huohao, hw.worktype
     result_columns:
       - name: huohao
+        title: 款号
         source_step: compute
       - name: worktype
+        title: 工序
         source_step: compute
       - name: output_qty
+        title: 产量
         source_step: compute
         metric: output_order_completed
         column_type: quantity
         unit: 件
       - name: participant_count
+        title: 参与人数
         source_step: compute
         metric: output_participant_count
         column_type: quantity

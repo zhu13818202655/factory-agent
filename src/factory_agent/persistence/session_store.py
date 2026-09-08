@@ -101,6 +101,40 @@ class SqlInteractionStore:
             )
         return _interaction_from_row(row) if row is not None else None
 
+    async def fail_stale_run(
+        self,
+        owner: InteractionOwner,
+        interaction_id: InteractionId,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> InteractionRecord | None:
+        """Mark an orphaned ``running`` interaction failed; ``None`` if not stale.
+
+        The compare-and-set also reserves the terminal event sequence by bumping
+        ``last_event_sequence``; the caller persists the terminal event through
+        ``commit`` using the returned record.
+        """
+        async with self._engine.begin() as connection:
+            row = (
+                (
+                    await connection.execute(
+                        queries.fail_stale_interaction_run(
+                            str(owner.tenant_id),
+                            str(owner.user_id),
+                            str(interaction_id),
+                            stale_before=stale_before,
+                            now=now,
+                            category=category,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _interaction_from_row(row) if row is not None else None
+
     async def get_interaction(
         self, owner: InteractionOwner, interaction_id: InteractionId
     ) -> InteractionRecord | None:

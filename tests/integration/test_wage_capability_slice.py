@@ -80,7 +80,7 @@ async def test_fr002_and_fr003_slice_against_mock_mes(mock_mes_app: Any) -> None
         )
     )
 
-    assert detail.column_names == ("rq", "worktype", "sl", "price", "je")
+    assert detail.column_names == ("rq", "huohao", "worktype", "sl", "price", "je")
     # The window is a real 500-person factory; 01001 has ~100 wage
     # rows in two months (mirrors the regenerated golden).
     assert len(detail.rows) == 94

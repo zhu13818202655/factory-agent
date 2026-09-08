@@ -4,6 +4,7 @@
 
 import logging
 import sys
+import traceback
 from typing import TYPE_CHECKING, Any
 
 from factory_agent.config import FactoryAgentSettings
@@ -56,7 +57,11 @@ def _json_sink(message: Any) -> None:  # pragma: no cover - exercised via loggin
         ),
     }
     if record["exception"] is not None:
-        payload["error_type"] = type(record["exception"]).__name__
+        # loguru wraps the original exception in a RecordException namedtuple;
+        # ``.type`` is the real exception class.
+        payload["error_type"] = record["exception"].type.__name__
+        rendered = "".join(traceback.format_exception(*record["exception"]))
+        payload["error_traceback"] = redact_text(rendered)
     sys.stdout.write(repr(payload) + "\n")
 
 

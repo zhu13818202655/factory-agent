@@ -1,5 +1,3 @@
-
-
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -22,7 +20,9 @@ from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.preferences import PreferencesService
 from factory_agent.application.push_channel import LocalPushChannel
 from factory_agent.application.reporting import DirectReportRunner, ReportingService
+from factory_agent.application.scope_guard import ScopeGuard
 from factory_agent.application.session import SessionLimits, SessionService
+from factory_agent.application.summary import ResultSummarizer
 from factory_agent.application.usage import ContextVarMesCallRecorder
 from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.catalog import load_catalog
@@ -429,6 +429,8 @@ def _build_session_service(
         max_history_turns=settings.session_history_max_turns,
         max_history_chars=settings.session_history_max_chars,
     )
+    summarizer = ResultSummarizer(model, model_alias=settings.llm_summary_alias)
+    scope_guard = ScopeGuard(model, model_alias=settings.llm_summary_alias)
     return SessionService(
         interactions,
         authorization,
@@ -442,6 +444,8 @@ def _build_session_service(
             max_input_chars=settings.session_max_input_chars,
             max_clarification_rounds=settings.session_max_clarification_rounds,
             heartbeat_seconds=settings.session_heartbeat_seconds,
+            follow_timeout_seconds=settings.session_follow_timeout_seconds,
+            stale_running_seconds=settings.session_stale_running_seconds,
         ),
         exporter=exporter,
         personalization=personalization,
@@ -451,6 +455,8 @@ def _build_session_service(
         violations=_build_scope_violation_store(settings),
         audit=supplied.audit or InMemoryAuditSink(),
         chat=chat,
+        summarizer=summarizer,
+        scope_guard=scope_guard,
         validation_mode=settings.validation_mode,
     )
 

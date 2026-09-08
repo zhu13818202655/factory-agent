@@ -7,8 +7,6 @@ behind ports. Authorization always completes before any business-data call, and
 scope identifiers reach the executor only through ``NarrowedFilters``.
 """
 
-
-
 import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -25,7 +23,11 @@ from factory_agent.application.business_filters import (
     DirectoryError,
     ResolvedBusinessFilters,
 )
-from factory_agent.application.capability_map import CHITCHAT_CAPABILITY_ID, fr_id_for
+from factory_agent.application.capability_map import (
+    CHITCHAT_CAPABILITY_ID,
+    FR_INFO,
+    fr_id_for,
+)
 from factory_agent.application.chitchat import ChatResponder
 from factory_agent.application.consistency import (
     ConsistencyValidator,
@@ -46,7 +48,13 @@ from factory_agent.application.permission_matrix import (
     authorize_capability,
 )
 from factory_agent.application.personal import PersonalizationService
+from factory_agent.application.scope_guard import ScopeGuard, ScopeVerdict, deny_message
 from factory_agent.application.structured import StructuredOutputError
+from factory_agent.application.summary import (
+    ResultSummarizer,
+    fallback_result_answer,
+    format_aggregate_value,
+)
 from factory_agent.application.usage import (
     UsageContext,
     completion_status,
@@ -127,7 +135,8 @@ class SessionLimits:
     max_input_chars: int = 2000
     max_clarification_rounds: int = 3
     heartbeat_seconds: float = 15.0
-    follow_timeout_seconds: float = 300.0
+    follow_timeout_seconds: float = 600.0
+    stale_running_seconds: float = 600.0
 
 
 _EMPTY_BUSINESS_FILTERS = ResolvedBusinessFilters(
@@ -186,6 +195,8 @@ class SessionService:
         violations: ScopeViolationStore | None = None,
         audit: AuditSink | None = None,
         chat: ChatResponder | None = None,
+        summarizer: ResultSummarizer | None = None,
+        scope_guard: ScopeGuard | None = None,
         validation_mode: str = "strict",
     ) -> None:
         self._store = store
@@ -201,6 +212,10 @@ class SessionService:
         self._exporter = exporter
         self._personalization = personalization
         self._chat_responder = chat
+        self._summarizer = summarizer
+        #: Pre-execution scope guard (方案二权限链路): classifies the requested
+        #: data scope against the token role range before any business call.
+        self._scope_guard = scope_guard
         self._credential_binder = credential_binder
         self._time_range_max_days = time_range_max_days
         #: Role-consistency safety net (Story 2): runs post-fetch, pre-compose.
@@ -500,6 +515,30 @@ class SessionService:
                 yield event
             return
 
+        # Dedicated scope guard (方案二): a question can name a target that is
+        # outside the caller's range while still mapping to an allowed
+        # capability (e.g. an employee asking for the whole group's wage
+        # detail maps to FR-003 and would silently come back as their own
+        # rows). Deny before any business-data call; the guard can only
+        # narrow access, never grant it.
+        guard = self._scope_guard
+        if guard is not None:
+            question = parsed.rewrite_query or state.record.input_text
+            denial = await self._run_scope_guard(
+                state,
+                guard,
+                question,
+                capability,
+                decision_context.role,
+                usage_events,
+            )
+            if denial is not None:
+                async for event in self._reject_message(
+                    state, "scope_forbidden", denial, usage_events
+                ):
+                    yield event
+                return
+
         # Resolve user business filters (dept/employee names, order/
         # style/plan codes) from the intent slots against the MES-filtered
         # directory. Every resolution failure happens before any business-data
@@ -640,6 +679,10 @@ class SessionService:
 
         yield await self._phase(state, SessionState.COMPOSING, "execution_complete")
 
+        answer_text = await self._compose_result_answer(
+            state, result, capability_id, time_range, usage_events
+        )
+
         artifact_id = None
         if self._exporter is not None:
             try:
@@ -659,16 +702,21 @@ class SessionService:
 
         state.record = replace(state.record, capability_id=capability_id)
         consistency = _consistency_payload(verdict)
+        column_titles = [
+            (result.column_titles or {}).get(name, name) for name in result.column_names
+        ]
         result_event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_RESULT,
             data={
                 "capability_id": str(capability_id),
                 "columns": list(result.column_names),
+                "column_titles": column_titles,
                 "row_count": len(result.rows),
                 "incomplete": result.incomplete,
                 "incomplete_reason": result.incomplete_reason,
                 "artifact_id": artifact_id,
+                "answer": answer_text,
                 **({"consistency": consistency} if consistency is not None else {}),
             },
         )
@@ -695,13 +743,14 @@ class SessionService:
         _logger.info(
             "session.outcome.result capability={capability_id} rows={row_count} "
             "incomplete={incomplete} reason={incomplete_reason} "
-            "artifact={artifact_id} columns=[{columns}]",
+            "artifact={artifact_id} columns=[{columns}] answer={answer}",
             capability_id=str(capability_id),
             row_count=len(result.rows),
             incomplete=result.incomplete,
             incomplete_reason=result.incomplete_reason,
             artifact_id=artifact_id,
             columns=",".join(result.column_names),
+            answer=answer_text,
             interaction_id=str(state.record.interaction_id),
             session_id=str(state.record.session_id),
         )
@@ -716,17 +765,26 @@ class SessionService:
                         state.record,
                         MessageRole.ASSISTANT,
                         MessageKind.RESULT_TABLE,
-                        terminal.sequence,
+                        result_event.sequence,
                         f"已返回 {len(result.rows)} 行结果。",
                         payload={
                             "capability_id": str(capability_id),
                             "columns": list(result.column_names),
+                            "column_titles": column_titles,
                             "row_count": len(result.rows),
                             "incomplete": result.incomplete,
                             "incomplete_reason": result.incomplete_reason,
                             "artifact_id": artifact_id,
+                            "answer": answer_text,
                             **({"consistency": consistency} if consistency is not None else {}),
                         },
+                    ),
+                    self._message(
+                        state.record,
+                        MessageRole.ASSISTANT,
+                        MessageKind.PLAIN_TEXT,
+                        terminal.sequence,
+                        answer_text,
                     ),
                 ),
                 events=(result_event, terminal),
@@ -907,6 +965,197 @@ class SessionService:
         yield answer_event
         yield terminal
 
+    async def _run_scope_guard(
+        self,
+        state: _RunState,
+        guard: ScopeGuard,
+        question: str,
+        capability: Capability,
+        role: Role,
+        usage_events: list[UsageEvent],
+    ) -> str | None:
+        """User-facing denial message when the request exceeds the caller's
+        authorized range; ``None`` when the request is within range or the
+        guard fails open.
+
+        The guard only narrows access: the authoritative bounds stay the
+        token role matrix and MES row filtering, so a model failure never
+        blocks the run — it skips the friendly denial and leaves MES
+        filtering in charge of every row.
+        """
+        title = FR_INFO.get(capability.value, (capability.value, ""))[0]
+        logical_call_id = self._new_id()
+        now = self._clock.now()
+        try:
+            verdict: ScopeVerdict = await guard.check(
+                question=question,
+                capability_title=title,
+                role=role,
+                logical_call_id=logical_call_id,
+            )
+        except ModelGatewayError as exc:
+            usage_events.append(
+                llm_call_event(
+                    self._usage_context(state.record),
+                    occurred_at=now,
+                    logical_call_id=logical_call_id,
+                    stage=ModelStage.SCOPE_GUARD,
+                    model_alias=guard.model_alias,
+                    actual_model="unknown",
+                    attempt=exc.attempt,
+                    duration_ms=exc.duration_ms,
+                    status="failed",
+                    error_category=exc.category.value,
+                )
+            )
+            _logger.warning(
+                "session.scope_guard.failed_open category={category}",
+                category=exc.category.value,
+                interaction_id=str(state.record.interaction_id),
+                session_id=str(state.record.session_id),
+            )
+            return None
+        except StructuredOutputError as exc:
+            _logger.warning(
+                "session.scope_guard.failed_open category=model_output_invalid "
+                "attempts={attempts}",
+                attempts=exc.attempts,
+                interaction_id=str(state.record.interaction_id),
+                session_id=str(state.record.session_id),
+            )
+            return None
+        usage_events.append(
+            llm_call_event(
+                self._usage_context(state.record),
+                occurred_at=now,
+                logical_call_id=logical_call_id,
+                stage=ModelStage.SCOPE_GUARD,
+                model_alias=verdict.model_alias,
+                actual_model=verdict.actual_model,
+                attempt=verdict.attempt,
+                prompt_tokens=verdict.prompt_tokens,
+                completion_tokens=verdict.completion_tokens,
+                cached_tokens=verdict.cached_tokens,
+                reasoning_tokens=verdict.reasoning_tokens,
+                duration_ms=verdict.duration_ms,
+                status="completed",
+            )
+        )
+        _logger.info(
+            "session.scope_guard.verdict capability={capability} beyond={beyond} "
+            "target={target}",
+            capability=capability.value,
+            beyond=verdict.beyond,
+            target=verdict.target,
+            interaction_id=str(state.record.interaction_id),
+            session_id=str(state.record.session_id),
+        )
+        if not verdict.beyond:
+            return None
+        return deny_message(role, verdict.target)
+
+    async def _compose_result_answer(
+        self,
+        state: _RunState,
+        result: CapabilityRunResult,
+        capability_id: CapabilityId,
+        time_range: TimeRange,
+        usage_events: list[UsageEvent],
+    ) -> str:
+        """One composed answer sentence over result metadata and totals.
+
+        Row-level detail never enters the prompt (sensitive-field invariant);
+        the model narrates from metadata and the pre-aggregated totals that
+        are already rendered on the result card. On any model failure the
+        deterministic fallback keeps the outcome intact: a failed answer
+        never fails the interaction.
+        """
+        time_label = self._result_time_label(state, time_range)
+        aggregates = _result_aggregates(result)
+        fallback = fallback_result_answer(
+            row_count=len(result.rows),
+            incomplete=result.incomplete,
+            incomplete_reason=result.incomplete_reason,
+            time_label=time_label,
+            aggregates=aggregates,
+        )
+        summarizer = self._summarizer
+        if summarizer is None:
+            return fallback
+        logical_call_id = self._new_id()
+        now = self._clock.now()
+        fr_id = fr_id_for(str(capability_id))
+        title = FR_INFO.get(fr_id, (fr_id, ""))[0]
+        try:
+            reply = await summarizer.summarize(
+                question=state.record.input_text,
+                capability_title=title,
+                time_label=time_label,
+                row_count=len(result.rows),
+                columns=list(result.column_names),
+                incomplete=result.incomplete,
+                incomplete_reason=result.incomplete_reason,
+                logical_call_id=logical_call_id,
+                aggregates=aggregates,
+            )
+        except ModelGatewayError as exc:
+            usage_events.append(
+                llm_call_event(
+                    self._usage_context(state.record),
+                    occurred_at=now,
+                    logical_call_id=logical_call_id,
+                    stage=ModelStage.SUMMARIZE,
+                    model_alias=summarizer.model_alias,
+                    actual_model="unknown",
+                    attempt=exc.attempt,
+                    duration_ms=exc.duration_ms,
+                    status="failed",
+                    error_category=exc.category.value,
+                )
+            )
+            return fallback
+        except StructuredOutputError as exc:
+            usage_events.append(
+                llm_call_event(
+                    self._usage_context(state.record),
+                    occurred_at=now,
+                    logical_call_id=logical_call_id,
+                    stage=ModelStage.SUMMARIZE,
+                    model_alias=summarizer.model_alias,
+                    actual_model="unknown",
+                    attempt=exc.attempts,
+                    status="failed",
+                    error_category="protocol",
+                )
+            )
+            return fallback
+        usage_events.append(
+            llm_call_event(
+                self._usage_context(state.record),
+                occurred_at=now,
+                logical_call_id=logical_call_id,
+                stage=ModelStage.SUMMARIZE,
+                model_alias=reply.model_alias,
+                actual_model=reply.actual_model,
+                attempt=reply.attempt,
+                prompt_tokens=reply.prompt_tokens,
+                completion_tokens=reply.completion_tokens,
+                cached_tokens=reply.cached_tokens,
+                reasoning_tokens=reply.reasoning_tokens,
+                duration_ms=reply.duration_ms,
+                status="completed",
+            )
+        )
+        return reply.text
+
+    @staticmethod
+    def _result_time_label(state: _RunState, time_range: TimeRange) -> str:
+        """Human time label for the answer: the caller's own words when present."""
+        expression = state.last_intent.slots.time_expression if state.last_intent else None
+        if expression:
+            return expression
+        return f"{time_range.start.date().isoformat()} 至 {time_range.end.date().isoformat()}"
+
     async def _clarify(
         self,
         state: _RunState,
@@ -1060,6 +1309,7 @@ class SessionService:
             data={
                 "interaction_id": str(state.record.interaction_id),
                 "error_category": category,
+                "message": text,
             },
         )
         state.record = replace(
@@ -1262,6 +1512,13 @@ class SessionService:
                 after_sequence = event.sequence
                 if event.name in _TERMINAL_NAMES:
                     return
+            # Self-heal: the executor connection may have died without
+            # persisting a terminal event; a stale ``running`` row is failed
+            # durably so this and every future connection terminates cleanly.
+            healed = await self._fail_stale_run(owner, interaction_id)
+            if healed is not None:
+                yield healed
+                return
             if not events:
                 yield SessionEvent(
                     sequence=after_sequence,
@@ -1270,6 +1527,60 @@ class SessionService:
                 )
             await self._sleep(self._limits.heartbeat_seconds)
             waited += self._limits.heartbeat_seconds
+        # Follow budget exhausted with the run still fresh: end this stream with
+        # an explicit wire-only terminal (sequence+1 passes the client's event
+        # dedup) so the client stops waiting. The interaction row is untouched;
+        # a genuinely slow executor can still persist its outcome.
+        yield SessionEvent(
+            sequence=after_sequence + 1,
+            name=terminal_event_name(InteractionStatus.FAILED),
+            data={"interaction_id": str(interaction_id), "error_category": "follow_timeout"},
+        )
+
+    async def _fail_stale_run(
+        self, owner: InteractionOwner, interaction_id: InteractionId
+    ) -> SessionEvent | None:
+        """Durably fail an orphaned run and return its terminal event.
+
+        A run is orphaned when its executor connection died before persisting a
+        terminal event (client disconnect, debugger freeze, process exit); the
+        row stays ``running`` and no reconnect can ever observe a terminal. The
+        compare-and-set keeps this race-safe against a live executor committing.
+        """
+        now = self._clock.now()
+        record = await self._store.fail_stale_run(
+            owner,
+            interaction_id,
+            stale_before=now - timedelta(seconds=self._limits.stale_running_seconds),
+            now=now,
+            category="executor_lost",
+        )
+        if record is None:
+            return None
+        event = SessionEvent(
+            sequence=record.last_event_sequence,
+            name=terminal_event_name(InteractionStatus.FAILED),
+            data={"interaction_id": str(interaction_id), "error_category": "executor_lost"},
+        )
+        await self._store.commit(
+            InteractionCommit(
+                interaction=record,
+                messages=(
+                    self._message(
+                        record,
+                        MessageRole.SYSTEM,
+                        MessageKind.ERROR,
+                        event.sequence,
+                        "查询未能完成。",
+                    ),
+                ),
+                events=(event,),
+                usage_events=(
+                    self._completion_event(record, result=None, error_category="executor_lost"),
+                ),
+            )
+        )
+        return event
 
     async def _resolve_owner(
         self, credential: TrustedCredential
@@ -1420,6 +1731,28 @@ def _time_range(intent: CapabilityIntent) -> TimeRange | None:
 
 def _time_range_label(time_range: TimeRange) -> str:
     return f"{time_range.start.date().isoformat()}_{time_range.end.date().isoformat()}"
+
+
+def _result_aggregates(result: CapabilityRunResult) -> list[tuple[str, str]]:
+    """Human-readable totals for the composed answer: label + formatted value.
+
+    Totals are the same pre-aggregated numbers the result card and the XLSX
+    合计 row show; no row-level detail and no identifier enters the answer.
+    """
+    titles = result.column_titles or {}
+    units = result.column_units or {}
+    types = result.column_types or {}
+    aggregates: list[tuple[str, str]] = []
+    for name in result.column_names:
+        value = result.totals.get(name)
+        if value is None:
+            continue
+        label = titles.get(name, name)
+        unit = units.get(name)
+        if unit:
+            label = f"{label}（{unit}）"
+        aggregates.append((label, format_aggregate_value(value, types.get(name))))
+    return aggregates
 
 
 def _exceeds_time_range_limit(time_range: TimeRange, max_days: int) -> bool:

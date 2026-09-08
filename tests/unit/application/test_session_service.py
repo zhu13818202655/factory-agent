@@ -37,6 +37,7 @@ from factory_agent.domain import (
     InteractionId,
     InteractionStatus,
     MessageKind,
+    MessageRole,
     Role,
     SessionEvent,
     SessionId,
@@ -156,6 +157,8 @@ def build(
     directory: FakeDirectory | None = None,
     chat_text: str | None = None,
     chat_failure: Exception | None = None,
+    scope_verdict: str | None = None,
+    scope_failure: Exception | None = None,
 ) -> tuple[SessionService, InMemoryInteractionStore, RecordingCapabilityRunner]:
     from factory_agent.application.intent import CapabilityIntentParser
 
@@ -172,6 +175,17 @@ def build(
             ),
             model_alias="factory-summary",
         )
+    guard = None
+    if scope_verdict is not None or scope_failure is not None:
+        from factory_agent.application.scope_guard import ScopeGuard
+
+        guard = ScopeGuard(
+            ScriptedModelGateway(
+                contents=[scope_verdict] if scope_verdict is not None else [],
+                failures=[scope_failure] if scope_failure is not None else [],
+            ),
+            model_alias="factory-summary",
+        )
     resolved_store = store or InMemoryInteractionStore()
     resolved_runner = runner or RecordingCapabilityRunner()
     service = SessionService(
@@ -184,6 +198,7 @@ def build(
         limits=limits,
         sleep=_no_sleep,
         chat=chat,
+        scope_guard=guard,
         business_filters=BusinessFilterResolver(directory or FakeDirectory()),
     )
     return service, resolved_store, resolved_runner
@@ -267,6 +282,56 @@ async def test_successful_run_logs_the_final_outcome_metadata(
 
     assert "session.outcome.result" in caplog.text
     assert "rows=" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_result_commit_persists_distinct_message_sequences() -> None:
+    """Result-table and answer messages each anchor a distinct event sequence.
+
+    The ``agent_message_sequence_key`` unique constraint rejects two messages
+    sharing one (interaction, sequence) pair; the in-memory store now mirrors
+    that, so this also guards the streaming outcome (a failed commit means no
+    result/terminal event ever reaches the front end).
+    """
+    service, store, _ = build()
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    events = await drain(service, record.interaction_id)
+
+    result_sequence = next(
+        event.sequence for event in events if event.name == INTERACTION_RESULT
+    )
+    committed = [
+        message for message in store.messages if message.interaction_id == record.interaction_id
+    ]
+    assistant_messages = [m for m in committed if m.role is MessageRole.ASSISTANT]
+    kinds = [message.kind for message in assistant_messages]
+    assert kinds.count(MessageKind.RESULT_TABLE) == 1
+    assert kinds.count(MessageKind.PLAIN_TEXT) == 1
+    sequences = [message.sequence for message in committed]
+    assert len(sequences) == len(set(sequences))
+    answer_message = next(
+        m for m in assistant_messages if m.kind is MessageKind.PLAIN_TEXT
+    )
+    assert answer_message.text
+    table_message = next(
+        m for m in assistant_messages if m.kind is MessageKind.RESULT_TABLE
+    )
+    assert table_message.sequence == result_sequence
+
+
+@pytest.mark.asyncio
+async def test_result_event_carries_column_titles() -> None:
+    """The result event exposes Chinese display labels alongside raw names."""
+    service, _, _ = build()
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    events = await drain(service, record.interaction_id)
+
+    result_event = next(event for event in events if event.name == INTERACTION_RESULT)
+    titles = result_event.data["column_titles"]
+    assert isinstance(titles, list)
+    assert len(titles) == len(result_event.data["columns"])
 
 
 @pytest.mark.asyncio
@@ -798,3 +863,69 @@ async def test_rewritten_follow_up_is_echoed_back_on_clarification() -> None:
     question = clarification.data["question"]
     assert "查询我这个月的工资明细" in question
     assert store.interactions[str(record.interaction_id)].clarification_rounds == 1
+
+
+SCOPE_BEYOND_PAYLOAD = '{"verdict": "beyond", "target": "全组的工资明细"}'
+SCOPE_WITHIN_PAYLOAD = '{"verdict": "within", "target": ""}'
+
+
+@pytest.mark.asyncio
+async def test_scope_guard_denies_out_of_range_request_before_any_business_call() -> None:
+    """An employee asking for the whole group's wage detail is denied with a
+    friendly message before any capability run or MES call."""
+    from factory_agent.domain import INTERACTION_FAILED
+
+    service, store, runner = build(scope_verdict=SCOPE_BEYOND_PAYLOAD)
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="我想知道全组的工资明细")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    failed = [event for event in events if event.name == INTERACTION_FAILED]
+    assert len(failed) == 1
+    assert failed[0].data["error_category"] == "scope_forbidden"
+    assert "全组的工资明细" in failed[0].data["message"]
+    assert "本人" in failed[0].data["message"]
+    # No business-data call ever happened.
+    assert runner.requests == []
+    stored = store.interactions[str(record.interaction_id)]
+    assert stored.status is InteractionStatus.FAILED
+    assert stored.error_category == "scope_forbidden"
+    # The denial text is persisted so history replay shows it.
+    kinds = [(message.kind, message.text) for message in store.messages]
+    assert any(kind is MessageKind.ERROR and "全组的工资明细" in text for kind, text in kinds)
+
+
+@pytest.mark.asyncio
+async def test_scope_guard_within_range_proceeds_to_execution() -> None:
+    service, store, runner = build(scope_verdict=SCOPE_WITHIN_PAYLOAD)
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="我上个月的工资明细")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert events[-1].name == "interaction.completed"
+    assert len(runner.requests) == 1
+    assert store.interactions[str(record.interaction_id)].status is InteractionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_scope_guard_failure_fails_open_without_blocking_the_run() -> None:
+    """A guard model failure never blocks the run: MES row filtering still
+    bounds every returned row, so the interaction proceeds normally."""
+    service, store, runner = build(
+        scope_failure=ModelGatewayError(
+            ModelErrorCategory.UNAVAILABLE, "gateway unreachable", duration_ms=5
+        )
+    )
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="我上个月的工资明细")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert events[-1].name == "interaction.completed"
+    assert len(runner.requests) == 1
+    assert store.interactions[str(record.interaction_id)].status is InteractionStatus.COMPLETED

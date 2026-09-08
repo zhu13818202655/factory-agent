@@ -55,17 +55,23 @@ capabilities:
           FROM fetch_wages
     result_columns:
       - name: gross_total
+        title: 计件工资合计
         source_step: aggregate
         metric: payroll_gross_total
         column_type: money
+        unit: 元
       - name: piece_count
+        title: 计件件数
         source_step: aggregate
         metric: payroll_piece_count
         column_type: quantity
+        unit: 件
       - name: daily_avg
+        title: 日均工资
         source_step: aggregate
         metric: payroll_daily_average
         column_type: money
+        unit: 元
     metric_versions:
       payroll_gross_total: customer-footer-v1
       payroll_piece_count: customer-payroll-v1
@@ -96,22 +102,33 @@ capabilities:
           FROM fetch_wages
     result_columns:
       - name: rq
+        title: 日期
         source_step: fetch_wages
         column_type: date
+      - name: huohao
+        title: 款号
+        source_step: fetch_wages
       - name: worktype
+        title: 工序
         source_step: fetch_wages
       - name: sl
+        title: 完成数量
         source_step: fetch_wages
         metric: payroll_piece_count
         column_type: quantity
+        unit: 件
       - name: price
+        title: 工价单价
         source_step: fetch_wages
         metric: payroll_unit_price
         column_type: money
+        unit: 元
       - name: je
+        title: 小计金额
         source_step: fetch_wages
         metric: payroll_amount
         column_type: money
+        unit: 元
     metric_versions:
       payroll_piece_count: customer-payroll-v1
       payroll_unit_price: customer-payroll-v1

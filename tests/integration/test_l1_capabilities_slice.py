@@ -93,15 +93,13 @@ async def test_fr001_personal_output_worker_golden(mock_mes_app: Any) -> None:
                 dept_ids=None,
             ),
         )
-        assert result.column_names == ("rq", "huohao", "worktype", "output_qty", "defective_qty")
+        assert result.column_names == ("rq", "huohao", "worktype", "output_qty")
         # Factory-scale window — 01001 records ~70 output rows.
         assert len(result.rows) == 70
         assert result.totals["output_qty"] == Decimal("559")
-        # 合格/次品无统一数据源：列级 unavailable，绝不渲染为数字。
-        for row in result.rows:
-            assert row[4] == UNAVAILABLE_VALUE
-        assert result.incomplete is True
-        assert result.incomplete_reason == "metric_unavailable:quality_defective"
+        # 次品不在个人产量口径内（客户确认 2026-09-02），结果完整无降级。
+        assert result.incomplete is False
+        assert result.incomplete_reason is None
     finally:
         await adapter.aclose()
         await client.aclose()
@@ -315,6 +313,12 @@ async def test_fr012_employee_payroll_golden(mock_mes_app: Any) -> None:
         # 01001 wage rows now include rolling output.
         assert result.rows[0] == (Decimal("573.60"), Decimal("559"))
         assert result.incomplete is False
+        # Worker-facing Chinese labels ride on the run result (card + XLSX).
+        assert result.column_titles == {
+            "gross_total": "计件工资合计",
+            "piece_count": "计件件数",
+        }
+        assert result.column_units == {"gross_total": "元", "piece_count": "件"}
     finally:
         await adapter.aclose()
         await client.aclose()

@@ -154,7 +154,6 @@ def test_unavailable_metrics_are_never_rendered_as_numbers() -> None:
 
     registry = default_metric_registry()
     gaps = {
-        "quality_defective": "unavailable-defective-v1",
         "plan_target_output": "unavailable-target-v1",
     }
     for name, version in gaps.items():

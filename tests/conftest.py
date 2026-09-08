@@ -8,6 +8,15 @@ fixed test window are applied once per session.
 
 
 import logging
+
+# ---------------------------------------------------------------------------
+# litellm 在 import 时默认把仓库根 ``.env`` 注入 ``os.environ``，会把真实环境
+# 配置（如 FACTORY_AGENT_CANONICAL_MES_BASE_URL=客户 MES 根地址）泄漏进单测：
+# FactoryAgentSettings 因此装配 token 网关，凡走 tenant/user 降级头的 API 测试
+# 一律 401。这里在收集任何测试模块之前主动触发一次注入并立即清除
+# FACTORY_AGENT_*，保证测试内的 settings 构造只看到测试本意提供的环境。
+# ---------------------------------------------------------------------------
+import os as _os
 from collections.abc import Iterator
 from typing import Any
 
@@ -20,15 +29,6 @@ from mock_mes.testing import (
     reset_test_db,
     upgrade_test_db,
 )
-
-# ---------------------------------------------------------------------------
-# litellm 在 import 时默认把仓库根 ``.env`` 注入 ``os.environ``，会把真实环境
-# 配置（如 FACTORY_AGENT_CANONICAL_MES_BASE_URL=客户 MES 根地址）泄漏进单测：
-# FactoryAgentSettings 因此装配 token 网关，凡走 tenant/user 降级头的 API 测试
-# 一律 401。这里在收集任何测试模块之前主动触发一次注入并立即清除
-# FACTORY_AGENT_*，保证测试内的 settings 构造只看到测试本意提供的环境。
-# ---------------------------------------------------------------------------
-import os as _os
 
 try:
     import litellm as _litellm  # noqa: F401  (import 副作用：触发一次 .env 注入)

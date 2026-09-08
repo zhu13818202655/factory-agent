@@ -94,7 +94,7 @@ def test_incomplete_table_declares_status() -> None:
 
 def test_unconfirmed_metrics_carry_a_gap_status() -> None:
     registry = default_metric_registry()
-    metric = registry.resolve("quality_defective", "unavailable-defective-v1")
+    metric = registry.resolve("plan_target_output", "unavailable-target-v1")
     assert metric.status == "unavailable"
     assert not metric.allows_numeric_rendering()
     assert metric.assumption_status != ""

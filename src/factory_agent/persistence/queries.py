@@ -135,6 +135,42 @@ def claim_interaction_run(
     )
 
 
+def fail_stale_interaction_run(
+    tenant_id: str,
+    user_id: str,
+    interaction_id: str,
+    *,
+    stale_before: datetime,
+    now: datetime,
+    category: str,
+) -> sa.Update:
+    """Compare-and-set that fails an orphaned ``running`` interaction.
+
+    A run is orphaned when its executor connection died without persisting a
+    terminal event: the row still says ``running`` and ``updated_at`` stopped
+    advancing. The update also reserves the terminal event sequence by bumping
+    ``last_event_sequence``; the caller persists the terminal event itself.
+    """
+    return (
+        sa.update(interaction_table)
+        .where(
+            _owned(interaction_table, tenant_id, user_id),
+            interaction_table.c.interaction_id == interaction_id,
+            interaction_table.c.status == "running",
+            interaction_table.c.updated_at < stale_before,
+        )
+        .values(
+            status="failed",
+            state="failed",
+            error_category=category,
+            updated_at=now,
+            completed_at=now,
+            last_event_sequence=interaction_table.c.last_event_sequence + 1,
+        )
+        .returning(*interaction_table.c)
+    )
+
+
 def delete_session(tenant_id: str, user_id: str, session_id: str) -> sa.Delete:
     return sa.delete(interaction_table).where(
         _owned(interaction_table, tenant_id, user_id),
@@ -149,6 +185,7 @@ OWNERSHIP_SCOPED_BUILDERS: tuple[str, ...] = (
     "select_messages",
     "select_interactions",
     "claim_interaction_run",
+    "fail_stale_interaction_run",
     "delete_session",
 )
 

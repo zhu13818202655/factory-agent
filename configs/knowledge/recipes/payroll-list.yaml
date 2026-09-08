@@ -64,19 +64,23 @@ capabilities:
           WHERE v.uid = (SELECT self_uid FROM _meta)
     result_columns:
       - name: rank_position
+        title: 名次
         source_step: compute
         metric: payroll_rank_position
         column_type: quantity
       - name: amount
+        title: 金额
         source_step: compute
         metric: payroll_amount
         column_type: money
         unit: 元
       - name: group_rank
+        title: 组内名次
         source_step: compute
         metric: payroll_group_rank
         column_type: quantity
       - name: group_size
+        title: 组内人数
         source_step: compute
         metric: payroll_group_size
         column_type: quantity
@@ -128,22 +132,28 @@ capabilities:
           ORDER BY CAST(je AS DECIMAL) DESC
     result_columns:
       - name: uid
+        title: 工号
         source_step: compute
       - name: uname
+        title: 姓名
         source_step: compute
       - name: dept
+        title: 车间/小组
         source_step: compute
       - name: package_count
+        title: 包数
         source_step: compute
         metric: payroll_package_count
         column_type: quantity
         unit: 包
       - name: gross
+        title: 工资金额
         source_step: compute
         metric: payroll_amount
         column_type: money
         unit: 元
       - name: rank_position
+        title: 名次
         source_step: compute
         metric: payroll_rank_position
         column_type: quantity
@@ -204,18 +214,22 @@ capabilities:
           ORDER BY w.total DESC
     result_columns:
       - name: dept_name
+        title: 车间/小组
         source_step: compute
       - name: gross_total
+        title: 应发合计
         source_step: compute
         metric: payroll_gross_by_dept
         column_type: money
         unit: 元
       - name: headcount
+        title: 在册人数
         source_step: compute
         metric: org_headcount
         column_type: quantity
         unit: 人
       - name: avg_wage
+        title: 人均工资
         source_step: compute
         metric: payroll_avg_by_dept
         column_type: money
@@ -249,11 +263,13 @@ capabilities:
           FROM fetch_wages
     result_columns:
       - name: gross_total
+        title: 计件工资合计
         source_step: aggregate
         metric: payroll_gross_total
         column_type: money
         unit: 元
       - name: piece_count
+        title: 计件件数
         source_step: aggregate
         metric: payroll_piece_count
         column_type: quantity

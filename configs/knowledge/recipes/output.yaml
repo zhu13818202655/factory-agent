@@ -9,9 +9,9 @@
 # from the credential; the quantity column is `sl`（客户确认：个人产量即实收数
 # （合格数），次品不计）.
 #
-# 次品数量 (defective_qty) 无统一数据源：仅手工账接口含次品字段
-# （需求及方案整理·未直接映射接口表）。合并工资视图无法逐行归属次品，
-# 该列绑定 unavailable 指标，渲染为"暂无数据源"，不伪造数字。
+# 次品不在个人产量口径内（需求及方案整理·客户确认结论 2026-09-02：
+# 「个人产量即最终实收数（合格数），次品不考虑」），结果列不含次品数量。
+# 手工账接口（PinFeng/GridPageList 的 cp 字段）为未来独立次品能力预留。
 version: 1
 capabilities:
   - capability_id: fr001_personal_output
@@ -34,30 +34,27 @@ capabilities:
             rq,
             huohao,
             worktype,
-            CAST(SUM(CAST(sl AS DECIMAL)) AS VARCHAR) AS output_qty,
-            'unavailable' AS defective_qty
+            CAST(SUM(CAST(sl AS DECIMAL)) AS VARCHAR) AS output_qty
           FROM fetch_wages
           GROUP BY rq, huohao, worktype
           ORDER BY rq, huohao, worktype
     result_columns:
       - name: rq
+        title: 日期
         source_step: aggregate
         column_type: date
       - name: huohao
+        title: 款号
         source_step: aggregate
       - name: worktype
+        title: 工序
         source_step: aggregate
       - name: output_qty
+        title: 产量
         source_step: aggregate
         metric: output_personal
         column_type: quantity
         unit: 件
-      - name: defective_qty
-        source_step: aggregate
-        metric: quality_defective
-        column_type: quantity
-        unit: 件
     metric_versions:
       output_personal: customer-output-v1
-      quality_defective: unavailable-defective-v1
     degradation: incomplete_marker

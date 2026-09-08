@@ -1,5 +1,3 @@
-
-
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -84,6 +82,14 @@ class FactoryAgentSettings(BaseSettings):
     session_history_max_turns: int = Field(default=8, ge=1)
     session_history_max_chars: int = Field(default=8192, gt=0)
     session_heartbeat_seconds: float = Field(default=15.0, gt=0.0)
+    #: Follow budget for an SSE connection tailing a run claimed by another
+    #: connection; on exhaustion the stream ends with an explicit wire-only
+    #: terminal event instead of closing silently.
+    session_follow_timeout_seconds: float = Field(default=600.0, gt=0.0)
+    #: A ``running`` interaction with no persisted update for this long is
+    #: treated as an orphaned run (its executor connection died) and is marked
+    #: failed by the next connecting/following stream.
+    session_stale_running_seconds: float = Field(default=600.0, gt=0.0)
 
 
 @lru_cache

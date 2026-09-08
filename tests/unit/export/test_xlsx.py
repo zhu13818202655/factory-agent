@@ -14,15 +14,25 @@ def _table() -> RenderTable:
     return RenderTable(
         capability_id="fr003_personal_wage_detail",
         columns=(
-            RenderColumn("rq", None, None, ("GongziMxQuery",), column_type="date"),
-            RenderColumn("worktype", None, None, ("GongziMxQuery",)),
-            RenderColumn("sl", None, None, ("GongziMxQuery",), column_type="quantity"),
+            RenderColumn("rq", None, None, ("GongziMxQuery",), column_type="date", title="日期"),
+            RenderColumn("worktype", None, None, ("GongziMxQuery",), title="工序"),
+            RenderColumn(
+                "sl",
+                None,
+                None,
+                ("GongziMxQuery",),
+                column_type="quantity",
+                unit="件",
+                title="完成数量",
+            ),
             RenderColumn(
                 "je",
                 "payroll_amount",
                 "customer-payroll-v1",
                 ("GongziMxQuery",),
                 column_type="money",
+                unit="元",
+                title="小计金额",
             ),
         ),
         rows=(
@@ -55,6 +65,18 @@ def test_totals_row_and_warnings_are_present() -> None:
     shared = _shared_strings(content)
     assert "合计" in shared
     assert "口径" in shared
+
+
+def test_headers_use_chinese_titles_with_units() -> None:
+    """Workers read Chinese headers: title first, unit appended in parentheses."""
+    shared = _shared_strings(render_xlsx(_table()))
+    assert "日期" in shared
+    assert "工序" in shared
+    assert "完成数量（件）" in shared
+    assert "小计金额（元）" in shared
+    # Raw identifiers never appear as header text when a title exists.
+    assert ">rq<" not in shared
+    assert ">sl<" not in shared
 
 
 def _shared_strings(content: bytes) -> str:

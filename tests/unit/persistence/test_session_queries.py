@@ -28,6 +28,9 @@ OWNERSHIP_STATEMENTS: dict[str, Statement] = {
     "select_messages": queries.select_messages(TENANT, USER, "s-1", 50),
     "select_interactions": queries.select_interactions(TENANT, USER, "s-1", 50),
     "claim_interaction_run": queries.claim_interaction_run(TENANT, USER, "i-1", NOW),
+    "fail_stale_interaction_run": queries.fail_stale_interaction_run(
+        TENANT, USER, "i-1", stale_before=NOW, now=NOW, category="executor_lost"
+    ),
     "delete_session": queries.delete_session(TENANT, USER, "s-1"),
 }
 
@@ -77,6 +80,19 @@ def test_cursor_narrows_the_result_window() -> None:
 
     assert "'m-1'" in sql
     assert f"tenant_id = '{TENANT}'" in sql
+
+
+def test_fail_stale_run_requires_running_and_staleness() -> None:
+    sql = compiled(
+        queries.fail_stale_interaction_run(
+            TENANT, USER, "i-1", stale_before=NOW, now=NOW, category="executor_lost"
+        )
+    )
+
+    assert "status = 'running'" in sql
+    assert "updated_at < '2026-08-24 06:00:00+00:00'" in sql
+    assert "status='failed'" in sql
+    assert "last_event_sequence + 1" in sql
 
 
 def test_messages_and_events_cascade_from_the_interaction() -> None:

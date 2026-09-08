@@ -61,27 +61,33 @@ capabilities:
           ORDER BY total DESC
     result_columns:
       - name: dept_name
+        title: 车间/小组
         source_step: compute
       - name: output_total
+        title: 产量
         source_step: compute
         metric: workshop_output_total
         column_type: quantity
         unit: 件
       - name: effective_headcount
+        title: 有产出人数
         source_step: compute
         metric: workshop_effective_headcount
         column_type: quantity
         unit: 人
       - name: per_capita
+        title: 人均产量
         source_step: compute
         metric: workshop_output_per_capita
         column_type: quantity
         unit: 件/人
       - name: rank_position
+        title: 名次
         source_step: compute
         metric: workshop_rank
         column_type: quantity
       - name: achievement_rate
+        title: 达成率
         source_step: compute
         metric: plan_target_output
         column_type: percent
@@ -132,20 +138,25 @@ capabilities:
           ORDER BY d.name, p.huohao
     result_columns:
       - name: dept_name
+        title: 车间/小组
         source_step: compute
       - name: huohao
+        title: 款号
         source_step: compute
       - name: plan_qty
+        title: 计划数量
         source_step: compute
         metric: output_order_plan_qty
         column_type: quantity
         unit: 件
       - name: completed_qty
+        title: 完工数量
         source_step: compute
         metric: output_order_completed
         column_type: quantity
         unit: 件
       - name: achievement_rate
+        title: 达成率
         source_step: compute
         metric: plan_target_output
         column_type: percent

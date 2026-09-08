@@ -155,9 +155,9 @@ async def test_fr003_detail_matches_summary_totals() -> None:
         )
     )
     assert summary.totals["gross_total"] == detail.totals["je"]
-    # Every row honours je = sl x price.
+    # Every row honours je = sl x price (column order: rq, huohao, worktype, sl, price, je).
     for row in detail.rows:
-        assert Decimal(str(row[4])) == Decimal(str(row[2])) * Decimal(str(row[3]))
+        assert Decimal(str(row[5])) == Decimal(str(row[3])) * Decimal(str(row[4]))
 
 
 @pytest.mark.asyncio
@@ -205,7 +205,10 @@ async def test_footer_mismatch_is_logged_without_failing(
 
 
 @pytest.mark.asyncio
-async def test_empty_result_is_zero_aggregate_not_fabricated() -> None:
+async def test_empty_window_yields_zero_rows_not_fabricated() -> None:
+    """An empty but complete fetch is a normal empty window: zero rows, no
+    fabricated zero aggregate, and no ``incomplete`` mark."""
+
     class EmptyExecutor(FakeStepExecutor):
         async def execute_full_step(
             self,
@@ -235,8 +238,9 @@ async def test_empty_result_is_zero_aggregate_not_fabricated() -> None:
             time_range=_range(),
         )
     )
-    assert result.totals["gross_total"] == Decimal("0")
-    assert result.totals["piece_count"] == Decimal("0")
+    assert len(result.rows) == 0
+    assert result.incomplete is False
+    assert result.incomplete_reason is None
 
 
 @pytest.mark.asyncio

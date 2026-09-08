@@ -128,7 +128,7 @@ class ResourceFetchResult:
 
 @dataclass(frozen=True, slots=True)
 class RenderColumn:
-    """One output column with optional type/unit for card and Excel rendering."""
+    """One output column with optional display title, type, and unit."""
 
     name: str
     metric_name: str | None
@@ -136,6 +136,8 @@ class RenderColumn:
     source_operations: tuple[str, ...]
     column_type: str | None = None
     unit: str | None = None
+    #: Worker-facing Chinese display label; ``name`` stays the stable identifier.
+    title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
