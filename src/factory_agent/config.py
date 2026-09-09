@@ -87,6 +87,12 @@ class FactoryAgentSettings(BaseSettings):
     #: treated as an orphaned run (its executor connection died) and is marked
     #: failed by the next connecting/following stream.
     session_stale_running_seconds: float = Field(default=600.0, gt=0.0)
+    #: Whole-run wall-clock budget for the background interaction executor
+    #: (Story #4): when exceeded at a cooperative stop point the run is failed
+    #: durably with ``run_timeout``. Must stay below
+    #: ``session_stale_running_seconds`` so a live-but-slow run is failed by
+    #: its own budget before any follower can mistake it for an orphan.
+    session_run_timeout_seconds: float = Field(default=300.0, gt=0.0)
 
 
 @lru_cache

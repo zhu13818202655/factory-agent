@@ -135,6 +135,30 @@ class SqlInteractionStore:
             )
         return _interaction_from_row(row) if row is not None else None
 
+    async def fail_stale_runs(
+        self,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> tuple[InteractionRecord, ...]:
+        """Bulk startup sweep: fail every stale ``running`` interaction (Story #4)."""
+        async with self._engine.begin() as connection:
+            rows = (
+                (
+                    await connection.execute(
+                        queries.fail_stale_interaction_runs(
+                            stale_before=stale_before,
+                            now=now,
+                            category=category,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(_interaction_from_row(row) for row in rows)
+
     async def get_interaction(
         self, owner: InteractionOwner, interaction_id: InteractionId
     ) -> InteractionRecord | None:

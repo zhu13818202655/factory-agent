@@ -10,8 +10,6 @@ Set ``FACTORY_AGENT_TEST_POSTGRES_URL`` to a disposable database to enable it.
 The suite creates and drops its own schema and never touches customer data.
 """
 
-
-
 import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
@@ -305,3 +303,66 @@ async def test_message_sequence_is_unique_within_an_interaction(
         await store.commit(
             InteractionCommit(interaction=interaction("i-1"), messages=(message("m-2", "i-1", 1),))
         )
+
+
+async def test_startup_sweep_fails_every_stale_running_interaction_once(
+    store: SqlInteractionStore,
+) -> None:
+    """Story #4: the startup bulk compare-and-set repairs orphans exactly once."""
+    stale_a = interaction(
+        "i-stale-a",
+        status=InteractionStatus.RUNNING,
+        state=SessionState.EXECUTING,
+        created_at=NOW - timedelta(seconds=700),
+        last_event_sequence=2,
+    )
+    stale_b = interaction(
+        "i-stale-b",
+        status=InteractionStatus.RUNNING,
+        state=SessionState.EXECUTING,
+        created_at=NOW - timedelta(seconds=700),
+        last_event_sequence=2,
+    )
+    fresh = interaction(
+        "i-fresh",
+        status=InteractionStatus.RUNNING,
+        state=SessionState.EXECUTING,
+        created_at=NOW - timedelta(seconds=10),
+    )
+    completed = interaction(
+        "i-done",
+        status=InteractionStatus.COMPLETED,
+        state=SessionState.ANSWERED,
+        created_at=NOW - timedelta(seconds=700),
+    )
+    for record in (stale_a, stale_b, fresh, completed):
+        await store.commit(InteractionCommit(interaction=record))
+
+    failed = await store.fail_stale_runs(
+        stale_before=NOW - timedelta(seconds=600),
+        now=NOW,
+        category="executor_lost",
+    )
+
+    assert sorted(str(record.interaction_id) for record in failed) == ["i-stale-a", "i-stale-b"]
+    for record in failed:
+        assert record.status is InteractionStatus.FAILED
+        assert record.error_category == "executor_lost"
+        assert record.completed_at == NOW
+        assert record.last_event_sequence == 3
+    assert (await store.get_interaction(OWNER, InteractionId("i-fresh"))).status is (  # type: ignore[union-attr]
+        InteractionStatus.RUNNING
+    )
+    assert (await store.get_interaction(OWNER, InteractionId("i-done"))).status is (  # type: ignore[union-attr]
+        InteractionStatus.COMPLETED
+    )
+
+    # Idempotent: repeated and concurrent worker sweeps mark nothing.
+    assert (
+        await store.fail_stale_runs(
+            stale_before=NOW - timedelta(seconds=600),
+            now=NOW,
+            category="executor_lost",
+        )
+        == ()
+    )

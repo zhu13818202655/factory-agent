@@ -15,6 +15,8 @@ import logging
 # FactoryAgentSettings 因此装配 token 网关，凡走 tenant/user 降级头的 API 测试
 # 一律 401。这里在收集任何测试模块之前主动触发一次注入并立即清除
 # FACTORY_AGENT_*，保证测试内的 settings 构造只看到测试本意提供的环境。
+# 例外：FACTORY_AGENT_TEST_POSTGRES_URL 是集成套件显式注入的测试库 DSN
+# （tests/integration/test_session_store_postgres.py），不来自 .env，需保留。
 # ---------------------------------------------------------------------------
 import os as _os
 from collections.abc import Iterator
@@ -35,7 +37,7 @@ try:
 except Exception:  # pragma: no cover - 环境缺 litellm 时无需清理
     pass
 for _k in list(_os.environ):
-    if _k.startswith("FACTORY_AGENT_"):
+    if _k.startswith("FACTORY_AGENT_") and _k != "FACTORY_AGENT_TEST_POSTGRES_URL":
         del _os.environ[_k]
 
 

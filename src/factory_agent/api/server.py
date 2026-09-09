@@ -1,6 +1,7 @@
 
 
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Literal, cast
 
 from fastapi import APIRouter, FastAPI, Request, Response
@@ -17,7 +18,9 @@ from factory_agent.observability.context import (
     accept_request_id,
     bind_request_id,
 )
-from factory_agent.observability.logging_adapter import configure_logging
+from factory_agent.observability.logging_adapter import configure_logging, get_logger
+
+_logger = get_logger("factory_agent.api.server")
 
 
 class HealthResponse(BaseModel):
@@ -47,13 +50,40 @@ async def readiness(request: Request) -> HealthResponse:
     )
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Startup sweep + shutdown drain for the run executors (Story #4).
+
+    Startup: durably fail every ``running`` interaction left orphaned by a
+    previous process (bulk compare-and-set, idempotent under multi-worker
+    starts). Shutdown: give the in-process executors a bounded drain window;
+    whatever is still running is cancelled and recovered by the next startup
+    sweep.
+    """
+    container = cast(ApplicationContainer, app.state.container)
+    service = container.sessions_service
+    if service is not None:
+        try:
+            await service.sweep_stale_runs()
+        except Exception:  # noqa: BLE001 - recovery must never block startup
+            _logger.exception("session.sweep.startup_failed")
+    try:
+        yield
+    finally:
+        if service is not None:
+            try:
+                await service.shutdown()
+            except Exception:  # noqa: BLE001 - shutdown must never hang the app
+                _logger.exception("session.shutdown.drain_failed")
+
+
 def create_app(
     settings: FactoryAgentSettings | None = None,
     overrides: DependencyOverrides | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings)
-    app = FastAPI(title="factory-agent", version=__version__)
+    app = FastAPI(title="factory-agent", version=__version__, lifespan=_lifespan)
     app.state.container = build_container(resolved_settings, overrides)
     app.state.settings = resolved_settings
 

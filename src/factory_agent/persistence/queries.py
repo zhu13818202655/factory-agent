@@ -171,6 +171,37 @@ def fail_stale_interaction_run(
     )
 
 
+def fail_stale_interaction_runs(
+    *,
+    stale_before: datetime,
+    now: datetime,
+    category: str,
+) -> sa.Update:
+    """Bulk startup variant of :func:`fail_stale_interaction_run` (Story #4).
+
+    Fails every stale ``running`` interaction across all owners in one
+    compare-and-set; used only by the application-startup sweep, which is a
+    process-boundary recovery job rather than a user-scoped query. It is
+    therefore deliberately NOT listed in ``OWNERSHIP_SCOPED_BUILDERS``.
+    """
+    return (
+        sa.update(interaction_table)
+        .where(
+            interaction_table.c.status == "running",
+            interaction_table.c.updated_at < stale_before,
+        )
+        .values(
+            status="failed",
+            state="failed",
+            error_category=category,
+            updated_at=now,
+            completed_at=now,
+            last_event_sequence=interaction_table.c.last_event_sequence + 1,
+        )
+        .returning(*interaction_table.c)
+    )
+
+
 def delete_session(tenant_id: str, user_id: str, session_id: str) -> sa.Delete:
     return sa.delete(interaction_table).where(
         _owned(interaction_table, tenant_id, user_id),
@@ -197,6 +228,7 @@ __all__ = [
     "decode_cursor",
     "delete_session",
     "encode_cursor",
+    "fail_stale_interaction_runs",
     "select_events",
     "select_interaction",
     "select_interactions",

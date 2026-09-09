@@ -445,6 +445,7 @@ def _build_session_service(
             heartbeat_seconds=settings.session_heartbeat_seconds,
             follow_timeout_seconds=settings.session_follow_timeout_seconds,
             stale_running_seconds=settings.session_stale_running_seconds,
+            run_timeout_seconds=settings.session_run_timeout_seconds,
         ),
         exporter=exporter,
         personalization=personalization,

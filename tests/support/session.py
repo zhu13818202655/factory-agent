@@ -111,6 +111,36 @@ class InMemoryInteractionStore:
         self.interactions[str(interaction_id)] = failed
         return failed
 
+    async def fail_stale_runs(
+        self,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> tuple[InteractionRecord, ...]:
+        """Bulk startup sweep: fail every stale ``running`` interaction."""
+        doomed = [
+            key
+            for key, record in self.interactions.items()
+            if record.status is InteractionStatus.RUNNING and record.updated_at < stale_before
+        ]
+        failed: list[InteractionRecord] = []
+        for key in doomed:
+            record = await self.fail_stale_run(
+                self._owner_of(self.interactions[key]),
+                InteractionId(key),
+                stale_before=stale_before,
+                now=now,
+                category=category,
+            )
+            if record is not None:
+                failed.append(record)
+        return tuple(failed)
+
+    @staticmethod
+    def _owner_of(record: InteractionRecord) -> InteractionOwner:
+        return InteractionOwner(tenant_id=record.tenant_id, user_id=record.user_id)
+
     async def list_events(
         self,
         owner: InteractionOwner,

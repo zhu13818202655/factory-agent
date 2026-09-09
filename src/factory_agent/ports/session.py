@@ -142,6 +142,23 @@ class InteractionStore(Protocol):
         """
         ...
 
+    async def fail_stale_runs(
+        self,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> tuple[InteractionRecord, ...]:
+        """Bulk startup variant of ``fail_stale_runs`` (Story #4).
+
+        Fails every stale ``RUNNING`` interaction across all owners in one
+        compare-and-set; called once at application startup. Returns the
+        failed records (terminal event sequence already reserved) so the
+        caller can persist each terminal event. Idempotent under repeated and
+        concurrent worker starts.
+        """
+        ...
+
     async def get_interaction(
         self, owner: InteractionOwner, interaction_id: InteractionId
     ) -> InteractionRecord | None: ...
