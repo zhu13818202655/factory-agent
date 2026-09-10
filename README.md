@@ -8,7 +8,6 @@ and confirmed customer answers live in [docs/product/需求及方案整理.md](d
 ## Start here
 
 - [Stories](.github/story): the ordered implementation checklists.
-- [Roadmap](ROADMAP.md): the Story sequence and working approach.
 - [Product requirements](docs/product/需求及方案整理.md): authoritative functional and quality scope,
   including the confirmed customer answers that drive the current Stories.
 - [Repository rules](AGENTS.md): architecture boundaries and development conventions.
