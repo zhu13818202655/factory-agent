@@ -1,4 +1,4 @@
-"""Instant-export service tests (Story 3: no-retention export).
+"""Instant-export service tests (no-retention export).
 
 Proves: in-memory render → transient buffer → owned fetch returns XLSX bytes;
 foreign/unknown ids are indistinguishable (None); the buffer is bounded; and a

@@ -2,7 +2,7 @@
 
 These rules apply to `usage-admin/`.
 
-- This is an independently built production service; never import `factory_agent` or `mock_mes`.
+- This is an independently built production service; never import `factory_agent`.
 - Never call MES endpoints or store MES business values, prompts, answers, or scope ID lists.
 - Platform authorization uses a reviewed `PlatformScope`; it never reuses tenant MES roles.
 - Metering tables are written by factory-agent in a separate transaction after its business

@@ -2,7 +2,7 @@
 
 This directory has two development entry points:
 
-- `compose.yaml` runs the complete local stack: PostgreSQL, Redis, `agent-api`, `mock-mes`, and
+- `compose.yaml` runs the complete local stack: PostgreSQL, Redis, `agent-api`, and
   `usage-admin`.
 - `middleware.yaml` runs PostgreSQL 16 and Redis 7 for host-based debugging or for the application
   code you start outside Docker.
@@ -26,8 +26,8 @@ make middleware-up
 make middleware-reset   # destructive: wipes every local volume, then restarts
 ```
 
-PostgreSQL listens on `127.0.0.1:3432` and initializes one shared `factory_agent` database (used by
-both `agent-api` and `usage-admin`) plus a separate `mock_mes` database. Redis listens on
+PostgreSQL listens on `127.0.0.1:3432` and initializes the shared `factory_agent` database (used by
+both `agent-api` and `usage-admin`). Redis listens on
 `127.0.0.1:3379`. Override host ports with `POSTGRES_PORT` and `REDIS_PORT`. The checked-in
 usernames and passwords are development-only.
 ## Wiping local data
@@ -74,8 +74,8 @@ API key) in `deploy/compose/.env`; with an empty key every model deployment is
 dropped at startup and chat interactions fail fast with
 `gateway_not_configured`.
 
-`compose.yaml` is a local development topology. Mock MES must not be included in a production
-deployment.
+`compose.yaml` is a local development topology; production deployments use the
+customer MES gateway instead of any local simulator.
 
 `factory-agent` and `usage-admin` share one logical PostgreSQL database (`factory_agent`, ADR-0003
 §7). Each service connects with its own user (`factory_agent` / `usage_admin`) and runs its own
@@ -88,5 +88,4 @@ after the business commit — there is no outbox and no cross-service usage-even
 operational reporting, and owns only `tenant_registry`, `admin_audit`, `platform_principal`, and
 `usage_export` (ADR-0003 §7). `init-databases.sql` grants `usage_admin` the right to create its own
 tables in the shared database and sets default privileges so each service can read the other's
-tables (factory-agent reads `tenant_registry`; usage-admin reads metering). Mock MES keeps its own
-`mock_mes` database.
+tables (factory-agent reads `tenant_registry`; usage-admin reads metering).

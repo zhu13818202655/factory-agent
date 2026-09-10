@@ -319,7 +319,7 @@ def _build_cache(settings: FactoryAgentSettings) -> AuthAwareCache | None:
         store,
         contract_version="mes-contract-v2",
         metric_version="metric-registry-v1",
-        data_version="mock-mes-v20260821",
+        data_version="mes-v20260821",
     )
 
 
@@ -345,7 +345,7 @@ def _build_personalization(
 def _build_scope_violation_store(
     settings: FactoryAgentSettings,
 ) -> SqlScopeViolationStore | None:
-    """Durable review surface for role-consistency findings (Story 2)."""
+    """Durable review surface for role-consistency findings."""
     if settings.postgres_url is None:
         return None
     engine = create_session_engine(str(settings.postgres_url))
@@ -506,7 +506,7 @@ def _build_export_service(
     settings: FactoryAgentSettings,
     clock: Clock,
 ) -> tuple[ArtifactStore | None, ArtifactExporter | None]:
-    """Compose the instant no-retention exporter (Story 3).
+    """Compose the instant no-retention exporter.
 
     The exporter is purely in-memory (transient buffer): it needs no object
     store and no PostgreSQL. It is built whenever an injected override is

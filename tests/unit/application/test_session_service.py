@@ -759,7 +759,7 @@ async def test_low_confidence_chitchat_is_clarified_not_answered() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Merged chit-chat (single intent call) and multi-turn rewrite (Story).
+# Merged chit-chat (single intent call) and multi-turn rewrite.
 # ---------------------------------------------------------------------------
 
 

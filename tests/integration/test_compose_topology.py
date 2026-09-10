@@ -18,17 +18,14 @@ def test_application_compose_contains_all_services() -> None:
 
     assert set(services) == {
         "agent-api",
-        "mock-mes",
         "postgres",
         "redis",
         "usage-admin",
     }
     assert services["agent-api"]["depends_on"] == {
-        "mock-mes": {"condition": "service_healthy"},
         "postgres": {"condition": "service_healthy"},
         "redis": {"condition": "service_healthy"},
     }
-    assert services["mock-mes"]["build"]["dockerfile"] == "mock-mes/Dockerfile"
     assert services["usage-admin"]["depends_on"] == {"postgres": {"condition": "service_healthy"}}
     assert services["usage-admin"]["build"]["dockerfile"] == "usage-admin/Dockerfile"
 

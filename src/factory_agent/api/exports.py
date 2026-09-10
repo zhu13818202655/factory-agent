@@ -1,4 +1,4 @@
-"""Instant export download endpoint (Story 3: 即时生成、直接下载、不留存).
+"""Instant export download endpoint (即时生成、直接下载、不留存).
 
 Download re-validates the caller through the token exchange, resolves the
 current authorization, and then streams the transient in-memory XLSX back as a
@@ -8,8 +8,6 @@ missing, expired, or foreign export id is a plain 404 — regeneration goes
 through history/favorite re-ask. A download audit event records only the
 artifact ID, tenant, and outcome — never the row detail.
 """
-
-
 
 from typing import cast
 from urllib.parse import quote

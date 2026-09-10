@@ -1,6 +1,4 @@
-"""Preferences service (Story 3B): read/update + role-filtered options."""
-
-
+"""Preferences service: read/update + role-filtered options."""
 
 from datetime import datetime, timezone
 from typing import Protocol

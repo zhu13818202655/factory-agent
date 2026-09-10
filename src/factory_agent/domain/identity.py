@@ -1,7 +1,5 @@
 """Authorization domain values for trusted identity and tenant scoping."""
 
-
-
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
@@ -235,8 +233,8 @@ class ExpectedRangeKind(StrEnum):
 
     00 员工 → SELF（仅本人 uid）；01 组长 → GROUP（本人 + 绑定小组，小组在数据层以
     dept 集合表达）；02 管理 → DEPT（本人 + 绑定部门/车间集合，可跨车间多绑定）；
-    99 老板 → WHOLE_TENANT（不设范围上限）。01 与 02 的差别在绑定集合的构造
-    （Story 1 落地），不在校验分支里区分。
+    99 老板 → WHOLE_TENANT（不设范围上限）。01 与 02 的差别在绑定集合的构造，
+    不在校验分支里区分。
     """
 
     SELF = "self"
@@ -247,9 +245,9 @@ class ExpectedRangeKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ExpectedRange:
-    """Expected visibility range for the role-consistency safety net (Story 2).
+    """Expected visibility range for the role-consistency safety net.
 
-    Built only from Story 1's authoritative token role and the bound dept set
+    Built only from the authoritative token role and the bound dept set
     (``TenantContext`` + ``DataScope``); it is never derived from user or LLM
     output. The validator compares MES-returned ownership fields against this
     range and only reports; it never re-filters or re-scopes data.

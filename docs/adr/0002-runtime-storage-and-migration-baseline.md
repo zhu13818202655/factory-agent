@@ -6,18 +6,16 @@
 
 ## Context
 
-The customer MES API is not available in development; product capabilities and the API-only
-integration boundary come from the reviewed interface contract (`docs/product/AI问答对外接口-整理.md`)
-and Mock MES. The application needs a deliberate runtime, storage, and migration baseline shared by
-`factory-agent` and `usage-admin`.
+The customer MES integration boundary comes from the reviewed interface contract
+(`docs/product/AI问答对外接口-整理.md`). The application needs a deliberate runtime, storage, and
+migration baseline shared by `factory-agent` and `usage-admin`.
 
 ## Decision
 
 - Build the application with Python 3.12, FastAPI, Pydantic v2, HTTPX, uv, Ruff, Pyright, and pytest.
-- Use PostgreSQL 16 with Psycopg 3 and Alembic for durable application metadata. Mock MES runs
-  against a separate PostgreSQL database and migration history. `factory-agent` and `usage-admin`
-  run against the same PostgreSQL database, each with its own migration history and Alembic version
-  table.
+- Use PostgreSQL 16 with Psycopg 3 and Alembic for durable application metadata. `factory-agent`
+  and `usage-admin` run against the same PostgreSQL database, each with its own migration history
+  and Alembic version table.
 - Every table has exactly one owner that holds its DDL and CRUD while the other service only reads.
   usage-admin owns `tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export`;
   factory-agent owns the business tables (`agent_*`) and every metering table (`usage_event`,
@@ -37,7 +35,7 @@ and Mock MES. The application needs a deliberate runtime, storage, and migration
   Redis is introduced only when measurements justify it.
 - Export renders with XlsxWriter from `ResultTable` (see `src/factory_agent/export/`). Delivery
   follows the customer-confirmed no-server-retention policy (报表导出与文件留存策略 in
-  `docs/product/需求及方案整理.md`); the exact delivery path is carried by the current Stories.
+  `docs/product/需求及方案整理.md`).
 - Emit structured JSON logs and OpenTelemetry-compatible telemetry after applying data
   classification and redaction (ADR-0004).
 - Use OCI images and Docker Compose for development and integration. Do not select a production
@@ -45,18 +43,13 @@ and Mock MES. The application needs a deliberate runtime, storage, and migration
 - Write metering facts directly into the shared database after factory-agent's business commit, in
   a separate transaction; usage-admin only reads the metering tables. There is no HTTP usage-event
   contract between the services (ADR-0003 §3.1).
-- `/home/admin2/proj/report-agent` was the read-only migration source for proven behavior; the
-  migration is complete. It is not a package, workspace member, submodule, or runtime dependency.
 - Reject Vanna, Text-to-SQL production execution, direct PostgreSQL/TDengine business queries,
   flight prompts/analyzers/charts, DOCX/PDF renderers, and request-body identity.
 
 ## Consequences
 
-- The application skeleton, security/observability boundaries, and the first complete capability
-  execution path are implemented on this baseline; the numbered Stories under `.github/story/` carry
-  the remaining alignment and release work.
 - factory-agent and usage-admin share one PostgreSQL database with separate credentials and
-  migration lifecycles; Mock MES keeps its own database. Every shared table has exactly one owner:
+  migration lifecycles. Every shared table has exactly one owner:
   usage-admin owns `tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export`;
   factory-agent owns and writes the business and metering tables that usage-admin only reads. Schema
   changes to shared tables require synchronized review by both services.
@@ -64,8 +57,6 @@ and Mock MES. The application needs a deliberate runtime, storage, and migration
   order (usage-admin pins `alembic_version_usage_admin`; factory-agent uses the default
   `alembic_version`). Each service may only create, alter, or drop the tables it owns; table
   prefixes make ownership visible in review.
-- Source behavior from report-agent is preserved only where a factory-agent test states the intended
-  behavior. No automatic synchronization with the source repository exists.
 - New dependencies are added when the code that needs them is implemented, not preinstalled for
   skeleton packages.
 

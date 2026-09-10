@@ -25,8 +25,7 @@
 
 ## 2. 决策
 
-新增独立的 `usage-admin` 服务，作为本仓库的 uv workspace 子项目，组织方式类似
-`mock-mes`，且是生产拓扑的一部分：
+新增独立的 `usage-admin` 服务，作为本仓库的 uv workspace 子项目，且是生产拓扑的一部分：
 
 ```text
 factory-agent/
@@ -238,8 +237,8 @@ API 分类计结果不同（例：能力 `fr001_personal_output` 个人产量统
 
 factory-agent 与本服务共享**同一个逻辑数据库**（开发拓扑库名 `factory_agent`；与 ADR-0002 存储
 基线一致）：各自用独立用户（`factory_agent` / `usage_admin`）连接并跑迁移，版本表互不相同
-（`alembic_version` / `alembic_version_usage_admin`），可在同一库内以任意顺序执行；mock-mes
-使用独立数据库。**一张表只归一方**（§4.3）：本服务拥有 `tenant_registry`、
+（`alembic_version` / `alembic_version_usage_admin`），可在同一库内以任意顺序执行。
+**一张表只归一方**（§4.3）：本服务拥有 `tenant_registry`、
 `platform_principal`、`admin_audit`、`usage_export`，其余表均由 factory-agent 拥有并写入，
 本服务只读查询：
 
@@ -381,7 +380,7 @@ GET    /admin/v1/usage/mes-operations             # 按 operation_id 的调用�
 
 - `factory-agent` 同时服务多个公司/工厂租户并产生最小脱敏计量事实；MES 业务查询走活动
   `TenantContext`，跨租户运营查询由 `usage-admin` 按 `PlatformScope` 执行。
-- `usage-admin` 是生产服务，与仅开发/测试使用的 `mock-mes` 在生命周期上不同。
+- `usage-admin` 是生产服务。
 - 平台运营权限与工厂员工/管理/老板权限彻底分离。
 - MVP 保持一个仓库和一个 lockfile，降低骨架阶段维护成本；服务边界允许未来拆仓。
 - 本服务是租户主数据的唯一写入方；`tenant_registry` 与计量表是两服务的共享对象——本服务

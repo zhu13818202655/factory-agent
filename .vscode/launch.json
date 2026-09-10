@@ -25,22 +25,6 @@
             ]
         },
         {
-            "name": "factory-agent（本地 Mock MES）",
-            "consoleName": "FA-Mock",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "factory_agent.__main__",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/.env",
-            "env": {
-                // 仅覆盖 MES 根地址，切回本地 mock-mes（需另开终端 `make dev-mock`）
-                "FACTORY_AGENT_CANONICAL_MES_BASE_URL": "http://127.0.0.1:8010"
-            },
-            "justMyCode": false,
-            "console": "integratedTerminal"
-        },
-        {
             "name": "usage-admin",
             "consoleName": "UA",
             "type": "debugpy",
@@ -76,7 +60,6 @@
             "args": [
                 "tests/unit",
                 "tests/eval",
-                "mock-mes/tests/unit",
                 "usage-admin/tests/unit"
             ],
             "python": "${workspaceFolder}/.venv/bin/python",

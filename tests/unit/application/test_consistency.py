@@ -1,4 +1,4 @@
-"""Role-consistency validator matrix (Story 2).
+"""Role-consistency validator matrix.
 
 Covers: four-role × rules × strict/production dispositions. The core
 guarantee the safety net must prove — a well-scoped return is never flagged

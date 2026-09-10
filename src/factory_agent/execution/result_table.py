@@ -5,8 +5,6 @@ named, versioned metric. Temporary assumptions about unconfirmed business
 formulas are registered explicitly instead of being silently baked in.
 """
 
-
-
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
@@ -228,8 +226,7 @@ def default_metric_registry() -> MetricRegistry:
                 description="Delivery warning: unfinished and days-to-delivery within threshold",
                 status="confirmed",
                 assumption_status=(
-                    "预警=未完工且距交期剩余天数≤阈值；阈值默认 "
-                    "max(1,⌈总工期×10%⌉)，回退固定 7 天（Story 3 双跑复核）"
+                    "预警=未完工且距交期剩余天数≤阈值；阈值默认 max(1,⌈总工期×10%⌉)，回退固定 7 天"
                 ),
             ),
             MetricDefinition(

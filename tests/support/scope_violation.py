@@ -1,4 +1,4 @@
-"""In-memory scope-violation store for tests (Story 2)."""
+"""In-memory scope-violation store for tests."""
 
 
 

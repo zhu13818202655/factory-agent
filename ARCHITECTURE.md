@@ -16,7 +16,7 @@ flowchart LR
     Auth --> Context[Active TenantContext and DataScope]
     Context --> Orchestrator[DAG Orchestrator]
     Orchestrator --> Adapter[MesDataSource Adapter]
-    Adapter --> MES[Customer MES or mock-mes]
+    Adapter --> MES[Customer MES]
     Orchestrator --> Sandbox[Interaction DuckDB]
     Orchestrator --> Gateway[Model Gateway]
     Gateway --> Models[Reviewed registry deployments]
@@ -27,7 +27,7 @@ flowchart LR
 ```plantuml
 @startuml
 skinparam componentStyle rectangle
-title factory-agent 问答全流程（Story 1 口径）
+title factory-agent 问答全流程
 
 skinparam defaultFontName "Noto Sans CJK SC"
 
@@ -40,7 +40,7 @@ rectangle "API 层  /v1" {
 }
 
 rectangle "认证与授权（任何业务调用前完成）" {
-  database "Mock MES\n/api/system/token" as TOKEN
+  database "客户 MES\n/api/system/token" as TOKEN
   component "TokenCredentialExchange\n(换取/60s·2h 刷新/重试一次)" as EX
   component "TokenBackedMembershipResolver\n(role/dept/boundDepts 权威字段)" as MEM
   component "authorize_capability\n能力-角色矩阵 FR-001~012" as AUTH
@@ -57,7 +57,7 @@ rectangle "执行（L1 确定性 DAG，单一 bounded 执行器）" {
   component "recipes fr001~fr012\n(api 步 + 本地 compute)" as RECIPE
   component "ScopedExecutor→HongzhaoMesAdapter\n仅 data_api 调 MES；Bearer+app_key/timestamp/sign" as EXEC
   component "CachedDirectorySource\n基础数据共享缓存(键不含 scope) + 业务范围缓存" as CACHE
-  database "Mock MES 业务接口\n(99全厂/02绑定车间/01本组/00本人)" as MES
+  database "客户 MES 业务接口\n(99全厂/02绑定车间/01本组/00本人)" as MES
   component "DuckDB 沙箱(只读)" as SANDBOX
 }
 
@@ -68,7 +68,7 @@ rectangle "结果与产物" {
 }
 
 rectangle "数据 API 单边界" {
-  database "customer MES / mock-mes" as MESEND
+  database "customer MES" as MESEND
 }
 
 FE --> EDGE
@@ -119,10 +119,9 @@ business formulas remain replaceable configuration or Adapter concerns.
 | Concern | Choice | Boundary |
 | :--- | :--- | :--- |
 | Runtime and API | Python 3.12, FastAPI, Uvicorn, Pydantic v2 | HTTP and framework types stop at `api/` |
-| Package and quality | uv workspace, Hatchling, Ruff, Pyright strict, pytest, Bandit, pip-audit | One lockfile; root, Mock, and usage-admin remain separate packages |
+| Package and quality | uv workspace, Hatchling, Ruff, Pyright strict, pytest, Bandit, pip-audit | One lockfile; root and usage-admin remain separate packages |
 | MES integration | HTTPX async client, OpenAPI 3.1, JSON Schema | Only `data_api/` knows URLs, auth transport, or customer payloads |
 | Durable application data | PostgreSQL 16, Psycopg 3, Alembic | Sessions, messages, interactions, audit metadata, favorites, and artifact metadata only |
-| Mock MES data | Separate PostgreSQL database, Psycopg 3, Alembic, deterministic seed | Never a production dependency and never shares application tables |
 | Interaction processing | One in-memory DuckDB connection per interaction | Validated authorized rows only; no persistence or external/file access |
 | Model access | LiteLLM Router SDK with a reviewed deployment registry (ADR-0006) | Business code only names logical aliases; keys live in the environment; fallback/retry/cooldown are owned by the Router |
 | Cache | TTL-based application cache; Redis optional and added only if measurements justify it | Optional optimization; PostgreSQL/MES remain authoritative |
@@ -155,13 +154,11 @@ src/factory_agent/
 The boundaries, configuration objects, test doubles, and application wiring are implemented, as are
 the security and observability infrastructure and the first complete business path through every
 layer. Later capabilities register as recipes on the single reviewed execution path rather than as
-new parallel architectures. Remaining alignment and release work is tracked in the numbered Stories
-under `.github/story/`.
+new parallel architectures.
 
 ## Repository Shape
 
-The root builds `src/factory_agent`. `mock-mes/` is a separately runnable uv workspace member
-used only for development and tests. `usage-admin/` is a separately built production uv workspace
+The root builds `src/factory_agent`. `usage-admin/` is a separately built production uv workspace
 member for authorized multi-tenant usage aggregation, operational APIs, and reports. Each service
 owns its package, tests, Dockerfile, migrations, and configuration. No service imports another;
 metering facts are written by factory-agent directly into the shared PostgreSQL in a separate
@@ -187,20 +184,4 @@ tables that usage-admin only reads.
 
 Irreversible choices and boundary changes are recorded under `docs/adr/`.
 
-## report-agent Migration Boundary
 
-`/home/admin2/proj/report-agent` was the read-only migration source for proven behavior; the
-migration is complete and the repository never depends on it at runtime. The boundary rewrites it
-forced are now standing invariants:
-
-- identity comes from trusted credential resolution, never from request-body `user_id`/`tenant_id`;
-  there is no allow-all production default (scope is `DataScope`/`PlatformScope`);
-- MES data is reachable only through `MesDataSource` and reviewed local recipes — Vanna,
-  Text-to-SQL production execution, and direct business-database queries are rejected;
-- XLSX is the only initial artifact renderer (DOCX/PDF renderers and flight templates do not
-  migrate);
-- durable event replay and trusted identity are native implementations, not claimed reuse (the
-  source used process-local SSE subscribers and request-body identity).
-
-Pure state-transition, bounded-context, typed-model-response, error-category, and renderer-
-separation behavior was ported through characterization tests.

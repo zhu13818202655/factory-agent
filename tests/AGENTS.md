@@ -1,6 +1,6 @@
 # Test Rules
 
-These rules apply to `tests/` and `mock-mes/tests/`.
+These rules apply to `tests/` and `usage-admin/tests/`.
 
 - Unit tests use no network and no real database. In-process ASGI transport is allowed.
 - Integration tests use real PostgreSQL, Redis, DuckDB, or pytest-managed HTTP processes.

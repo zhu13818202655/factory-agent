@@ -1,4 +1,4 @@
-"""Story 3B migration: push preferences and push-delivery log.
+"""Push preferences and push-delivery log migration.
 
 Adds ``agent_user_preference`` (monthly/weekly cadence + content items; the
 daily morning report is default-on and never stored) and ``agent_push_delivery``

@@ -1,4 +1,4 @@
-"""Story 2: role-consistency violation review surface.
+"""Role-consistency violation review surface.
 
 Adds ``agent_scope_violation`` — structured, non-sensitive findings from the
 role-consistency validator (exact/heuristic). Read/written by the real-time

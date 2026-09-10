@@ -19,8 +19,6 @@ Contract sources: ``docs/product/AI问答对外接口-整理.md`` §2 and
 ``docs/product/需求及方案整理.md``「客户确认结论」.
 """
 
-
-
 import contextlib
 import hashlib
 from collections.abc import Generator
@@ -273,9 +271,10 @@ def _bound_dept_codes(result: CredentialBundleResponse) -> tuple[str, ...]:
 
     Live customer environment (2026-09-04 联调): multi-dept bindings arrive as
     the comma-separated ``manageDept`` string (role 02 → ``"001,005"`` while
-    ``dept`` stays ``"001"``). Mock-era deployments emit the ``boundDepts``
-    array instead. ``manageDept`` is authoritative when non-empty; the array
-    form is the fallback so neither shape silently narrows a manager's scope.
+    ``dept`` stays ``"001"``). A legacy deployment shape emits the
+    ``boundDepts`` array instead. ``manageDept`` is authoritative when
+    non-empty; the array form is the fallback so neither shape silently
+    narrows a manager's scope.
     """
     from_manage = tuple(part.strip() for part in result.manageDept.split(",") if part.strip())
     if from_manage:

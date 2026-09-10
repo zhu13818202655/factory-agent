@@ -70,7 +70,7 @@ Every application log event should include these fields when available:
 | :--- | :--- |
 | `timestamp` | UTC ISO timestamp from the logger sink |
 | `level` | Log level |
-| `service` | `factory-agent`, `mock-mes`, or `usage-admin` |
+| `service` | `factory-agent` or `usage-admin` |
 | `environment` | `development`, `test`, or `production` |
 | `component` | Logical package or adapter name |
 | `event` | Stable event name, not free-form prose |
@@ -114,8 +114,7 @@ Logs must never contain:
 | `FACTORY_AGENT_LOG_INCLUDE_BACKTRACE` | `false` | Keep Loguru backtrace/diagnose disabled outside local debugging |
 | `FACTORY_AGENT_LOG_SAMPLE_RATE` | `1.0` | Optional sampling for high-volume INFO logs |
 
-`mock-mes` and `usage-admin` should mirror these with their own prefixes:
-`MOCK_MES_LOG_*` and `USAGE_ADMIN_LOG_*`.
+`usage-admin` should mirror these with its own prefix: `USAGE_ADMIN_LOG_*`.
 
 ## Runtime Configuration Design
 
@@ -124,7 +123,6 @@ Logs must never contain:
 Each service keeps a typed settings object:
 
 - `FactoryAgentSettings` under `src/factory_agent/config.py`;
-- `MockMesSettings` under `mock-mes/src/mock_mes/config.py`;
 - `UsageAdminSettings` under `usage-admin/src/usage_admin/config.py`.
 
 All settings use `BaseSettings` and an explicit env prefix. Values are read once through an
@@ -149,7 +147,7 @@ overrides explicitly rather than mutating global state.
 
 | Variable | Type | Description |
 | :--- | :--- | :--- |
-| `FACTORY_AGENT_CANONICAL_MES_BASE_URL` | URL | Customer MES (or Mock MES) base URL |
+| `FACTORY_AGENT_CANONICAL_MES_BASE_URL` | URL | Customer MES base URL |
 | `FACTORY_AGENT_POSTGRES_URL` | Postgres DSN | Application metadata and metering database |
 | `FACTORY_AGENT_REDIS_URL` | Redis DSN | Optional cache endpoint; non-authoritative |
 | `FACTORY_AGENT_EXPORT_BUFFER_TTL_SECONDS` | int | Transient export window (Story 3: 不留存) |

@@ -308,7 +308,7 @@ async def test_message_sequence_is_unique_within_an_interaction(
 async def test_startup_sweep_fails_every_stale_running_interaction_once(
     store: SqlInteractionStore,
 ) -> None:
-    """Story #4: the startup bulk compare-and-set repairs orphans exactly once."""
+    """The startup bulk compare-and-set repairs orphans exactly once."""
     stale_a = interaction(
         "i-stale-a",
         status=InteractionStatus.RUNNING,

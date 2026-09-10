@@ -10,8 +10,8 @@ from factory_agent.persistence.tables import METADATA
 config = context.config
 if config.config_file_name is not None:
     # ``disable_existing_loggers=False`` keeps pre-existing loggers (e.g.
-    # tests' or mock-mes's) alive when alembic runs inside a test process;
-    # the fileConfig default of True would disable them for the whole session.
+    # tests') alive when alembic runs inside a test process; the fileConfig
+    # default of True would disable them for the whole session.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = METADATA

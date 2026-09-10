@@ -13,8 +13,6 @@ is judged only as 1/0 — see ``docs/product/AI问答对外接口-整理.md`` §
 # Customer field names intentionally preserve mixed casing from the upstream API.
 # ruff: noqa: N815
 
-
-
 from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
@@ -56,13 +54,12 @@ class CredentialBundleResponse(BaseModel):
     is the authoritative role code (00 员工 / 01 组长 / 02 管理 / 99 老板);
     ``dept`` is the home department.
 
-    Bound-department set (真实环境 2026-09-04 联调确认，差异台账 #1):
-    the customer's live ``/api/system/token`` returns the multi-department
-    binding as a **comma-separated string** named ``manageDept`` (e.g. role 02
-    returns ``dept="001"`` with ``manageDept="001,005"``). The Mock era
-    ``boundDepts`` array is not emitted by the live system but is still
-    accepted so both shapes validate; ``manageDept`` wins when non-empty
-    (split in ``token_gateway._bound_dept_codes``).
+    Bound-department set (真实环境 2026-09-04 联调确认): the customer's
+    live ``/api/system/token`` returns the multi-department binding as a
+    **comma-separated string** named ``manageDept`` (e.g. role 02 returns
+    ``dept="001"`` with ``manageDept="001,005"``). A legacy ``boundDepts``
+    array is also accepted so both shapes validate; ``manageDept`` wins
+    when non-empty (split in ``token_gateway._bound_dept_codes``).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -93,17 +90,17 @@ class CredentialBundleResponse(BaseModel):
 class _CustomerRow(BaseModel):
     """Base for validated customer rows.
 
-    Unknown fields (e.g. a Mock-internal ``company`` used for row filtering) are
-    tolerated and dropped; documented fields remain required and type-checked,
-    so drift that changes the shape of consumed values still fails closed.
+    Unknown fields are tolerated and dropped; documented fields remain
+    required and type-checked, so drift that changes the shape of consumed
+    values still fails closed.
 
     Numeric tolerance (real-environment finding, 2026-09-04): the customer MES
     returns amounts/counts/ids as JSON numbers (``id``/``fhsl``/``sl``/
     ``price``/``je`` ...) and nullable timestamps (``inputtime_raw`` /
-    ``check_time_raw`` can be ``null``), whereas the Mock serialised them as
-    strings. Row models declare the consumed fields as ``str`` so downstream
-    compute is stable; this coercer normalises number → ``str`` and ``null`` →
-    ``""`` before validation so both shapes validate identically.
+    ``check_time_raw`` can be ``null``). Row models declare the consumed
+    fields as ``str`` so downstream compute is stable; this coercer normalises
+    number → ``str`` and ``null`` → ``""`` before validation so both shapes
+    validate identically.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -212,8 +209,8 @@ class EmployeeRow(_CustomerRow):
     uname: str
     name_pk: str
     # 真实环境实测（2026-09-04）：弘兆 MES EmployeeQuery 员工行不下发 mobile /
-    # movepassword / employeeRule / move_admin_role（基础数据不含账号类字段），
-    # Mock 才填充。声明默认空串使两种形态都通过校验；当前无下游消费这些字段。
+    # movepassword / employeeRule / move_admin_role（基础数据不含账号类字段）。
+    # 声明默认空串使两种形态都通过校验；当前无下游消费这些字段。
     mobile: str = ""
     movepassword: str = ""
     move_Login: str
@@ -569,11 +566,12 @@ def gongzi_mx_row_model_for(scheme: object) -> type[_CustomerRow]:
         return GongziMxSummaryRow
     return GongziMxRow
 
+
 #: Base-data resources: the catalog's 基础数据 (9) group. These operations do
 #: NOT filter by role and return the full roster/directory (customer-confirmed
 #: rule 4, ``docs/product/需求及方案整理.md``「客户确认结论」), so their rows
 #: carry the whole tenant's uid/dept values. The role-consistency safety net
-#: (Story 2) must never treat those unfiltered directory rows as the result's
+#: must never treat those unfiltered directory rows as the result's
 #: ownership signal; the kernel excludes them when observing ownership.
 BASE_DATA_RESOURCES: frozenset[str] = frozenset(
     {

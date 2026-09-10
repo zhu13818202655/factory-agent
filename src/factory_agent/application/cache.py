@@ -7,17 +7,14 @@ returned only when the caller can prove the exact same scope; on store errors,
 unknown versions, or unprovable scopes the cache falls back to the source of
 truth.
 
-Base-data exception (Story 1): the master-data interfaces (employee /
-department / huohao …) return the full roster regardless of the calling role
-(customer confirmation 4), so their cache lines live in the ``identity_org``
-domain under a single shared fingerprint — no scope fingerprint in the key.
-Any role's first query populates the shared line and every later role reuses
-it; no super-account or dedicated channel is required. Bumping the data
-version (Mock rebuild / master-data change) or calling
+The master-data interfaces (employee / department / huohao …) return the full
+roster regardless of the calling role (customer confirmation 4), so their
+cache lines live in the ``identity_org`` domain under a single shared
+fingerprint — no scope fingerprint in the key. Any role's first query
+populates the shared line and every later role reuses it; no super-account or
+dedicated channel is required. Bumping the data version or calling
 ``invalidate_base_data`` evicts the shared lines.
 """
-
-
 
 import hashlib
 import json
@@ -194,10 +191,10 @@ class AuthAwareCache:
     async def invalidate_base_data(self, tenant_id: TenantId) -> None:
         """Manual invalidation entry for the shared base-data lines.
 
-        Called after a Mock PG rebuild or a customer master-data change so the
-        next query re-fetches the full roster instead of a stale headcount or
-        department structure. Only the scope-free ``identity_org`` lines are
-        evicted; business caches keep their own short TTLs.
+        Called after a master-data change so the next query re-fetches the
+        full roster instead of a stale headcount or department structure.
+        Only the scope-free ``identity_org`` lines are evicted; business
+        caches keep their own short TTLs.
         """
         await self.invalidate_scope(tenant_id, SHARED_SCOPE_FINGERPRINT)
 

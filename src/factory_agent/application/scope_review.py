@@ -1,4 +1,4 @@
-"""Periodic scope-deviation review task (Story 2).
+"""Periodic scope-deviation review task.
 
 Read-only analysis over the recorded consistency findings (exact/heuristic).
 It aggregates them by role / capability / range dimension and renders a
@@ -11,8 +11,6 @@ The report fields carry no sensitive values: no amounts and no plaintext work
 numbers beyond the minimal non-sensitive set (counts + digests already stored
 on each finding).
 """
-
-
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone

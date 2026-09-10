@@ -1,4 +1,4 @@
-"""Role-consistency violation records (Story 2 review table).
+"""Role-consistency violation records (review table).
 
 Structured rows for exact and heuristic consistency findings. They are the
 independent review surface the periodic scope-review task aggregates; they

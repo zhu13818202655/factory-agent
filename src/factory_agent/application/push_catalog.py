@@ -1,16 +1,14 @@
-"""Push subscription content-item catalog (Story 3B).
+"""Push subscription content-item catalog.
 
 Reviewed data: each content item maps to one L1 capability whose capability-role
 matrix (``permission_matrix.CAPABILITY_ROLES``) is the role ceiling for the item
 (推送项按角色数据范围展示). The item → FR mapping below follows the product
 「通用功能」推送项 list (``docs/product/需求及方案整理.md``); final FR mapping
-for ambiguous items is re-validated in the customer dry-runs (Story 3 双跑).
+for ambiguous items is re-validated in the customer dry-runs.
 
 The morning report (每日早报) is default-on and NOT configurable off; it is
 composed per role from the personal/management/owner summary capabilities below.
 """
-
-
 
 from dataclasses import dataclass
 

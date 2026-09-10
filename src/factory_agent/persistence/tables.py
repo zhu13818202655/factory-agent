@@ -13,8 +13,6 @@ are owned by usage-admin and never declared here. The Alembic migration history
 definitions drive the disposable test schema.
 """
 
-
-
 import sqlalchemy as sa
 
 METADATA = sa.MetaData()
@@ -95,8 +93,8 @@ event_table = sa.Table(
 
 #: Monthly-partitioned raw usage event archive. The primary key is
 #: ``(event_id, occurred_at)`` because ``event_id`` alone is not unique across
-#: months and the partition key must be part of any unique constraint (Story
-#: 11 1.2). Production DDL (partition + helper) arrives through Alembic; this
+#: months and the partition key must be part of any unique constraint.
+#: Production DDL (partition + helper) arrives through Alembic; this
 #: flat definition only drives the disposable test schema.
 usage_event_table = sa.Table(
     "usage_event",
@@ -268,7 +266,7 @@ favorite_table = sa.Table(
     sa.Index("agent_favorite_expiry_idx", "expires_at"),
 )
 
-#: Role-consistency review surface (Story 2). Structured findings from the
+#: Role-consistency review surface. Structured findings from the
 #: consistency validator; never contains sensitive values — only digests and
 #: counts. Both the real-time alert path and the periodic scope-review task
 #: read/write it.
@@ -294,7 +292,7 @@ scope_violation_table = sa.Table(
     sa.Index("agent_scope_violation_tenant_idx", "tenant_id", "created_at"),
 )
 
-#: Push subscription preferences (Story 3B): monthly/weekly cadence + selected
+#: Push subscription preferences: monthly/weekly cadence + selected
 #: content items. The daily morning report is default-on and never stored here.
 #: Non-sensitive only (dates/times/content-item ids).
 user_preference_table = sa.Table(
@@ -312,7 +310,7 @@ user_preference_table = sa.Table(
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
 
-#: Push delivery log (Story 3B local fake channel). Records only the delivery
+#: Push delivery log. Records only the delivery
 #: envelope — recipient, kind, item, status, and a message digest — never the
 #: message body or business amounts.
 push_delivery_table = sa.Table(

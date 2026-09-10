@@ -1,4 +1,4 @@
-"""Morning-report generation + local push channel tests (Story 3B)."""
+"""Morning-report generation + local push channel tests."""
 
 
 

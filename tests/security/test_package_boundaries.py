@@ -64,7 +64,7 @@ def imported_product_packages(path: Path) -> set[str]:
 
 
 def test_product_does_not_import_external_application_packages() -> None:
-    forbidden_roots = {"mock_mes", "report_agent", "vanna"}
+    forbidden_roots = {"report_agent", "vanna"}
     offenders = [
         str(path.relative_to(REPOSITORY_ROOT))
         for path in python_files(REPOSITORY_ROOT / "src" / "factory_agent")
@@ -74,18 +74,8 @@ def test_product_does_not_import_external_application_packages() -> None:
     assert offenders == []
 
 
-def test_mock_mes_does_not_import_product() -> None:
-    offenders = [
-        str(path.relative_to(REPOSITORY_ROOT))
-        for path in python_files(REPOSITORY_ROOT / "mock-mes" / "src" / "mock_mes")
-        if "factory_agent" in imported_roots(path)
-    ]
-
-    assert offenders == []
-
-
-def test_usage_admin_does_not_import_product_or_mock_mes() -> None:
-    forbidden_roots = {"factory_agent", "mock_mes"}
+def test_usage_admin_does_not_import_product() -> None:
+    forbidden_roots = {"factory_agent"}
     offenders = [
         str(path.relative_to(REPOSITORY_ROOT))
         for path in python_files(USAGE_ADMIN_ROOT)
@@ -95,12 +85,10 @@ def test_usage_admin_does_not_import_product_or_mock_mes() -> None:
     assert offenders == []
 
 
-def test_product_and_mock_mes_do_not_import_usage_admin() -> None:
-    roots = (PRODUCT_ROOT, REPOSITORY_ROOT / "mock-mes" / "src" / "mock_mes")
+def test_product_does_not_import_usage_admin() -> None:
     offenders = [
         str(path.relative_to(REPOSITORY_ROOT))
-        for root in roots
-        for path in python_files(root)
+        for path in python_files(PRODUCT_ROOT)
         if "usage_admin" in imported_roots(path)
     ]
 

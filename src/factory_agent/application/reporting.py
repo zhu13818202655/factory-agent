@@ -1,14 +1,12 @@
-"""Daily morning report & subscription summary generation (Story 3B).
+"""Daily morning report & subscription summary generation.
 
 Generation reuses the reviewed L1 read-only capability path. Because no
 credential material may be stored (SECURITY), an unattended 08:00 run needs a
 customer-confirmed task-credential mechanism (open decision); until then the
 report is generated on demand for an authenticated user whose live credential
 authorizes every fetch (pull 形态 + 站内记录), then delivered through the push
-channel port (local fake channel in this story).
+channel port.
 """
-
-
 
 import hashlib
 from dataclasses import dataclass
@@ -165,8 +163,8 @@ class ReportingService:
         role = authorization.tenant_context.role
         now = self._clock.now()
         # 最近一个自然日 (factory timezone is applied by the caller); use
-        # server UTC day as the local-default window — the story default time
-        # is configurable per deployment timezone.
+        # server UTC day as the local-default window — the default time is
+        # configurable per deployment timezone.
         day = (now - timedelta(days=1)).date()
         window = TimeRange(
             start=datetime.combine(day, time.min, tzinfo=now.tzinfo),

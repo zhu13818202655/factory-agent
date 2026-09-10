@@ -106,7 +106,7 @@ def test_data_scope_narrowing_cannot_add_ids() -> None:
     assert outside is None
 
 
-def test_data_scope_is_never_whole_tenant_in_story_5() -> None:
+def test_data_scope_is_never_whole_tenant() -> None:
     """M3/M12: there is no locally proven whole-tenant scope."""
     scope = _scope(_employees("e1"), _depts("g1"))
 

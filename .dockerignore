@@ -8,5 +8,4 @@
 data
 docs
 tests
-mock-mes/tests
 .env

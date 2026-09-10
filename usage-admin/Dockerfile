@@ -12,7 +12,6 @@ RUN pip install --no-cache-dir uv==0.9.15
 
 COPY pyproject.toml uv.lock README.md ./
 # uv resolves the whole workspace lock; copy member metadata only, not their source.
-COPY mock-mes/pyproject.toml mock-mes/README.md ./mock-mes/
 COPY usage-admin/pyproject.toml usage-admin/README.md ./usage-admin/
 COPY usage-admin/src ./usage-admin/src
 

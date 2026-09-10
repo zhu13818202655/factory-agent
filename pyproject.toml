@@ -40,7 +40,7 @@ factory-agent-migrate = "factory_agent.persistence.migrations:main"
 factory-agent-scope-review = "factory_agent.cli:scope_review_main"
 
 [tool.uv.workspace]
-members = ["mock-mes", "usage-admin"]
+members = ["usage-admin"]
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -55,7 +55,7 @@ packages = ["src/factory_agent"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--strict-markers", "-ra"]
-testpaths = ["tests", "mock-mes/tests"]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
@@ -65,8 +65,8 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "W"]
 
 [tool.pyright]
-include = ["src", "tests", "mock-mes/src", "mock-mes/tests", "usage-admin/src", "usage-admin/tests"]
-extraPaths = ["src", "mock-mes/src", "usage-admin/src"]
+include = ["src", "tests", "usage-admin/src", "usage-admin/tests"]
+extraPaths = ["src", "usage-admin/src"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."

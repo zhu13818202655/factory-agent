@@ -1,5 +1,3 @@
-
-
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -170,7 +168,7 @@ class SessionRepository(Protocol):
 
 
 class ArtifactStore(Protocol):
-    """Transient export-content buffer (Story 3: 服务端不留存).
+    """Transient export-content buffer (服务端不留存).
 
     Content lives only in a bounded in-memory buffer for a short TTL; there is
     no object store, no presigning, and no long-lived lifecycle. Put/get/delete

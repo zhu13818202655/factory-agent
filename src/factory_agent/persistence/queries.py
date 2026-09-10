@@ -5,8 +5,6 @@ pure so a unit test can compile them and prove that no statement can run without
 the trusted ``(tenant_id, user_id)`` predicate.
 """
 
-
-
 import base64
 import binascii
 import json
@@ -177,7 +175,7 @@ def fail_stale_interaction_runs(
     now: datetime,
     category: str,
 ) -> sa.Update:
-    """Bulk startup variant of :func:`fail_stale_interaction_run` (Story #4).
+    """Bulk startup variant of :func:`fail_stale_interaction_run`.
 
     Fails every stale ``running`` interaction across all owners in one
     compare-and-set; used only by the application-startup sweep, which is a

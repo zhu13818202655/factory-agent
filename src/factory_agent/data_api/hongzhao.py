@@ -138,7 +138,7 @@ def map_message_to_error(message: str) -> Exception:
 
 
 class HongzhaoMesAdapter:
-    """HTTP adapter speaking the customer contract against Mock MES.
+    """HTTP adapter speaking the customer MES contract.
 
     A single process-level ``httpx.AsyncClient`` pool is reused across calls;
     timeouts and retry policy come from injected settings. The catalog is the
@@ -471,7 +471,7 @@ class HongzhaoMesAdapter:
 
         Business parameters are always sent flat at the top level next to the
         three credential parameters (customer contract; a wrapped ``param``
-        body is silently ignored upstream). Mock MES mirrors this shape.
+        body is silently ignored upstream).
         """
         bundle = self._active_bundle()
         body: dict[str, Any] = {}

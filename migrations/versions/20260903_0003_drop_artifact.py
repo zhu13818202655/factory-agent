@@ -1,4 +1,4 @@
-"""Story 3: remove server-side artifact retention.
+"""Remove server-side artifact retention.
 
 Drops ``agent_artifact``: exports are now 即时生成、直接下载、服务端不留存
 (in-memory transient buffer only). The table recorded object-store metadata and

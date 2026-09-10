@@ -1,7 +1,7 @@
 # usage-admin
 
 Independent production service for authorized, multi-tenant usage metering, operational reports,
-and **tenant master data**. It does not import `factory_agent` or `mock_mes`, and it
+and **tenant master data**. It does not import `factory_agent`, and it
 never calls MES endpoints.
 
 ## Responsibilities

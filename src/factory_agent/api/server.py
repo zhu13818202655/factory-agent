@@ -1,5 +1,3 @@
-
-
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Literal, cast
@@ -52,7 +50,7 @@ async def readiness(request: Request) -> HealthResponse:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Startup sweep + shutdown drain for the run executors (Story #4).
+    """Startup sweep + shutdown drain for the run executors.
 
     Startup: durably fail every ``running`` interaction left orphaned by a
     previous process (bulk compare-and-set, idempotent under multi-worker

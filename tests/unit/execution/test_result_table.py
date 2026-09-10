@@ -100,7 +100,7 @@ def test_unconfirmed_metrics_carry_a_gap_status() -> None:
     assert metric.assumption_status != ""
 
 
-def test_closed_story_1_metrics_are_confirmed() -> None:
+def test_closed_metrics_are_confirmed() -> None:
     registry = default_metric_registry()
     for name, version in {
         "org_headcount": "employee-registered-v1",

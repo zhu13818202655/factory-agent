@@ -65,14 +65,6 @@ def test_usage_admin_migration_creates_only_its_owned_tables() -> None:
         assert foreign_table not in sql
 
 
-# NOTE: the former test_new_tenant_migration_creates_only_story_nine_tables
-# asserted on the standalone ``20260829_0002_tenant_registry`` revision. The
-# development migration history was merged into a single baseline
-# (``20260827_0001_usage``), so that revision no longer exists;
-# the single-baseline coverage (tenant_registry / platform_principal /
-# admin_audit / usage_export only, no metering tables) is provided above by
-# test_usage_admin_migration_creates_only_its_owned_tables.
-
 
 def test_factory_agent_migration_never_creates_shared_tables() -> None:
     """factory-agent's history must not create usage-admin-owned tables."""

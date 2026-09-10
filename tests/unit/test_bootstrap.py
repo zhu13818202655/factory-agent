@@ -40,7 +40,7 @@ def test_container_accepts_test_fakes_without_external_configuration() -> None:
 
 def test_canonical_adapter_is_selected_only_when_configured() -> None:
     settings = FactoryAgentSettings.model_validate(
-        {"canonical_mes_base_url": "http://mock-mes:8010"}
+        {"canonical_mes_base_url": "http://mes-gateway:9002"}
     )
 
     container = build_container(settings)
@@ -64,7 +64,7 @@ def _bundle() -> MesCredentialBundle:
 async def test_hongzhao_adapter_rejects_unreviewed_operations_before_http() -> None:
     from factory_agent.domain.errors import UnsupportedOperationError
 
-    adapter = HongzhaoMesAdapter("http://mock-mes:8010", _bundle(), load_catalog())
+    adapter = HongzhaoMesAdapter("http://mes-gateway:9002", _bundle(), load_catalog())
 
     with pytest.raises(UnsupportedOperationError):
         await adapter.execute(MesRequest(operation_id="unreviewed", params={}))

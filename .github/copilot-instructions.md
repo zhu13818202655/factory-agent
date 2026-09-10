@@ -6,7 +6,7 @@ Implement the numbered Stories under `.github/story/` in order. The current Stor
 lowest-numbered Story with unfinished checklist items. Work only on that Story unless the user
 explicitly changes the scope, and mark an item complete only after its implementation is finished.
 
-When customer APIs or business rules are unavailable, continue with Mock MES and the customer
+When customer APIs or business rules are unavailable, follow the customer
 interface contract in `docs/product/AI问答对外接口-整理.md`. Confirmed customer facts live in
 `docs/product/需求及方案整理.md`. Record temporary assumptions clearly and do not present them as
 confirmed customer behavior. Unconfirmed calculations must surface as an explicit `unavailable`

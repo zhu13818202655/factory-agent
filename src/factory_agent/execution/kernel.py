@@ -117,8 +117,8 @@ class KernelSettings:
     #: number is never fabricated for the uncovered remainder.
     max_api_calls: int = 500
     #: Delivery-warning threshold as a percent of the total order duration
-    #: (交期预警默认阈值 = max(1, ⌈总工期 × 10%⌉)，客户口径默认值，Story 3
-    #: 双跑复核；见 ``docs/product/需求及方案整理.md`` 老板功能表).
+    #: (交期预警默认阈值 = max(1, ⌈总工期 × 10%⌉)，客户口径默认值；见
+    #: ``docs/product/需求及方案整理.md`` 老板功能表).
     delivery_warning_ratio_percent: int = 10
     #: Fallback fixed window (days) when the order has no usable start date.
     delivery_warning_fallback_days: int = 7
@@ -150,7 +150,7 @@ class KernelCapabilityRunner:
         #: Base-data operations (full-roster directory sources, no role
         #: filtering) are excluded from ownership observation: their rows carry
         #: the whole tenant's uid/dept values and would otherwise look like an
-        #: out-of-range return to the consistency validator (Story 2).
+        #: out-of-range return to the consistency validator.
         self._base_data_operations = base_data_operations or frozenset()
 
     @property
@@ -703,7 +703,7 @@ def render_table_from_run_result(result: CapabilityRunResult) -> RenderTable:
 class OwnershipObservation:
     """Distinct ownership values returned by the customer MES on business rows.
 
-    Consumed only by the role-consistency validator (Story 2); never rendered,
+    Consumed only by the role-consistency validator; never rendered,
     exported, logged, or persisted.
     """
 

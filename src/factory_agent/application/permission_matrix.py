@@ -13,8 +13,6 @@ Matrix (customer-confirmed):
 - FR-009..FR-012 factory-wide capabilities: 99 老板 only.
 """
 
-
-
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Self
@@ -49,8 +47,8 @@ _MANAGEMENT_ROLES: frozenset[Role] = frozenset({Role.GROUP_LEADER, Role.MANAGER}
 #: Factory-wide capabilities: owner only.
 _OWNER_ROLES: frozenset[Role] = frozenset({Role.OWNER})
 
-#: Reviewed capability-role matrix; convergence point for Story 2's expected
-#: range definitions as well.
+#: Reviewed capability-role matrix; convergence point for the consistency
+#: validator's expected range definitions as well.
 CAPABILITY_ROLES: dict[Capability, frozenset[Role]] = {
     Capability.OWN_OUTPUT: _ALL_ROLES,
     Capability.OWN_PAYROLL_SUMMARY: _ALL_ROLES,

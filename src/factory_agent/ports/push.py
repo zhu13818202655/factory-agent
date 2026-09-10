@@ -1,12 +1,10 @@
-"""Push delivery port (Story 3B).
+"""Push delivery port.
 
 Real push channels (企业微信/App/短信) are not yet chosen by the customer, so
-this story ships the channel port plus a local fake channel (structured log +
-delivery record). Delivery records carry only the envelope — never the message
+the current delivery goes through the channel port plus a local fake channel
+(structured log + delivery record). Delivery records carry only the envelope — never the message
 body or business amounts.
 """
-
-
 
 from dataclasses import dataclass
 from datetime import datetime

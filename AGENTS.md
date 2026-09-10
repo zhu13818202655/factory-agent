@@ -46,14 +46,13 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 ## Repository Boundaries
 
 - `src/factory_agent/`: production application built by the root project.
-- `mock-mes/`: self-contained simulator; never a production dependency.
 - `usage-admin/`: independently built production service for authorized multi-tenant usage
    aggregation, operational APIs, and reports; it never calls MES endpoints.
 - `configs/knowledge/`: reviewed API catalog, metrics, and L1 DAGs.
 - `tests/support/`: in-process fakes and pytest-managed test processes, not services.
 - `data/`: ignored runtime output only.
 
-`factory_agent`, `mock_mes`, and `usage_admin` must never import each other. There is no
+`factory_agent` and `usage_admin` must never import each other. There is no
 cross-service usage transport and no usage-event contract:
 factory-agent writes every metering table (`usage_event`, the `*_fact` tables,
 `mes_operation_category`, `tenant_usage_*`) directly into the shared PostgreSQL in a separate
@@ -64,8 +63,8 @@ its business tables (`agent_*`) plus all metering tables; usage-admin owns and w
 `tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export` — factory-agent reads
 `tenant_registry` read-only for MES AppKey resolution (ADR-0003 §4.3). Both services migrate one
 shared database with separate Alembic version tables (`alembic_version` /
-`alembic_version_usage_admin`). Production Compose excludes Mock MES but includes `usage-admin`
-when usage metering is enabled. Read the nearest scoped `AGENTS.md` before modifying a governed
+`alembic_version_usage_admin`). Production Compose includes `usage-admin` when usage metering
+is enabled. Read the nearest scoped `AGENTS.md` before modifying a governed
 directory.
 
 ## Story Workflow
@@ -81,8 +80,8 @@ directory.
 4. When a Story uses ADO-style state, use `New -> Active -> Resolved -> Closed`: implementation starts
    at `Active`, reaches `Resolved` only after its checklist and relevant engineering checks are
    complete, and reaches `Closed` only after human review. State never overrides checklist evidence.
-5. When a customer API or business rule is unavailable, continue against Mock MES and the customer
-   interface contract in `docs/product/AI问答对外接口-整理.md`, and keep the temporary assumption
+5. When a customer API or business rule is unavailable, follow the customer interface contract
+   in `docs/product/AI问答对外接口-整理.md`, and keep the temporary assumption
    visible in the Story or relevant product document. Confirmed customer facts live in
    `docs/product/需求及方案整理.md`; unconfirmed calculations must surface as an explicit
    `unavailable` state rather than a fabricated number.

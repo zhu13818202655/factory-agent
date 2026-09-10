@@ -1,6 +1,4 @@
-"""SQLAlchemy push stores (Story 3B): preferences + delivery log."""
-
-
+"""SQLAlchemy push stores: preferences + delivery log."""
 
 from datetime import datetime
 

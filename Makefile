@@ -20,7 +20,7 @@ LOAD_ENV := if [ -f "$(ENV_FILE)" ]; then set -a; . "./$(ENV_FILE)"; set +a; \
 .DEFAULT_GOAL := help
 
 .PHONY: help bootstrap lint typecheck test-unit test-integration
-.PHONY: test-e2e security check dev dev-mock dev-usage-admin pre-commit compose-config compose-up compose-down compose-reset middleware-up middleware-down middleware-reset
+.PHONY: test-e2e security check dev dev-usage-admin pre-commit compose-config compose-up compose-down compose-reset middleware-up middleware-down middleware-reset
 .PHONY: migrate migrate-agent migrate-usage-admin migrate-status pg-grants build-images test-images
 
 help:
@@ -42,7 +42,6 @@ help:
 		'make build-images      Build all application images' \
 		'make test-images       Run image health and non-root checks' \
 		'make dev               Run factory-agent locally' \
-		'make dev-mock          Run mock-mes locally' \
 		'make dev-usage-admin   Run usage-admin locally'
 
 bootstrap:
@@ -58,7 +57,7 @@ typecheck:
 	$(RUN) pyright
 
 test-unit:
-	$(PYTEST) tests/unit tests/eval mock-mes/tests/unit usage-admin/tests/unit
+	$(PYTEST) tests/unit tests/eval usage-admin/tests/unit
 
 test-integration:
 	$(PYTEST) tests/integration usage-admin/tests/integration
@@ -67,7 +66,7 @@ test-e2e:
 	$(PYTEST) tests/e2e
 
 security:
-	$(RUN) bandit --quiet --recursive src mock-mes/src usage-admin/src
+	$(RUN) bandit --quiet --recursive src usage-admin/src
 	$(RUN) pip-audit --skip-editable
 	$(PYTEST) tests/security
 
@@ -138,7 +137,6 @@ pg-grants:
 
 build-images:
 	docker build --tag factory-agent:dev --file Dockerfile .
-	docker build --tag mock-mes:dev --file mock-mes/Dockerfile .
 	docker build --tag usage-admin:dev --file usage-admin/Dockerfile .
 
 test-images:
@@ -146,9 +144,6 @@ test-images:
 
 dev:
 	$(RUN) factory-agent
-
-dev-mock:
-	$(RUN) mock-mes
 
 dev-usage-admin:
 	$(RUN) usage-admin

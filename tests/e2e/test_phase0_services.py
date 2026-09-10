@@ -1,13 +1,9 @@
-
-
-from typing import Any
-
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from usage_admin.api.server import create_app as create_usage_admin_app
 
 from factory_agent.api.server import create_app as create_factory_app
+from usage_admin.api.server import create_app as create_usage_admin_app
 
 
 async def assert_service_liveness(app: FastAPI, service: str) -> None:
@@ -20,8 +16,6 @@ async def assert_service_liveness(app: FastAPI, service: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_story_one_services_are_live(mock_mes_app: Any) -> None:
+async def test_services_are_live() -> None:
     await assert_service_liveness(create_factory_app(), "factory-agent")
-    # The mock-mes app is PG-backed; liveness works the same way.
-    await assert_service_liveness(mock_mes_app, "mock-mes")
     await assert_service_liveness(create_usage_admin_app(), "usage-admin")

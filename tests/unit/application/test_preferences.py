@@ -1,4 +1,4 @@
-"""Push preference service tests (Story 3B)."""
+"""Push preference service tests."""
 
 
 

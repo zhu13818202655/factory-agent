@@ -1,4 +1,4 @@
-"""Instant, no-retention export service (Story 3).
+"""Instant, no-retention export service.
 
 Renders a ``CapabilityRunResult`` into XLSX fully in memory and keeps the bytes
 only in a bounded, short-TTL in-process buffer (受控临时缓冲). There is no
@@ -10,8 +10,6 @@ This module lives at the package root because it composes the ``export``
 renderer and the transient buffer; the session/application layers depend only
 on the ``ArtifactExporter`` port.
 """
-
-
 
 import hashlib
 import time

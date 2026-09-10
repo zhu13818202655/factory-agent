@@ -1,4 +1,4 @@
-"""In-memory push fakes for tests (Story 3B)."""
+"""In-memory push fakes for tests."""
 
 
 

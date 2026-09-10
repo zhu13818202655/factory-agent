@@ -15,7 +15,7 @@ class FactoryAgentSettings(BaseSettings):
     canonical_mes_base_url: AnyHttpUrl | None = None
     postgres_url: PostgresDsn | None = None
     redis_url: RedisDsn | None = None
-    # Instant-export transient buffer (Story 3: 即时生成、直接下载、服务端不留存).
+    # Instant-export transient buffer (即时生成、直接下载、服务端不留存).
     # Generated XLSX lives only in a bounded in-process buffer for this short
     # window; there is no object store and no retention lifecycle.
     export_buffer_ttl_seconds: int = Field(default=900, ge=60, le=3600)
@@ -37,11 +37,11 @@ class FactoryAgentSettings(BaseSettings):
 
     # Delivery-warning defaults (docs/product/需求及方案整理.md 老板功能表).
     # Threshold = max(1, ceil(total_duration * ratio%)); a missing order start
-    # date falls back to a fixed window. Reviewed again in Story 3 dry-runs.
+    # date falls back to a fixed window.
     delivery_warning_ratio_percent: int = Field(default=10, ge=1, le=100)
     delivery_warning_fallback_days: int = Field(default=7, ge=1)
 
-    # Role-consistency validation staged mode (Story 2): strict = 对接期
+    # Role-consistency validation staged mode: strict = 对接期
     # (any inconsistency blocks the result and is exposed as an integration
     # problem); production = 主路径信任 MES + two-tier handling (exact blocks
     # with alert, heuristic only logs).
@@ -88,7 +88,7 @@ class FactoryAgentSettings(BaseSettings):
     #: failed by the next connecting/following stream.
     session_stale_running_seconds: float = Field(default=600.0, gt=0.0)
     #: Whole-run wall-clock budget for the background interaction executor
-    #: (Story #4): when exceeded at a cooperative stop point the run is failed
+    #: when exceeded at a cooperative stop point the run is failed
     #: durably with ``run_timeout``. Must stay below
     #: ``session_stale_running_seconds`` so a live-but-slow run is failed by
     #: its own budget before any follower can mistake it for an orphan.

@@ -6,8 +6,6 @@ or user filter, and an interaction owned by another user is indistinguishable
 from one that does not exist.
 """
 
-
-
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -149,7 +147,7 @@ class InteractionStore(Protocol):
         now: datetime,
         category: str,
     ) -> tuple[InteractionRecord, ...]:
-        """Bulk startup variant of ``fail_stale_runs`` (Story #4).
+        """Bulk startup variant of ``fail_stale_runs``.
 
         Fails every stale ``RUNNING`` interaction across all owners in one
         compare-and-set; called once at application startup. Returns the
@@ -221,7 +219,7 @@ class CapabilityRunResult:
     column_titles: dict[str, str] | None = None
     warnings: tuple[str, ...] = ()
     #: Ownership fields observed on the fetched business rows (role-consistency
-    #: safety net, Story 2). Distinct work numbers and dept ids actually
+    #: safety net). Distinct work numbers and dept ids actually
     #: returned by the customer MES before local compute collapses rows; never
     #: rendered, exported, logged, or persisted — consumed in memory only by
     #: the consistency validator. Empty for fakes that do not populate them.

@@ -1,4 +1,4 @@
-"""Push preferences + morning report API tests (Story 3B)."""
+"""Push preferences + morning report API tests."""
 
 
 

@@ -17,7 +17,7 @@
 #   阈值默认 = max(1, ⌈总工期 × 10%⌉)，总工期 = 交期（finish_date）−
 #   下单日期（PlanGridPageList.zhdate）；无可用开始日期时回退固定窗口
 #   （默认 7 天）。阈值与回退窗口为可配置默认值（见 KernelSettings /
-#   FactoryAgentSettings），Story 3 双跑用真实数据复核。
+#   FactoryAgentSettings），双跑用真实数据复核。
 #   示例：总工期 10 天 → 剩余 ≤1 天预警；总工期 30 天 → 剩余 ≤3 天预警。
 #
 # 订单检索只支持精确编号：dh / jhdh / khddh 与货号 huohao 精确匹配（客户未

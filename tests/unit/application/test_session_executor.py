@@ -1,4 +1,4 @@
-"""Story #4: interaction execution decoupled from the SSE connection.
+"""Interaction execution decoupled from the SSE connection.
 
 Every test here proves one half of the invariant "the executor's lifecycle is
 bound to the interaction, never to a connection": a disconnected claimer, a

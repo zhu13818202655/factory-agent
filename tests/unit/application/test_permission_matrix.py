@@ -162,7 +162,7 @@ def test_unavailable_metrics_are_never_rendered_as_numbers() -> None:
 
 
 def test_closed_metrics_are_confirmed_and_renderable() -> None:
-    """Story 1 口径关闭：在册人数与人均工资转为已确认口径。"""
+    """在册人数与人均工资为已确认口径。"""
     from factory_agent.execution.result_table import default_metric_registry
 
     registry = default_metric_registry()

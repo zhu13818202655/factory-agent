@@ -1,4 +1,4 @@
-"""Role-consistency validation safety net (Story 2).
+"""Role-consistency validation safety net.
 
 Runs after a capability result returns and before anything user-visible is
 composed (session orchestration step). It only judges and reports — it never
@@ -27,8 +27,6 @@ never an anomaly).
 The declared row semantics per capability are data, reviewed like recipes:
 changing a rule or a mapping is a semantics change requiring human review.
 """
-
-
 
 import hashlib
 from dataclasses import dataclass
@@ -174,7 +172,7 @@ class ValidationFinding:
     code: str
     #: Human-readable friendly reason (可展示文案；不含范围外原始 id)。
     reason: str
-    #: Readable expected range (角色可查范围描述，来自 Story 1 文案)。
+    #: Readable expected range (角色可查范围描述)。
     expected: str
     #: Readable actual observation (数量级 + 摘要，不含敏感原值)。
     actual: str

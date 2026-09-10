@@ -1,4 +1,4 @@
-"""Instant-export contract (Story 3: 即时生成、直接下载、服务端不留存).
+"""Instant-export contract (即时生成、直接下载、服务端不留存).
 
 The exporter renders a run result into XLSX in memory and keeps it only in a
 bounded transient buffer for a short window; there is no object store, no
@@ -7,8 +7,6 @@ download endpoint streams the transient bytes back as a file response after
 re-validating ownership. "回头再取" is served by history/favorite re-ask
 (重新执行 → 直接下载), never by a stored file.
 """
-
-
 
 from dataclasses import dataclass
 from typing import Protocol

@@ -15,7 +15,7 @@
 
 发生冲突时依次采用：当前 Story、`SECURITY.md` 与已接受 ADR、`docs/product/`（客户已确认口径
 与接口契约）、`ARCHITECTURE.md`、仓库规则文件、现有实现。仍未确认的口径只允许产生显式
-`unavailable` 状态，不得自行补齐或使用 Mock 数字冒充。
+`unavailable` 状态，不得自行补齐或编造数字冒充。
 
 ## 新增文档原则
 

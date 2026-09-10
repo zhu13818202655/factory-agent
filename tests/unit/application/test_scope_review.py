@@ -1,4 +1,4 @@
-"""Scope-deviation review task tests (Story 2)."""
+"""Scope-deviation review task tests."""
 
 
 

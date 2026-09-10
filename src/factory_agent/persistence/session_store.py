@@ -6,8 +6,6 @@ Metering writes happen in a separate transaction whose failures are isolated:
 failures are alerted and never roll back or block the answer.
 """
 
-
-
 from datetime import datetime
 from typing import Any
 
@@ -142,7 +140,7 @@ class SqlInteractionStore:
         now: datetime,
         category: str,
     ) -> tuple[InteractionRecord, ...]:
-        """Bulk startup sweep: fail every stale ``running`` interaction (Story #4)."""
+        """Bulk startup sweep: fail every stale ``running`` interaction."""
         async with self._engine.begin() as connection:
             rows = (
                 (

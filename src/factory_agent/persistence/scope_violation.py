@@ -1,6 +1,4 @@
-"""SQLAlchemy store for role-consistency violation records (Story 2)."""
-
-
+"""SQLAlchemy store for role-consistency violation records."""
 
 from datetime import datetime
 

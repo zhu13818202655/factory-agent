@@ -4,7 +4,6 @@
 -- each service connects with its own user and runs its own Alembic migrations
 -- against it, tracked in separate version tables (alembic_version /
 -- alembic_version_usage_admin). Table ownership is exclusive per service.
--- Mock MES stays on its own database.
 --
 -- PG16: schema "public" is owned by pg_database_owner (the database owner),
 -- so usage_admin needs an explicit CREATE grant on the schema to build its own
@@ -29,6 +28,3 @@ ALTER DEFAULT PRIVILEGES FOR ROLE usage_admin IN SCHEMA public
     GRANT SELECT ON TABLES TO factory_agent;
 ALTER DEFAULT PRIVILEGES FOR ROLE factory_agent IN SCHEMA public
     GRANT SELECT ON TABLES TO usage_admin;
-
-CREATE USER mock_mes WITH PASSWORD 'mock_mes_dev';
-CREATE DATABASE mock_mes OWNER mock_mes;

@@ -1,11 +1,9 @@
-"""Local fake push channel (Story 3B).
+"""Local fake push channel.
 
 Real channels (企业微信/App/短信) await a customer decision; until then every
 delivery goes through this port implementation which writes a structured log
 and an envelope-only delivery record. A failure never blocks the caller.
 """
-
-
 
 from datetime import datetime
 from typing import Protocol
