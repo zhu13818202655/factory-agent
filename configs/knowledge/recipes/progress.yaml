@@ -159,6 +159,10 @@ capabilities:
       worktype_current: customer-progress-v1
       output_order_in_progress: customer-wsk-v1
     degradation: incomplete_marker
+    card:
+      kind: table
+      metrics: [plan_qty, completed_qty]
+      preview_max_rows: 10
 
   - capability_id: fr009_factory_order_overview
     title: 全厂订单进度总览
@@ -316,3 +320,9 @@ capabilities:
       delivery_warning: factory-warning-v1
       delivery_days_remaining: factory-warning-v1
     degradation: incomplete_marker
+    card:
+      kind: table
+      preview_max_rows: 10
+      alert_marker:
+        column: delivery_warning
+        equals: "1"

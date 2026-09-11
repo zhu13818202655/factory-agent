@@ -73,3 +73,7 @@ capabilities:
       output_order_completed: customer-completed-v1
       output_participant_count: factory-participant-v1
     degradation: incomplete_marker
+    card:
+      kind: table
+      metrics: [output_qty]
+      preview_max_rows: 10

@@ -335,6 +335,47 @@ async def test_result_event_carries_column_titles() -> None:
 
 
 @pytest.mark.asyncio
+async def test_result_event_and_message_carry_the_same_card_payload() -> None:
+    """The card dict is identical on the SSE event and the persisted message."""
+    card = {
+        "kind": "kpi",
+        "title": "个人工资汇总",
+        "metrics": [{"label": "计件工资合计", "unit": "元", "value": "8650"}],
+    }
+    service, store, runner = build()
+    runner.card = card
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    events = await drain(service, record.interaction_id)
+
+    result_event = next(event for event in events if event.name == INTERACTION_RESULT)
+    assert result_event.data["card"] == card
+    table_message = next(
+        m
+        for m in store.messages
+        if m.interaction_id == record.interaction_id and m.kind is MessageKind.RESULT_TABLE
+    )
+    assert table_message.payload["card"] == card
+
+
+@pytest.mark.asyncio
+async def test_result_without_card_keeps_the_old_contract() -> None:
+    service, store, _ = build()
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    events = await drain(service, record.interaction_id)
+
+    result_event = next(event for event in events if event.name == INTERACTION_RESULT)
+    assert "card" not in result_event.data
+    table_message = next(
+        m
+        for m in store.messages
+        if m.interaction_id == record.interaction_id and m.kind is MessageKind.RESULT_TABLE
+    )
+    assert "card" not in table_message.payload
+
+
+@pytest.mark.asyncio
 async def test_executor_only_receives_scope_narrowed_filters() -> None:
     service, _, runner = build()
     record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))

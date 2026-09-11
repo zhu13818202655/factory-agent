@@ -58,3 +58,7 @@ capabilities:
     metric_versions:
       output_personal: customer-output-v1
     degradation: incomplete_marker
+    card:
+      kind: table
+      metrics: [output_qty]
+      preview_max_rows: 10

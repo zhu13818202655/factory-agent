@@ -225,6 +225,12 @@ class CapabilityRunResult:
     #: the consistency validator. Empty for fakes that do not populate them.
     observed_uid_values: tuple[str, ...] = ()
     observed_dept_values: tuple[str, ...] = ()
+    #: Front-end card payload (JSON-serializable) built by the kernel when the
+    #: recipe declares a ``card:`` block; ``None`` = no card (old contract).
+    #: The pipeline places this same dict on the ``interaction.result`` event
+    #: and the persisted ``result_table`` message so live, replay and history
+    #: streams carry an identical payload.
+    card: dict[str, object] | None = None
 
 
 class CapabilityRunner(Protocol):

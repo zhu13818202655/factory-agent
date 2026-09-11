@@ -220,6 +220,8 @@ class RecordingCapabilityRunner:
     column_names: tuple[str, ...] = ("qualified_quantity_total", "amount_total")
     requests: list[CapabilityRunRequest] = field(default_factory=lambda: [])
     failure: Exception | None = None
+    #: Optional card payload the fake kernel result carries (card-contract tests).
+    card: dict[str, object] | None = None
 
     async def run(self, request: CapabilityRunRequest) -> CapabilityRunResult:
         self.requests.append(request)
@@ -233,6 +235,7 @@ class RecordingCapabilityRunner:
             source_operations=("C1_listPieceworkRecords",),
             api_call_count=1,
             duration_ms=7,
+            card=self.card,
         )
 
 

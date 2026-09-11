@@ -594,6 +594,12 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         column_titles = [
             (result.column_titles or {}).get(name, name) for name in result.column_names
         ]
+        # The card payload (recipe-declared, built by the kernel) is placed on
+        # the SSE event and the persisted result_table message as the SAME
+        # dict, so live, replay and history streams render identically.
+        card_payload: dict[str, object] = (
+            {"card": result.card} if getattr(result, "card", None) is not None else {}
+        )
         result_event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_RESULT,
@@ -606,6 +612,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 "incomplete_reason": result.incomplete_reason,
                 "artifact_id": artifact_id,
                 "answer": answer_text,
+                **card_payload,
                 **({"consistency": consistency} if consistency is not None else {}),
             },
         )
@@ -665,6 +672,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                             "incomplete_reason": result.incomplete_reason,
                             "artifact_id": artifact_id,
                             "answer": answer_text,
+                            **card_payload,
                             **({"consistency": consistency} if consistency is not None else {}),
                         },
                     ),

@@ -98,6 +98,11 @@ capabilities:
       workshop_rank: factory-rank-v1
       plan_target_output: unavailable-target-v1
     degradation: incomplete_marker
+    card:
+      kind: ranking
+      metrics: [output_total]
+      preview_max_rows: 10
+      rank_column: rank_position
 
   - capability_id: fr010_workshop_output_overview
     title: 车间产量总览
@@ -165,3 +170,6 @@ capabilities:
       output_order_completed: customer-completed-v1
       plan_target_output: unavailable-target-v1
     degradation: incomplete_marker
+    card:
+      kind: table
+      preview_max_rows: 10

@@ -79,6 +79,9 @@ capabilities:
     footer_reconciliation:
       gross_total: je_total
     degradation: incomplete_marker
+    card:
+      kind: kpi
+      metrics: [gross_total, piece_count, daily_avg]
 
   - capability_id: fr003_personal_wage_detail
     title: 个人工资明细
@@ -136,3 +139,7 @@ capabilities:
     footer_reconciliation:
       gross_total: je_total
     degradation: incomplete_marker
+    card:
+      kind: table
+      metrics: [je]
+      preview_max_rows: 10

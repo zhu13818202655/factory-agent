@@ -14,11 +14,22 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from factory_agent.domain.errors import InvalidRequestError
+from factory_agent.ports.card import (
+    MAX_PREVIEW_GROUPS,
+    MAX_PREVIEW_ROWS,
+    CardAlertSpec,
+    CardTableSpec,
+)
 
 DEFAULT_RECIPE_DIR = Path("configs/knowledge/recipes")
 
 StepKind = Literal["api", "local"]
 ColumnType = Literal["money", "percent", "date", "quantity"]
+CardKind = Literal["kpi", "table", "ranking"]
+
+#: Only typed numeric columns may appear in the KPI area, so a uid-like string
+#: column can never be presented as a figure.
+CARD_METRIC_TYPES: frozenset[str] = frozenset({"money", "quantity", "percent"})
 
 #: Business filter keys a recipe may bind into local compute. They narrow
 #: within the MES-filtered range and can never broaden the active DataScope.
@@ -87,6 +98,52 @@ class ResultColumn(BaseModel):
     unit: str | None = None
 
 
+class CardAlertMarker(BaseModel):
+    """Reviewed highlight rule: rows where ``column == equals`` (client-side styling)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    column: str
+    equals: str
+
+
+class CardSpec(BaseModel):
+    """Reviewed result-card shape for one capability.
+
+    ``kind=kpi`` renders a KPI area only; ``table``/``ranking`` add a preview
+    table (``ranking`` requires ``rank_column``). ``preview_max_rows`` is the
+    per-group cap on grouped cards and is mandatory for any table-bearing card.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: CardKind
+    metrics: tuple[str, ...] = ()
+    totals: tuple[str, ...] = ()
+    preview_max_rows: int | None = None
+    preview_max_groups: int = 50
+    group_by: str | None = None
+    rank_column: str | None = None
+    alert_marker: CardAlertMarker | None = None
+
+    def to_table_spec(self) -> CardTableSpec:
+        """Runtime projection for the ports-layer card builder."""
+        return CardTableSpec(
+            kind=self.kind,
+            metrics=self.metrics,
+            totals=self.totals,
+            preview_max_rows=self.preview_max_rows,
+            preview_max_groups=self.preview_max_groups,
+            group_by=self.group_by,
+            rank_column=self.rank_column,
+            alert_marker=(
+                CardAlertSpec(column=self.alert_marker.column, equals=self.alert_marker.equals)
+                if self.alert_marker is not None
+                else None
+            ),
+        )
+
+
 class CapabilityRecipe(BaseModel):
     """A reviewed L1 capability definition."""
 
@@ -98,6 +155,8 @@ class CapabilityRecipe(BaseModel):
     steps: tuple[RecipeStep, ...]
     result_columns: tuple[ResultColumn, ...]
     metric_versions: dict[str, str]
+    #: Optional front-end card declaration; absent = no card is emitted.
+    card: CardSpec | None = None
     degradation: Literal["incomplete_marker", "fail"] = "incomplete_marker"
     #: Optional footer reconciliation: ``{result_column: footer_field}``. The
     #: kernel compares the locally computed column against the MES ``footer``
@@ -181,6 +240,53 @@ def validate_recipe(recipe: CapabilityRecipe, registered_operations: frozenset[s
             raise InvalidRequestError(
                 f"result column {column.name} uses a metric without a version"
             )
+    if recipe.card is not None:
+        _validate_card(recipe)
+
+
+def _validate_card(recipe: CapabilityRecipe) -> None:
+    """Card declaration must reference existing columns and stay bounded."""
+    card = recipe.card
+    assert card is not None  # caller guarantees
+    columns_by_name = {column.name: column for column in recipe.result_columns}
+
+    references = (*card.metrics, *card.totals)
+    if card.group_by is not None:
+        references += (card.group_by,)
+    if card.rank_column is not None:
+        references += (card.rank_column,)
+    if card.alert_marker is not None:
+        references += (card.alert_marker.column,)
+    for name in references:
+        if name not in columns_by_name:
+            raise InvalidRequestError(f"card references unknown result column {name}")
+
+    if card.kind == "kpi":
+        if not card.metrics:
+            raise InvalidRequestError("kpi card requires at least one metric")
+        has_table_keys = (
+            card.group_by is not None
+            or card.rank_column is not None
+            or card.alert_marker is not None
+        )
+        if has_table_keys:
+            raise InvalidRequestError("kpi card cannot declare a preview table")
+    else:
+        if card.preview_max_rows is None:
+            raise InvalidRequestError("table-bearing card requires preview_max_rows")
+        if not 1 <= card.preview_max_rows <= MAX_PREVIEW_ROWS:
+            raise InvalidRequestError(f"card preview_max_rows must be within 1..{MAX_PREVIEW_ROWS}")
+        if card.kind == "ranking" and card.rank_column is None:
+            raise InvalidRequestError("ranking card requires rank_column")
+
+    if not 1 <= card.preview_max_groups <= MAX_PREVIEW_GROUPS:
+        raise InvalidRequestError(f"card preview_max_groups must be within 1..{MAX_PREVIEW_GROUPS}")
+
+    for name in card.metrics:
+        if columns_by_name[name].column_type not in CARD_METRIC_TYPES:
+            raise InvalidRequestError(
+                f"card metric {name} must be a numeric column ({sorted(CARD_METRIC_TYPES)})"
+            )
 
 
 def _is_safe_identifier(value: str) -> bool:
@@ -245,6 +351,8 @@ def load_recipes(
 __all__ = [
     "BUSINESS_FILTER_KEYS",
     "CapabilityRecipe",
+    "CardAlertMarker",
+    "CardSpec",
     "DEFAULT_RECIPE_DIR",
     "ParamBinding",
     "RecipeDocument",

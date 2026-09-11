@@ -307,6 +307,9 @@ class ResultTable:
     warnings: tuple[str, ...] = ()
     incomplete: bool = False
     incomplete_reason: str | None = None
+    #: Front-end card payload built by the kernel when the recipe declares a
+    #: ``card:`` block; ``None`` = recipe has no card or the result is empty.
+    card: dict[str, object] | None = None
 
     def trace_for(self, column_name: str) -> ResultColumnMeta:
         for column in self.columns:

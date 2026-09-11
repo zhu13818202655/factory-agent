@@ -37,6 +37,7 @@ from factory_agent.execution.recipes import (
 from factory_agent.execution.result_table import MetricRegistry, ResultColumnMeta, ResultTable
 from factory_agent.execution.sandbox_runtime import InteractionSandbox, SandboxTable
 from factory_agent.observability.logging_adapter import get_logger
+from factory_agent.ports.card import CardColumn, build_card
 from factory_agent.ports.contracts import (
     UNAVAILABLE_VALUE,
     RenderColumn,
@@ -475,6 +476,9 @@ class KernelCapabilityRunner:
         self._reconcile(recipe, fetches)
 
         totals = _build_totals(recipe, table_rows, fetches)
+        card = self._build_card(
+            recipe, table_rows, column_metas, totals, incomplete, incomplete_reason, warnings
+        )
         return ResultTable(
             capability_id=recipe.capability_id,
             columns=tuple(column_metas),
@@ -484,6 +488,46 @@ class KernelCapabilityRunner:
             warnings=tuple(warnings),
             incomplete=incomplete,
             incomplete_reason=incomplete_reason,
+            card=card,
+        )
+
+    def _build_card(
+        self,
+        recipe: CapabilityRecipe,
+        table_rows: tuple[dict[str, object], ...],
+        column_metas: list[ResultColumnMeta],
+        totals: dict[str, Decimal],
+        incomplete: bool,
+        incomplete_reason: str | None,
+        warnings: list[str],
+    ) -> dict[str, object] | None:
+        """Front-end card payload from the reviewed recipe ``card:`` block.
+
+        An empty window emits no card: an absent card is the old contract and
+        the composed answer already states that no records exist. Only typed
+        result columns reach the card; no customer field names or credentials
+        ever do.
+        """
+        if recipe.card is None or not table_rows:
+            return None
+        return build_card(
+            recipe.card.to_table_spec(),
+            capability_id=recipe.capability_id,
+            title=recipe.title,
+            columns=tuple(
+                CardColumn(
+                    name=meta.name,
+                    title=meta.title,
+                    column_type=meta.column_type,
+                    unit=meta.unit,
+                )
+                for meta in column_metas
+            ),
+            rows=table_rows,
+            totals=totals,
+            incomplete=incomplete,
+            incomplete_reason=incomplete_reason,
+            warnings=tuple(warnings),
         )
 
     def _run_compute_steps(
@@ -653,6 +697,7 @@ class KernelCapabilityRunner:
             warnings=table.warnings,
             observed_uid_values=observed.uids if observed is not None else (),
             observed_dept_values=observed.depts if observed is not None else (),
+            card=table.card,
         )
 
     @staticmethod

@@ -137,10 +137,12 @@
 
 `payload`（可选，仅 `result_table` 消息返回）：结果卡片元数据，与 `interaction.result`
 事件的字段一致（`capability_id` / `columns` / `row_count` / `incomplete` /
-`incomplete_reason` / `artifact_id` / `consistency`）。前端可用它**重建结果卡片**：
-渲染列名、行数与完整性标记，并凭 `artifact_id` 提供导出入口；消息无 payload（如早期
+`incomplete_reason` / `artifact_id` / `consistency`，并同样携带可选的 `card`
+结构化卡片，见 §5.3）。前端可用它**重建结果卡片**：渲染卡片/KPI/预览行、列名、
+行数与完整性标记，并凭 `artifact_id` 提供导出入口；消息无 payload（如早期
 版本写入的记录）时该字段省略，前端回退为仅展示 `text` 摘要。SSE 事件不含 `payload`
-字段，两者互不影响。
+字段，两者互不影响。**`payload.card` 与该轮 `interaction.result` 的 `data.card`
+是同一份数据**，实时、断线重放与历史消息三路渲染结果完全一致。
 
 ### 3.4 Artifact（导出产物）
 
@@ -571,8 +573,9 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","h
 | `artifact_id` | 导出产物 ID；为 `null` 表示本次未生成导出，不展示导出按钮 |
 | `answer` | 由模型结合用户问题与结果元数据生成的一句自然语言回答，可直接展示在结果卡片上方；**空结果（`row_count=0` 且 `incomplete=false`）表示该时间范围内没有查询到相关记录，属正常结果，前端不应展示"不完整"样式**。字段不出现或为空时按旧形态兼容处理 |
 
-事件本身携带的是卡片元数据（列定义、行数、完整性、导出入口）；行级明细数据在导出文件
-中。持久化的 `result_table` 消息（§3.3）是该结果的历史形态，`text` 为结果摘要
+事件携带结果元数据（列定义、行数、完整性、导出入口），并可选携带结构化卡片 `card`
+（§5.3.1，含 KPI 区与预览行）；预览行以外的行级明细数据在导出文件中。持久化的
+`result_table` 消息（§3.3）是该结果的历史形态，`text` 为结果摘要
 （如"已返回 12 行结果。"）；回答文本同时以 `role=assistant`、`kind=plain_text`
 消息持久化。
 
@@ -586,6 +589,71 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","h
 
 前端对 `delivery_warning == '1'` 的行做标红等"异常数据自动高亮"处理，并可展示
 `days_remaining` 辅助说明。**后端只输出标记字段，不输出任何 UI 样式**。
+
+#### 5.3.1 结构化卡片（可选增量字段 `card`）
+
+`interaction.result` 的 `data` 可携带可选字段 `card`（结构化结果卡片），
+持久化的 `result_table` 消息 `payload.card` 与其为**同一份数据**（实时 / 重放 /
+历史三路一致）。该字段**可能缺席**：无 `card` 字段时按旧形态（只有元数据 + 导出入口）
+兼容渲染，**前端必须先判空再渲染**。
+
+```json
+{
+  "kind": "ranking",
+  "title": "员工工资清单与排名",
+  "capability_id": "fr008_payroll_ranking",
+  "metrics": [ { "label": "工资金额", "unit": "元", "value": "321000" } ],
+  "table": {
+    "columns": ["uid", "uname", "dept", "package_count", "gross", "rank_position", "group_rank"],
+    "column_titles": { "uid": "工号", "uname": "姓名", "dept": "车间/小组", "package_count": "计件件数", "gross": "工资金额", "rank_position": "名次", "group_rank": "组内名次" },
+    "rows": [ ["0020", "王林", "001", "120", "6200", "1", "1"] ],
+    "total_rows": 137,
+    "preview_max_rows": 10,
+    "truncated": true,
+    "group_by": "dept",
+    "groups": [ { "group": "001", "row_count": 10, "total_rows": 25, "truncated": true } ],
+    "groups_total": 7,
+    "alert_marker": { "column": "delivery_warning", "equals": "1" }
+  },
+  "totals": [ { "label": "工资金额", "unit": "元", "value": "321000" } ],
+  "unavailable_columns": ["日均工资"],
+  "notes": ["本次结果不完整（pagination_total_drift），以导出文件为准。"]
+}
+```
+
+字段说明（除 `table` 外均可缺席）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `kind` | 卡片形态：`kpi`（仅 KPI 数字区，无 `table`）；`table`（KPI + 明细预览表）；`ranking`（排名表，服务端已排好序） |
+| `title` | 卡片标题（能力中文名） |
+| `metrics` | KPI 数字区：`{label, value, unit}`；无数据源时为 `{label, unit, unavailable: true}`（渲染"暂无数据源"，**不得渲染为 0**） |
+| `table` | 明细预览表；`rows` 为**二维数组**（列序 = `columns` 序），只含预览行（仅前 N 行，完整数据走导出 xlsx）。空单元格为 `null`，渲染"—" |
+| `table.total_rows` / `truncated` / `preview_max_rows` | 行数与截断信息：`truncated=true` 时展示"仅展示前 N 行（共 M 行），完整数据请导出"类提示 |
+| `table.group_by` / `groups` / `groups_total` | **分组卡**（组长/老板工资名单）：按 `group_by` 列分组、组内已按金额降序；`groups[]` 每项 `{group, row_count, total_rows, truncated}`。同组成员在 `rows` 里**连续存放、段落顺序与 `groups[]` 一致**，前端按每组 `row_count` 顺序切片即可（tab 切换 + 组内展开成员，**不需要自己重新分组**）；建议每个 tab 文案为「组名（本组总人数）」 |
+| `table.alert_marker` | 语义高亮：`{column, equals}`——行内该列值等于 `equals` 时整行标红（FR-009 交期预警）。样式由前端决定 |
+| `totals` | 合计区（卡片底部），结构同 `metrics` |
+| `unavailable_columns` | 无数据源的 KPI 列中文名列表 |
+| `notes` | 面向用户的提示文本（口径说明、不完整提示等），逐条展示即可 |
+
+各能力默认卡形态（未列出的能力暂无 `card`，按旧形态渲染）：
+
+| capability_id | 能力 | `kind` | KPI 区 | 预览表要点 |
+| --- | --- | --- | --- | --- |
+| fr002_personal_wage_summary | 个人工资汇总 | `kpi` | 计件工资合计 / 计件件数 / 日均工资 | 无 |
+| fr012_employee_payroll | 任一员工工资查询 | `kpi` | 计件工资合计 / 计件件数 | 无 |
+| fr004_group_income_rank | 收入排名（我在组里排第几） | `kpi` | 金额 / 名次 / 组内名次 / 组内人数（单行） | 无 |
+| fr003_personal_wage_detail | 个人工资明细 | `table` | 小计金额（合计） | 日期/款号/工序/完成数量/工价单价/小计金额 |
+| fr001_personal_output | 个人产量统计 | `table` | 产量（合计） | 日期/款号/工序/产量 |
+| fr006_order_output | 订单/款号产量 | `table` | 产量（合计） | 款号/工序/产量/参与人数 |
+| fr005_order_progress | 订单/款号进度 | `table` | 计划/完工数量（合计） | 生产单号/款号/计划/完工/进度/当前工序/在制数量 |
+| fr009_factory_order_overview | 全厂订单进度总览 | `table` | — | 生产单号/款号/客户/订单数量/完工/进度/交期预警/距交期；**`alert_marker`：`delivery_warning=='1'` 整行标红** |
+| fr008_payroll_ranking | 员工工资清单与排名 | `ranking` | 工资金额（合计） | 工号/姓名/车间小组/计件件数/工资金额/名次/组内名次；**`group_by: dept` 按组 tab 切换** |
+| fr011_factory_payroll_stats | 全厂工资统计 | `table` | 应发合计（合计） | 车间小组/应发合计/在册人数/人均工资 |
+| fr007_workshop_output_comparison | 车间产量对比 | `ranking` | 产量（合计） | 车间小组/产量/有产出人数/人均产量/名次/达成率 |
+| fr010_workshop_output_overview | 车间产量总览 | `table` | — | 车间小组/款号/计划数量/完工数量/达成率 |
+
+空结果（`row_count=0` 且 `incomplete=false`）**不下发 `card`**，前端按"没有查询到相关记录"空态处理；`incomplete=true` 时 `card` 照常下发，并附 `notes` 提示。
 
 `interaction.completed`（终态）：
 
