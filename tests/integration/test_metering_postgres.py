@@ -4,8 +4,6 @@ Set ``FACTORY_AGENT_TEST_POSTGRES_URL`` to a disposable database to enable the
 suite. It creates and drops its own schema and never touches customer data.
 """
 
-
-
 import os
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timedelta, timezone
@@ -16,6 +14,7 @@ import pytest_asyncio
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from factory_agent.application.rollup import RollupEngine, hour_bucket
@@ -64,6 +63,12 @@ def usage_admin_alembic_config() -> Config:
     config.set_main_option("script_location", str(REPOSITORY_ROOT / "usage-admin" / "migrations"))
     config.set_main_option("sqlalchemy.url", normalize_dsn(DATABASE_URL))
     return config
+
+
+def current_head(config: Config) -> str:
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    return head
 
 
 @pytest.fixture
@@ -308,16 +313,19 @@ async def test_migration_coexistence_both_orders(clean_database: sa.Engine) -> N
     # Order A: factory-agent first, then usage-admin.
     command.upgrade(alembic_config(), "head")
     command.upgrade(usage_admin_alembic_config(), "head")
+    agent_head = current_head(alembic_config())
+    admin_head = current_head(usage_admin_alembic_config())
     with clean_database.connect() as connection:
-        version_rows = set(
+        agent_versions = {
+            str(row[0])
+            for row in connection.execute(sa.text("SELECT version_num FROM alembic_version"))
+        }
+        admin_versions = {
             str(row[0])
             for row in connection.execute(
-                sa.text(
-                    "SELECT version_num FROM alembic_version"
-                    " UNION ALL SELECT version_num FROM alembic_version_usage_admin"
-                )
+                sa.text("SELECT version_num FROM alembic_version_usage_admin")
             )
-        )
+        }
         names = set(
             str(row[0])
             for row in connection.execute(
@@ -326,10 +334,12 @@ async def test_migration_coexistence_both_orders(clean_database: sa.Engine) -> N
                 )
             )
         )
-    # Single development baseline per service:
-    # factory-agent = 20260824_0001_session, usage-admin = 20260827_0001_usage.
-    assert "20260824_0001_session" in version_rows
-    assert "20260827_0001_usage" in version_rows
+    # Separate Alembic version tables: each service records exactly its own
+    # current head in the shared database. The heads are read back from the
+    # script directories so this assertion tracks the migration chain instead
+    # of pinning a development baseline.
+    assert agent_versions == {agent_head}
+    assert admin_versions == {admin_head}
     assert "usage_event" in names
     assert "tenant_registry" in names
 

@@ -157,6 +157,30 @@ class SqlInteractionStore:
             )
         return tuple(_interaction_from_row(row) for row in rows)
 
+    async def fail_abandoned_runs(
+        self,
+        *,
+        abandoned_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> tuple[InteractionRecord, ...]:
+        """Bulk recovery: fail every ``pending`` interaction that never started."""
+        async with self._engine.begin() as connection:
+            rows = (
+                (
+                    await connection.execute(
+                        queries.fail_abandoned_interaction_runs(
+                            abandoned_before=abandoned_before,
+                            now=now,
+                            category=category,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(_interaction_from_row(row) for row in rows)
+
     async def get_interaction(
         self, owner: InteractionOwner, interaction_id: InteractionId
     ) -> InteractionRecord | None:

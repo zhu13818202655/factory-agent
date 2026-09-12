@@ -98,8 +98,9 @@ sequenceDiagram
 ## 6. 孤儿自愈与恢复闭环
 
 - **单条自愈（旁听连接触发）**：带 owner 谓词的 `fail_stale_run` 发现 stale `running` 时就地治愈，落库 `failed/executor_lost`；CAS 的同时把 `last_event_sequence + 1`“预约”为终态事件序号，再由调用方补写事件、系统消息与计量。
-- **启动 sweep（进程级）**：`create_app` 的 FastAPI lifespan 启动钩子做批量 CAS，清扫所有遗留 `running`。这是唯一能覆盖“进程已死”的恢复点——后台任务随进程死亡，`--reload`、崩溃、容器重建都靠它。
-- **停机 bounded drain（收尾）**：lifespan 关闭时给在跑执行器最多 10s（`SessionService.shutdown`）跑完；超时直接取消，剩下的 `running` 交给下次启动 sweep 兜底。
+- **批量自愈（启动 + 周期）**：`sweep_stale_runs`（`running` 孤儿）与 `sweep_abandoned_runs`（从未被 claim 的 `pending`）各做一次批量 CAS，`create_app` 的 lifespan 启动时各跑一次，并按 `session_sweep_interval_seconds` 起一个周期任务持续跑。启动那一轮是唯一能覆盖“进程已死”的恢复点——后台任务随进程死亡，`--reload`、崩溃、容器重建都靠它；周期那一轮覆盖“进程活着但没有任何连接在跟”的孤儿，让收敛不再依赖“碰巧有人重连”或进程重启。
+- **从未开始的提问**：`start()` 落库后是 `pending`，只有第一条 stream 的 CAS 会把它推到 `running`。若客户端只提交、不订阅，这行既不会被超时判定也不会被任何 sweep 覆盖，却已在提交时写入 `interaction_started` 计量——形成“有提问、无完成”的悬空数据。`sweep_abandoned_runs` 在 `session_abandoned_pending_seconds`（默认 600s）后落库 `failed/abandoned` 收口。
+- **停机 bounded drain（收尾）**：lifespan 关闭时先取消周期扫描任务，再给在跑执行器最多 10s（`SessionService.shutdown`）跑完；超时直接取消，剩下的 `running` 交给下次启动 sweep 兜底。
 
 一次 run 的完整状态迁移：
 
@@ -112,6 +113,7 @@ stateDiagram-v2
     running --> failed: 预算耗尽（run_timeout）/ 管线失败
     running --> cancelled: /cancel API（通道一）
     running --> failed: fail_stale_run（executor_lost，自愈）
+    pending --> failed: sweep_abandoned_runs（abandoned，无人订阅）
     completed --> [*]
     failed --> [*]
     cancelled --> [*]
@@ -139,6 +141,8 @@ stateDiagram-v2
 | `session_follow_timeout_seconds` | 600s | 单条跟随流的预算；到期只发线上 `follow_timeout` 终态，不改 DB |
 | `session_run_timeout_seconds` | 300s | 执行器 wall-clock 预算；到期落库 `failed/run_timeout` |
 | `session_stale_running_seconds` | 600s | 孤儿判定阈值；超期落库 `failed/executor_lost` |
+| `session_abandoned_pending_seconds` | 600s | 从未被 claim 的 `pending` 判定阈值；超期落库 `failed/abandoned` |
+| `session_sweep_interval_seconds` | 300s | 周期恢复扫描间隔（0 = 只保留启动那一轮） |
 | 停机 drain（`SessionService.shutdown`） | 10s | 停机时给在跑执行器的收尾窗口 |
 
 

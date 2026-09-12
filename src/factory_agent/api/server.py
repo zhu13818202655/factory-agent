@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Literal, cast
@@ -50,24 +51,38 @@ async def readiness(request: Request) -> HealthResponse:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Startup sweep + shutdown drain for the run executors.
+    """Startup recovery, periodic sweep, and shutdown drain for the executors.
 
     Startup: durably fail every ``running`` interaction left orphaned by a
-    previous process (bulk compare-and-set, idempotent under multi-worker
-    starts). Shutdown: give the in-process executors a bounded drain window;
-    whatever is still running is cancelled and recovered by the next startup
-    sweep.
+    previous process and every ``pending`` interaction that no stream ever
+    claimed (bulk compare-and-sets, idempotent under multi-worker starts). The
+    periodic sweep then keeps reaping both classes while the process lives, so
+    an orphan whose followers all disconnected converges without a restart.
+    Shutdown: stop the sweep loop, then give the in-process executors a bounded
+    drain window; whatever is still running is cancelled and recovered by the
+    next startup sweep.
     """
     container = cast(ApplicationContainer, app.state.container)
+    settings = cast(FactoryAgentSettings, app.state.settings)
     service = container.sessions_service
+    sweep_task: asyncio.Task[None] | None = None
     if service is not None:
         try:
+            await service.sweep_abandoned_runs()
             await service.sweep_stale_runs()
         except Exception:  # noqa: BLE001 - recovery must never block startup
             _logger.exception("session.sweep.startup_failed")
+        if settings.session_sweep_interval_seconds > 0:
+            sweep_task = asyncio.create_task(
+                service.sweep_forever(settings.session_sweep_interval_seconds),
+                name="session-recovery-sweep",
+            )
     try:
         yield
     finally:
+        if sweep_task is not None:
+            sweep_task.cancel()
+            await asyncio.gather(sweep_task, return_exceptions=True)
         if service is not None:
             try:
                 await service.shutdown()

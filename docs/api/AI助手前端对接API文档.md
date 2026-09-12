@@ -714,6 +714,7 @@ data: {"interaction_id":"it_xxx","error_category":"forbidden"}
 | `clarification_exhausted` | 追问轮次用尽 |
 | `capability_unresolved` / `capability_unregistered` | 意图无法落到已注册能力 |
 | `gateway_*` / `model_output_invalid` | 模型调用失败或输出校验失败 |
+| `abandoned` | 提问已受理但始终没有任何连接订阅事件流，超时后由恢复扫描判定"未能开始执行"；文案为「该提问未能开始执行，请重新发送。」 |
 | `execution_failed` | 取数/计算执行失败 |
 
 `interaction.cancelled`（终态）：

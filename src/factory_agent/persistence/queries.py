@@ -200,6 +200,42 @@ def fail_stale_interaction_runs(
     )
 
 
+def fail_abandoned_interaction_runs(
+    *,
+    abandoned_before: datetime,
+    now: datetime,
+    category: str,
+) -> sa.Update:
+    """Bulk recovery: fail every ``pending`` interaction that never started.
+
+    ``start`` persists a question with status ``pending`` and only the first
+    claiming stream moves it to ``running``. A row whose creation is older than
+    the abandonment threshold was never claimed, so it can never run and no
+    stream-driven recovery would ever terminate it. Like
+    :func:`fail_stale_interaction_runs` this is a process-boundary recovery job
+    rather than a user-scoped query, so it is deliberately NOT listed in
+    ``OWNERSHIP_SCOPED_BUILDERS``. The update also reserves the terminal event
+    sequence by bumping ``last_event_sequence``; the caller persists the
+    terminal event itself.
+    """
+    return (
+        sa.update(interaction_table)
+        .where(
+            interaction_table.c.status == "pending",
+            interaction_table.c.created_at < abandoned_before,
+        )
+        .values(
+            status="failed",
+            state="failed",
+            error_category=category,
+            updated_at=now,
+            completed_at=now,
+            last_event_sequence=interaction_table.c.last_event_sequence + 1,
+        )
+        .returning(*interaction_table.c)
+    )
+
+
 def delete_session(tenant_id: str, user_id: str, session_id: str) -> sa.Delete:
     return sa.delete(interaction_table).where(
         _owned(interaction_table, tenant_id, user_id),
@@ -226,6 +262,7 @@ __all__ = [
     "decode_cursor",
     "delete_session",
     "encode_cursor",
+    "fail_abandoned_interaction_runs",
     "fail_stale_interaction_runs",
     "select_events",
     "select_interaction",

@@ -35,6 +35,7 @@ from factory_agent.domain import (
     InteractionId,
     InteractionRecord,
     InteractionStatus,
+    MessageKind,
     Role,
     SessionEvent,
     SessionId,
@@ -378,6 +379,146 @@ async def test_startup_sweep_fails_only_stale_running_and_is_idempotent() -> Non
 
     # Idempotent: a second sweep (multi-worker restart) marks nothing.
     assert await service.sweep_stale_runs() == 0
+
+
+@pytest.mark.asyncio
+async def test_abandoned_sweep_reaps_only_unclaimed_pending() -> None:
+    """A question persisted without any stream claim is terminated, once."""
+    store = InMemoryInteractionStore()
+    service, store, _runner = build(
+        GatedModelGateway(),
+        store=store,
+        limits=SessionLimits(abandoned_pending_seconds=600, stale_running_seconds=600),
+    )
+    # A real start(): the question is persisted with its own message at
+    # sequence 1 and no connection ever claimed the run.
+    abandoned_id = await seed_pending(service)
+    store.interactions[str(abandoned_id)] = replace(
+        store.interactions[str(abandoned_id)], created_at=NOW - timedelta(seconds=700)
+    )
+    fresh_id = await seed_pending(service)
+    _seed_running(store, "i-running", updated_at=NOW - timedelta(seconds=700))
+
+    count = await service.sweep_abandoned_runs()
+
+    assert count == 1
+    reaped = store.interactions[str(abandoned_id)]
+    assert reaped.status is InteractionStatus.FAILED
+    assert reaped.state is SessionState.FAILED
+    assert reaped.error_category == "abandoned"
+    assert reaped.completed_at == NOW
+    # The reserved terminal event sequence.
+    assert reaped.last_event_sequence == 1
+    assert store.interactions[str(fresh_id)].status is InteractionStatus.PENDING
+    assert store.interactions["i-running"].status is InteractionStatus.RUNNING
+
+    stored_events = store.events[str(abandoned_id)]
+    assert [event.name for event in stored_events] == ["interaction.failed"]
+    assert stored_events[-1].data["error_category"] == "abandoned"
+    assert stored_events[-1].data["message"] == "该提问未能开始执行，请重新发送。"
+    # The question already owns message sequence 1, so the notice must take the
+    # next slot: agent_message is unique on (interaction_id, sequence).
+    messages = [m for m in store.messages if str(m.interaction_id) == str(abandoned_id)]
+    assert [(m.kind, m.sequence) for m in messages] == [
+        (MessageKind.PLAIN_TEXT, 1),
+        (MessageKind.ERROR, 2),
+    ]
+    assert [event["error_category"] for event in completion_events(store)] == ["abandoned"]
+
+    # Idempotent: a second sweep (multi-worker restart) marks nothing.
+    assert await service.sweep_abandoned_runs() == 0
+
+
+@pytest.mark.asyncio
+async def test_reaped_abandoned_question_streams_a_clean_terminal() -> None:
+    """A late subscriber replays the terminal and never re-runs the question."""
+    store = InMemoryInteractionStore()
+    service, store, runner = build(GatedModelGateway(), store=store)
+    interaction_id = await seed_pending(service)
+    store.interactions[str(interaction_id)] = replace(
+        store.interactions[str(interaction_id)], created_at=NOW - timedelta(seconds=700)
+    )
+    await service.sweep_abandoned_runs()
+    commits_before = store.commits
+
+    events = await _drain_all(service, interaction_id)
+
+    assert [event.name for event in events] == ["interaction.failed"]
+    assert events[0].data["error_category"] == "abandoned"
+    # The reaped row is already terminal, so the connection is a pure subscriber:
+    # no claim, no executor, no business call, no further write.
+    assert runner.requests == []
+    assert store.commits == commits_before
+
+
+@pytest.mark.asyncio
+async def test_periodic_sweep_reaps_both_recovery_classes() -> None:
+    """The periodic pass covers abandoned questions and orphaned runs alike."""
+    store = InMemoryInteractionStore()
+    service, store, _runner = build(
+        GatedModelGateway(),
+        store=store,
+        limits=SessionLimits(abandoned_pending_seconds=600, stale_running_seconds=600),
+    )
+    abandoned_id = await seed_pending(service)
+    store.interactions[str(abandoned_id)] = replace(
+        store.interactions[str(abandoned_id)], created_at=NOW - timedelta(seconds=700)
+    )
+    _seed_running(store, "i-run", updated_at=NOW - timedelta(seconds=700))
+
+    task = asyncio.create_task(service.sweep_forever(0.01))
+    try:
+        for _ in range(400):
+            abandoned_done = (
+                store.interactions[str(abandoned_id)].status is InteractionStatus.FAILED
+            )
+            orphan_done = store.interactions["i-run"].status is InteractionStatus.FAILED
+            if abandoned_done and orphan_done:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert store.interactions[str(abandoned_id)].error_category == "abandoned"
+    assert store.interactions["i-run"].error_category == "executor_lost"
+
+
+@pytest.mark.asyncio
+async def test_periodic_sweep_survives_a_failing_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery must not become a second outage: one bad pass is skipped."""
+    store = InMemoryInteractionStore()
+    service, store, _runner = build(
+        GatedModelGateway(), store=store, limits=SessionLimits(stale_running_seconds=600)
+    )
+    _seed_running(store, "i-run", updated_at=NOW - timedelta(seconds=700))
+    original = store.fail_abandoned_runs
+    calls = {"count": 0}
+
+    async def flaky(
+        *, abandoned_before: datetime, now: datetime, category: str
+    ) -> tuple[InteractionRecord, ...]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("session store unavailable")
+        return await original(abandoned_before=abandoned_before, now=now, category=category)
+
+    monkeypatch.setattr(store, "fail_abandoned_runs", flaky)
+
+    task = asyncio.create_task(service.sweep_forever(0.01))
+    try:
+        for _ in range(400):
+            if store.interactions["i-run"].status is InteractionStatus.FAILED:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert calls["count"] > 1
+    assert store.interactions["i-run"].status is InteractionStatus.FAILED
 
 
 async def _drain_all(service: SessionService, interaction_id: InteractionId) -> list[SessionEvent]:

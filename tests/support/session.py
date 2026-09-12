@@ -1,5 +1,3 @@
-
-
 import itertools
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -135,6 +133,35 @@ class InMemoryInteractionStore:
             )
             if record is not None:
                 failed.append(record)
+        return tuple(failed)
+
+    async def fail_abandoned_runs(
+        self,
+        *,
+        abandoned_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> tuple[InteractionRecord, ...]:
+        """Bulk recovery: fail every ``pending`` interaction that never ran."""
+        doomed = [
+            key
+            for key, record in self.interactions.items()
+            if record.status is InteractionStatus.PENDING and record.created_at < abandoned_before
+        ]
+        failed: list[InteractionRecord] = []
+        for key in doomed:
+            record = self.interactions[key]
+            reaped = replace(
+                record,
+                status=InteractionStatus.FAILED,
+                state=SessionState.FAILED,
+                error_category=category,
+                updated_at=now,
+                completed_at=now,
+                last_event_sequence=record.last_event_sequence + 1,
+            )
+            self.interactions[key] = reaped
+            failed.append(reaped)
         return tuple(failed)
 
     @staticmethod

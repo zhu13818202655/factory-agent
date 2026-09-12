@@ -1,5 +1,3 @@
-
-
 from datetime import datetime, timezone
 
 import pytest
@@ -93,6 +91,34 @@ def test_fail_stale_run_requires_running_and_staleness() -> None:
     assert "updated_at < '2026-08-24 06:00:00+00:00'" in sql
     assert "status='failed'" in sql
     assert "last_event_sequence + 1" in sql
+
+
+def test_fail_abandoned_runs_targets_unclaimed_pending_only() -> None:
+    sql = compiled(
+        queries.fail_abandoned_interaction_runs(abandoned_before=NOW, now=NOW, category="abandoned")
+    )
+
+    assert "status = 'pending'" in sql
+    assert "created_at < '2026-08-24 06:00:00+00:00'" in sql
+    assert "status='failed'" in sql
+    assert "last_event_sequence + 1" in sql
+
+
+def test_bulk_recovery_builders_are_deliberately_not_ownership_scoped() -> None:
+    """Sweeps repair every owner's rows; they must never be listed as scoped."""
+
+    assert "fail_stale_interaction_runs" not in queries.OWNERSHIP_SCOPED_BUILDERS
+    assert "fail_abandoned_interaction_runs" not in queries.OWNERSHIP_SCOPED_BUILDERS
+    for statement in (
+        queries.fail_stale_interaction_runs(stale_before=NOW, now=NOW, category="executor_lost"),
+        queries.fail_abandoned_interaction_runs(
+            abandoned_before=NOW, now=NOW, category="abandoned"
+        ),
+    ):
+        # The columns still appear in RETURNING; the point is that no ownership
+        # predicate narrows the recovery job to a single caller.
+        assert f"tenant_id = '{TENANT}'" not in compiled(statement)
+        assert f"user_id = '{USER}'" not in compiled(statement)
 
 
 def test_messages_and_events_cascade_from_the_interaction() -> None:

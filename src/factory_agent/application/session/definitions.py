@@ -40,6 +40,9 @@ class SessionLimits:
     #: cooperative stop points; must stay below
     #: ``stale_running_seconds`` (see ``config.session_run_timeout_seconds``).
     run_timeout_seconds: float = 300.0
+    #: A ``pending`` interaction older than this never had a claiming stream;
+    #: the recovery sweeps fail it durably with ``abandoned``.
+    abandoned_pending_seconds: float = 600.0
 
 
 EMPTY_BUSINESS_FILTERS = ResolvedBusinessFilters(
@@ -83,6 +86,11 @@ TERMINAL_STATUSES = frozenset(
 #: Cooperative stop-point verdicts.
 STOP_CANCELLED = "cancelled"
 STOP_RUN_TIMEOUT = "run_timeout"
+#: Recovery categories written by the sweeps.
+CATEGORY_EXECUTOR_LOST = "executor_lost"
+CATEGORY_ABANDONED = "abandoned"
+#: User-facing notice persisted with an abandoned interaction's terminal event.
+ABANDONED_NOTICE = "该提问未能开始执行，请重新发送。"
 TERMINAL_NAMES = frozenset(
     {
         terminal_event_name(InteractionStatus.COMPLETED),

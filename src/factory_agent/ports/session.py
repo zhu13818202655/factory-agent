@@ -147,13 +147,32 @@ class InteractionStore(Protocol):
         now: datetime,
         category: str,
     ) -> tuple[InteractionRecord, ...]:
-        """Bulk startup variant of ``fail_stale_runs``.
+        """Bulk startup variant of ``fail_stale_run``.
 
         Fails every stale ``RUNNING`` interaction across all owners in one
         compare-and-set; called once at application startup. Returns the
         failed records (terminal event sequence already reserved) so the
         caller can persist each terminal event. Idempotent under repeated and
         concurrent worker starts.
+        """
+        ...
+
+    async def fail_abandoned_runs(
+        self,
+        *,
+        abandoned_before: datetime,
+        now: datetime,
+        category: str,
+    ) -> tuple[InteractionRecord, ...]:
+        """Bulk recovery: fail every ``pending`` interaction that never started.
+
+        A ``pending`` row was persisted by ``start`` but no stream ever claimed
+        it, so it can never produce an answer and no stream-driven recovery
+        would ever terminate it. Rows older than the abandonment threshold are
+        failed in one compare-and-set, returning the failed records with their
+        terminal event sequence already reserved so the caller can persist each
+        terminal event. Idempotent: only rows still ``pending`` are updated,
+        each exactly once.
         """
         ...
 

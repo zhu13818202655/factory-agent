@@ -5,7 +5,6 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 
 from factory_agent.application.context import ConversationTurn
-from factory_agent.application.session.base import SessionCore
 from factory_agent.application.session.definitions import (
     TERMINAL_NAMES,
     TERMINAL_STATUSES,
@@ -34,7 +33,7 @@ from factory_agent.domain import (
 from factory_agent.ports import InteractionCommit, TrustedCredential
 
 
-class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycleMixin, SessionCore):
+class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycleMixin):
     """Thin orchestrator: ownership-checked entry points over the pipeline.
 
     Layering (each mixin only calls methods of the layers below it):

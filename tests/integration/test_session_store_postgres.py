@@ -366,3 +366,59 @@ async def test_startup_sweep_fails_every_stale_running_interaction_once(
         )
         == ()
     )
+
+
+async def test_abandoned_sweep_fails_only_unclaimed_pending_once(
+    store: SqlInteractionStore,
+) -> None:
+    """A question no stream ever claimed is terminated; live rows are not."""
+    unclaimed = interaction("i-unclaimed", created_at=NOW - timedelta(seconds=700))
+    fresh = interaction("i-pending-fresh", created_at=NOW - timedelta(seconds=10))
+    running = interaction(
+        "i-running",
+        status=InteractionStatus.RUNNING,
+        state=SessionState.EXECUTING,
+        created_at=NOW - timedelta(seconds=700),
+    )
+    completed = interaction(
+        "i-done",
+        status=InteractionStatus.COMPLETED,
+        state=SessionState.ANSWERED,
+        created_at=NOW - timedelta(seconds=700),
+    )
+    for record in (unclaimed, fresh, running, completed):
+        await store.commit(InteractionCommit(interaction=record))
+
+    failed = await store.fail_abandoned_runs(
+        abandoned_before=NOW - timedelta(seconds=600),
+        now=NOW,
+        category="abandoned",
+    )
+
+    assert [str(record.interaction_id) for record in failed] == ["i-unclaimed"]
+    reaped = failed[0]
+    assert reaped.status is InteractionStatus.FAILED
+    assert reaped.state is SessionState.FAILED
+    assert reaped.error_category == "abandoned"
+    assert reaped.completed_at == NOW
+    # Terminal event sequence reserved for the caller to persist.
+    assert reaped.last_event_sequence == 1
+    assert (await store.get_interaction(OWNER, InteractionId("i-pending-fresh"))).status is (  # type: ignore[union-attr]
+        InteractionStatus.PENDING
+    )
+    assert (await store.get_interaction(OWNER, InteractionId("i-running"))).status is (  # type: ignore[union-attr]
+        InteractionStatus.RUNNING
+    )
+    assert (await store.get_interaction(OWNER, InteractionId("i-done"))).status is (  # type: ignore[union-attr]
+        InteractionStatus.COMPLETED
+    )
+
+    # Idempotent: repeated and concurrent worker sweeps mark nothing.
+    assert (
+        await store.fail_abandoned_runs(
+            abandoned_before=NOW - timedelta(seconds=600),
+            now=NOW,
+            category="abandoned",
+        )
+        == ()
+    )

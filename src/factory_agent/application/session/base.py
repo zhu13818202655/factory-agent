@@ -92,7 +92,6 @@ class SessionCore:
         self._personalization = personalization
         self._chat_responder = chat
         self._summarizer = summarizer
-        #: Pre-execution scope guard (方案二权限链路): classifies the requested
         #: data scope against the token role range before any business call.
         self._scope_guard = scope_guard
         self._credential_binder = credential_binder

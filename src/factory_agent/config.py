@@ -93,6 +93,15 @@ class FactoryAgentSettings(BaseSettings):
     #: ``session_stale_running_seconds`` so a live-but-slow run is failed by
     #: its own budget before any follower can mistake it for an orphan.
     session_run_timeout_seconds: float = Field(default=300.0, gt=0.0)
+    #: A ``pending`` interaction older than this never had a stream claim it:
+    #: the question is persisted but no connection ever subscribed, so the run
+    #: can never start and no stream-driven recovery would ever terminate it.
+    #: The recovery sweeps fail such rows durably with ``abandoned``.
+    session_abandoned_pending_seconds: float = Field(default=600.0, gt=0.0)
+    #: Interval of the periodic recovery sweep (abandoned ``pending`` rows and
+    #: orphaned ``running`` runs with no connection tailing them). Zero disables
+    #: the periodic sweep; the startup sweep always runs.
+    session_sweep_interval_seconds: float = Field(default=300.0, ge=0.0)
 
 
 @lru_cache
