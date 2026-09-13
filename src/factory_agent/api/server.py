@@ -77,9 +77,36 @@ async def _lifespan(app: FastAPI):
                 service.sweep_forever(settings.session_sweep_interval_seconds),
                 name="session-recovery-sweep",
             )
+
+    # Out-of-band LLM endpoint health: one startup probe so the first request
+    # already routes against the current verdict, then a periodic probe so a
+    # server that dies while the process lives is demoted within the cadence.
+    # Both are bounded (timeout per endpoint) and any failure is logged and
+    # dropped; the reviewed registry stays in place, litellm's own fallback
+    # still covers the request path.
+    health = container.model_health
+    health_task: asyncio.Task[None] | None = None
+    if health is not None:
+        try:
+            await health.refresh()
+        except Exception:  # noqa: BLE001 - probing must never block startup
+            _logger.exception("llm.health.startup_probe_failed")
+        if settings.llm_health_probe_interval_seconds > 0:
+            health_task = asyncio.create_task(
+                health.probe_forever(settings.llm_health_probe_interval_seconds),
+                name="llm-endpoint-health",
+            )
     try:
         yield
     finally:
+        if health_task is not None:
+            health_task.cancel()
+            await asyncio.gather(health_task, return_exceptions=True)
+        if health is not None:
+            try:
+                await health.aclose()
+            except Exception:  # noqa: BLE001 - shutdown must never hang the app
+                _logger.exception("llm.health.aclose_failed")
         if sweep_task is not None:
             sweep_task.cancel()
             await asyncio.gather(sweep_task, return_exceptions=True)

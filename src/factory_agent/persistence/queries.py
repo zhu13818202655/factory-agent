@@ -133,6 +133,31 @@ def claim_interaction_run(
     )
 
 
+def touch_interaction_run(
+    tenant_id: str,
+    user_id: str,
+    interaction_id: str,
+    *,
+    last_event_sequence: int,
+    updated_at: datetime,
+) -> sa.Update:
+    """Advance an informational commit's bookkeeping, never its lifecycle.
+
+    Progress commits hand over an in-memory record whose ``status``/``state``
+    are whatever this process last knew. Writing those columns would overwrite a
+    terminal another process persisted in the meantime and resurrect a cancelled
+    run, so only the sequence watermark and liveness timestamp move.
+    """
+    return (
+        sa.update(interaction_table)
+        .where(
+            _owned(interaction_table, tenant_id, user_id),
+            interaction_table.c.interaction_id == interaction_id,
+        )
+        .values(last_event_sequence=last_event_sequence, updated_at=updated_at)
+    )
+
+
 def fail_stale_interaction_run(
     tenant_id: str,
     user_id: str,

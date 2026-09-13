@@ -110,3 +110,13 @@ STAGE_LABELS: dict[SessionState, str] = {
     SessionState.FAILED: "失败",
     SessionState.CANCELLED: "取消",
 }
+
+#: Stage labels carried on progress events, keyed by the reason that announces
+#: them. Deliberately independent of ``STAGE_LABELS``: progress names work that
+#: is still in flight, and every announced window runs while the state machine
+#: is still ``PARSING``, so no state exists to label it from.
+PROGRESS_LABELS: dict[str, str] = {
+    "parse_started": "解析中",
+    "authorize_started": "权限检查中",
+    "scope_resolution_started": "核对数据范围",
+}

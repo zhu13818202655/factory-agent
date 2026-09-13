@@ -221,6 +221,10 @@ class SessionEvent:
 INTERACTION_STARTED = "interaction.started"
 INTERACTION_ANSWER = "interaction.answer"
 INTERACTION_PHASE = "interaction.phase"
+#: A long-running stage is under way. Unlike ``INTERACTION_PHASE`` (a completed
+#: transition) this event never moves ``SessionState``: it only tells the caller
+#: which step is being worked on while it is still silent.
+INTERACTION_PROGRESS = "interaction.progress"
 INTERACTION_CLARIFICATION = "interaction.clarification"
 INTERACTION_RESULT = "interaction.result"
 INTERACTION_HEARTBEAT = "interaction.heartbeat"
@@ -302,6 +306,7 @@ __all__ = [
     "INTERACTION_FAILED",
     "INTERACTION_HEARTBEAT",
     "INTERACTION_PHASE",
+    "INTERACTION_PROGRESS",
     "INTERACTION_RESULT",
     "INTERACTION_STARTED",
     "TERMINAL_EVENT_NAMES",

@@ -9,8 +9,11 @@ inside an allowed capability is still enforced by MES-side row filtering
 
 Matrix (customer-confirmed):
 - FR-001..FR-004 personal capabilities: all four roles (self dimension).
-- FR-005..FR-008 management capabilities: 01 组长 / 02 管理.
+- FR-005..FR-008 management capabilities: 01 组长 / 02 管理, and 99 老板.
 - FR-009..FR-012 factory-wide capabilities: 99 老板 only.
+
+The owner holds every capability a narrower role holds: his data range is a
+superset, so a wider role must never lose a narrower role's capability.
 """
 
 from dataclasses import dataclass
@@ -42,10 +45,14 @@ _ALL_ROLES: frozenset[Role] = frozenset(
     {Role.EMPLOYEE, Role.GROUP_LEADER, Role.MANAGER, Role.OWNER}
 )
 #: Management capabilities: group leaders and managers (customer function
-#: tables「管理」apply to 01/02; the boss role uses the factory-wide set).
+#: tables「管理」apply to 01/02).
 _MANAGEMENT_ROLES: frozenset[Role] = frozenset({Role.GROUP_LEADER, Role.MANAGER})
 #: Factory-wide capabilities: owner only.
 _OWNER_ROLES: frozenset[Role] = frozenset({Role.OWNER})
+#: Capabilities the owner holds in addition to the factory-wide set: the boss
+#: sees everything his group leaders and managers can see, because his data
+#: range (``ExpectedRange.whole_tenant``) is a superset of theirs.
+_MANAGEMENT_AND_OWNER_ROLES: frozenset[Role] = _MANAGEMENT_ROLES | _OWNER_ROLES
 
 #: Reviewed capability-role matrix; convergence point for the consistency
 #: validator's expected range definitions as well.
@@ -54,10 +61,10 @@ CAPABILITY_ROLES: dict[Capability, frozenset[Role]] = {
     Capability.OWN_PAYROLL_SUMMARY: _ALL_ROLES,
     Capability.OWN_PAYROLL_DETAIL: _ALL_ROLES,
     Capability.GROUP_INCOME_RANK: _ALL_ROLES,
-    Capability.ORDER_PROGRESS: _MANAGEMENT_ROLES,
-    Capability.ORDER_OUTPUT: _MANAGEMENT_ROLES,
-    Capability.WORKSHOP_COMPARISON: _MANAGEMENT_ROLES,
-    Capability.TEAM_PAYROLL_LIST: _MANAGEMENT_ROLES,
+    Capability.ORDER_PROGRESS: _MANAGEMENT_AND_OWNER_ROLES,
+    Capability.ORDER_OUTPUT: _MANAGEMENT_AND_OWNER_ROLES,
+    Capability.WORKSHOP_COMPARISON: _MANAGEMENT_AND_OWNER_ROLES,
+    Capability.TEAM_PAYROLL_LIST: _MANAGEMENT_AND_OWNER_ROLES,
     Capability.FACTORY_ORDER_OVERVIEW: _OWNER_ROLES,
     Capability.WORKSHOP_OUTPUT_OVERVIEW: _OWNER_ROLES,
     Capability.FACTORY_PAYROLL_STATS: _OWNER_ROLES,

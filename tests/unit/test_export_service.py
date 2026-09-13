@@ -1,14 +1,14 @@
-"""Instant-export service tests (no-retention export).
+"""Export service tests (retained local-disk export).
 
-Proves: in-memory render → transient buffer → owned fetch returns XLSX bytes;
-foreign/unknown ids are indistinguishable (None); the buffer is bounded; and a
+Proves: in-memory render → disk store → owned fetch returns XLSX bytes; the
+store survives a service restart within retention; foreign/unknown ids are
+indistinguishable (None); cache eviction never removes the artifact; and a
 renderer failure degrades to a structured error without touching results.
 """
 
-
-
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -40,12 +40,48 @@ def _ids(prefix: str = "art"):
     return factory
 
 
-@pytest.mark.asyncio
-async def test_export_renders_xlsx_in_memory_and_fetch_returns_owned_bytes() -> None:
-    service = ExportService(
-        clock=lambda: datetime(2026, 9, 3, 8, tzinfo=timezone.utc), new_id=_ids()
+def _service(store_dir: Path, **kwargs) -> ExportService:
+    return ExportService(
+        store_dir=store_dir,
+        clock=lambda: datetime(2026, 9, 3, 8, tzinfo=timezone.utc),
+        **kwargs,
     )
 
+
+async def _export_one(service: ExportService, interaction_id: str) -> str:
+    outcome = await service.export(
+        owner=_OWNER,
+        interaction_id=interaction_id,
+        capability_id=CapabilityId("fr008_payroll_ranking"),
+        role="manager",
+        function="FR-008",
+        time_range_label="2026-08-01_2026-08-31",
+        result=_result(),
+    )
+    return outcome.artifact_id
+
+
+@pytest.mark.asyncio
+async def test_export_renders_xlsx_to_disk_and_fetch_returns_owned_bytes(tmp_path: Path) -> None:
+    service = _service(tmp_path, new_id=_ids())
+
+    artifact_id = await _export_one(service, "it-1")
+
+    # Bytes + sidecar metadata live on disk, not only in memory.
+    assert (tmp_path / f"{artifact_id}.xlsx").read_bytes()[:2] == b"PK"
+    assert (tmp_path / f"{artifact_id}.json").is_file()
+
+    content = await service.fetch(_OWNER, artifact_id)
+    assert content is not None
+    assert content.content[:2] == b"PK"
+    assert content.content_type == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+@pytest.mark.asyncio
+async def test_export_outcome_carries_filename_and_size(tmp_path: Path) -> None:
+    service = _service(tmp_path, new_id=_ids())
     outcome = await service.export(
         owner=_OWNER,
         interaction_id="it-1",
@@ -61,48 +97,58 @@ async def test_export_renders_xlsx_in_memory_and_fetch_returns_owned_bytes() -> 
     # 文件名按 角色_功能_时间范围_生成时间 对齐.
     assert sanitize_filename(outcome.filename) == outcome.filename
 
-    content = await service.fetch(_OWNER, outcome.artifact_id)
+
+@pytest.mark.asyncio
+async def test_artifact_survives_service_restart_within_retention(tmp_path: Path) -> None:
+    first = _service(tmp_path, new_id=_ids())
+    artifact_id = await _export_one(first, "it-1")
+
+    # A fresh instance (the restart case): empty read cache, same disk store.
+    second = _service(tmp_path, new_id=_ids())
+    content = await second.fetch(_OWNER, artifact_id)
     assert content is not None
     assert content.content[:2] == b"PK"
-    assert content.content_type == (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    assert content.filename.endswith(".xlsx")
 
 
 @pytest.mark.asyncio
-async def test_fetch_of_foreign_or_unknown_id_is_indistinguishable() -> None:
-    service = ExportService(new_id=_ids())
-    outcome = await service.export(
-        owner=_OWNER,
-        interaction_id="it-1",
-        capability_id=CapabilityId("fr008_payroll_ranking"),
-        role="manager",
-        function="FR-008",
-        time_range_label="2026-08-01_2026-08-31",
-        result=_result(),
-    )
+async def test_expired_artifact_is_not_served_after_restart(tmp_path: Path) -> None:
+    service = _service(tmp_path, new_id=_ids(), retention_seconds=3600)
+    artifact_id = await _export_one(service, "it-1")
 
-    assert await service.fetch(_OTHER, outcome.artifact_id) is None
+    later = ExportService(
+        store_dir=tmp_path,
+        clock=lambda: datetime(2026, 9, 3, 8, tzinfo=timezone.utc) + timedelta(hours=2),
+        new_id=_ids(),
+        retention_seconds=3600,
+    )
+    assert await later.fetch(_OWNER, artifact_id) is None
+    # The expired files were purged from disk.
+    assert not (tmp_path / f"{artifact_id}.xlsx").exists()
+    assert not (tmp_path / f"{artifact_id}.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_fetch_of_foreign_or_unknown_id_is_indistinguishable(tmp_path: Path) -> None:
+    service = _service(tmp_path, new_id=_ids())
+    artifact_id = await _export_one(service, "it-1")
+
+    assert await service.fetch(_OTHER, artifact_id) is None
     assert await service.fetch(_OWNER, "missing-art") is None
 
 
 @pytest.mark.asyncio
-async def test_buffer_is_bounded_to_newest_entries() -> None:
-    service = ExportService(new_id=_ids(), max_entries=2)
+async def test_cache_is_bounded_but_disk_keeps_every_artifact(tmp_path: Path) -> None:
+    service = _service(tmp_path, new_id=_ids(), max_entries=2)
     first = None
     for index in range(3):
-        outcome = await service.export(
-            owner=_OWNER,
-            interaction_id=f"it-{index}",
-            capability_id=CapabilityId("fr008_payroll_ranking"),
-            role="manager",
-            function="FR-008",
-            time_range_label="2026-08-01_2026-08-31",
-            result=_result(),
-        )
+        artifact_id = await _export_one(service, f"it-{index}")
         if index == 0:
-            first = outcome.artifact_id
+            first = artifact_id
 
     assert first is not None
-    # The oldest entry was evicted; the newest two remain fetchable.
-    assert await service.fetch(_OWNER, first) is None
+    # The oldest entry fell out of the read cache but the disk store still
+    # serves it within retention — persistence is never bounded by the cache.
+    content = await service.fetch(_OWNER, first)
+    assert content is not None
+    assert content.content[:2] == b"PK"

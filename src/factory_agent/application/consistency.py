@@ -12,12 +12,12 @@ Two tiers:
 
 - Exact (``exact_hit``): the returned business rows carry ownership values
   (uid/dept) outside the ``ExpectedRange`` derived from the authoritative
-  token role and binding. Conclusion is certain; in production it blocks the
-  related rows from display with a friendly prompt plus an alert.
+  token role and binding. Conclusion is certain; it is recorded for review
+  with an alert and a warning log, and never blocks the answer.
 - Heuristic (``heuristic_hit``): the data shape disagrees with the role's
   expected subject semantics (e.g. a single-subject summary returning multiple
-  rows). Conclusion is only a hint; it never blocks in production, is logged
-  with full structured fields, and is periodically reviewed.
+  rows). Conclusion is only a hint; it is logged with full structured fields
+  and periodically reviewed.
 
 A role interpretation table guards every rule: the same shape can be a normal
 business fact for one role and an anomaly for another (e.g. an owner asking a
@@ -36,9 +36,9 @@ from factory_agent.application.permission_matrix import ROLE_DATA_RANGE, Capabil
 from factory_agent.domain import ExpectedRange, Role
 from factory_agent.ports.session import CapabilityRunResult
 
-#: Human-readable staged mode. strict = 对接期 (any inconsistency blocks the
-#: result and is exposed as an integration problem for joint resolution with
-#: the MES side); production = 主路径信任 MES + two-tier handling.
+#: Deployment label recorded with every finding. Both stages share the same
+#: advisory-only disposition (record + alert + warning log, never block);
+#: the label keeps the review table explicit about which stage produced it.
 ValidationMode = StrEnum("ValidationMode", {"STRICT": "strict", "PRODUCTION": "production"})
 
 
@@ -202,12 +202,13 @@ def _range_text(expected: ExpectedRange) -> str:
 
 
 def should_block(level: ValidationLevel, mode: str) -> bool:
-    """Two-tier disposition: exact always blocks; heuristic blocks only in
-    strict (对接期) mode where every inconsistency is an integration problem."""
-    if level is ValidationLevel.EXACT_HIT:
-        return True
-    if level is ValidationLevel.HEURISTIC_HIT:
-        return mode == ValidationMode.STRICT.value
+    """Advisory-only disposition.
+
+    The customer confirms every MES interface is already role-filtered
+    upstream (所见即所得), so a local inconsistency is a signal for customer
+    follow-up — recorded and alerted, never a gate on data return.
+    """
+    del level, mode
     return False
 
 

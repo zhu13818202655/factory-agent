@@ -40,12 +40,12 @@ aliases:
         provider: openai
         model_env: FACTORY_AGENT_LLM_MODEL
         api_base_env: FACTORY_AGENT_LLM_API_BASE
-        priority: 1
+        priority: 2
       - model: deepseek-v4-flash
         api_base: https://api.deepseek.com/v1
         api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
         provider: deepseek
-        priority: 2
+        priority: 1
 
   - alias: factory-reasoning
     fallbacks: []
@@ -56,12 +56,12 @@ aliases:
         provider: openai
         model_env: FACTORY_AGENT_LLM_MODEL
         api_base_env: FACTORY_AGENT_LLM_API_BASE
-        priority: 1
+        priority: 2
       - model: deepseek-v4-flash
         api_base: https://api.deepseek.com/v1
         api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
         provider: deepseek
-        priority: 2
+        priority: 1
 
   - alias: factory-summary
     fallbacks: [factory-fast]
@@ -72,12 +72,12 @@ aliases:
         provider: openai
         model_env: FACTORY_AGENT_LLM_MODEL
         api_base_env: FACTORY_AGENT_LLM_API_BASE
-        priority: 1
+        priority: 2
       - model: deepseek-v4-flash
         api_base: https://api.deepseek.com/v1
         api_key_env: FACTORY_AGENT_LLM_KEY_DEEPSEEK
         provider: deepseek
-        priority: 2
+        priority: 1
 
 # `provider: openai` is REQUIRED for this self-hosted vLLM endpoint. The served
 # model id (`Qwen/Qwen3.8-27B-FP8`) has no LiteLLM provider mapping, and an

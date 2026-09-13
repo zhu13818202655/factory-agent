@@ -11,8 +11,8 @@ returns a raw key, and ``__repr__`` of the resolved values stays redacted.
 
 
 import os
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Set
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -69,12 +69,17 @@ class ModelRegistryDocument(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class ResolvedDeployment:
-    """A deployment whose key was present in the environment."""
+    """A deployment whose key was present in the environment.
+
+    ``api_key`` is excluded from ``repr`` on purpose: frozen dataclasses
+    auto-generate one, and the secret must never reach logs, traces or error
+    text through an incidental ``repr(registry)`` or f-string interpolation.
+    """
 
     alias: str
     model: str
     api_base: str
-    api_key: str
+    api_key: str = field(repr=False)
     priority: int
     provider: str | None = None
 
@@ -107,6 +112,50 @@ class ModelRegistry:
 
     def is_usable(self) -> bool:
         return bool(self.deployments)
+
+    def probe_targets(self) -> tuple[ResolvedDeployment, ...]:
+        """One representative deployment per distinct endpoint.
+
+        Health is a property of the endpoint, not of the alias: every alias
+        currently resolves to the same physical Qwen server, so one probe per
+        alias would triple the traffic for a single verdict.
+        """
+        seen: set[str] = set()
+        targets: list[ResolvedDeployment] = []
+        for deployment in self.deployments:
+            if deployment.api_base in seen:
+                continue
+            seen.add(deployment.api_base)
+            targets.append(deployment)
+        return tuple(targets)
+
+    def with_demoted_endpoints(self, demoted: Set[str]) -> "ModelRegistry":
+        """Reorder deployments so every demoted endpoint is tried last.
+
+        ``priority`` is renumbered per alias rather than offset, because it is
+        not decoration: it becomes litellm's ``order``, and the thinking wire
+        format is chosen from the alias's lowest-priority deployment. Reordering
+        therefore also switches a fallen-over alias onto the surviving
+        provider's request fields.
+
+        Returns ``self`` when the verdict changes no ordering, so a caller can
+        skip rebuilding a routing table it already holds.
+        """
+        if not demoted:
+            return self
+
+        grouped: dict[str, list[ResolvedDeployment]] = {}
+        for deployment in self.deployments:
+            grouped.setdefault(deployment.alias, []).append(deployment)
+
+        reordered: list[ResolvedDeployment] = []
+        changed = False
+        for members in grouped.values():
+            ranked = sorted(members, key=lambda item: (item.api_base in demoted, item.priority))
+            for position, deployment in enumerate(ranked, start=1):
+                changed = changed or deployment.priority != position
+                reordered.append(replace(deployment, priority=position))
+        return replace(self, deployments=tuple(reordered)) if changed else self
 
 
 def load_model_registry(

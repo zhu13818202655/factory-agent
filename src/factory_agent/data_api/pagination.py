@@ -21,16 +21,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class PagerBudget:
-    """Conservative first-release budgets.
+    """Pagination bounds (env-tunable via ``FACTORY_AGENT_MES_*``, see config).
 
-    The customer declares no pagination upper bound; ``page_size`` default and
-    ``max_pages`` are configuration placeholders to be re-verified during
-    joint debugging with the customer.
+    The customer declares no pagination upper bound; the sizes below are our
+    own fetch shape. ``page_size`` is the first-page probe size, and the pager
+    escalates once toward ``page_size_ceiling`` when ``total`` would need more
+    than ``target_pages`` pages at that size — fewest pages without hammering
+    the interface with an oversized request before its total is known.
     """
 
     max_pages: int = 20
-    max_rows: int = 5000
-    page_size: int = 200
+    max_rows: int = 250000
+    page_size: int = 2000
+    #: Hard ceiling for the escalated page size (never exceeded).
+    page_size_ceiling: int = 50000
+    #: After the first page reveals ``total``, resize so the rest fits in this
+    #: many pages whenever possible.
+    target_pages: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +84,11 @@ class BoundedPager:
         expected_total: int | None = None
         footer: dict[str, str] | None = None
         page_number = 1
+        size = self.budget.page_size
+        # One restart is budgeted: after page 1 reveals ``total``, the pager
+        # may resize once (upward, toward ``target_pages``) and re-walk from
+        # page 1 so every page is fetched with one consistent size.
+        resized = False
 
         while True:
             if page_number > self.budget.max_pages:
@@ -101,7 +113,7 @@ class BoundedPager:
             params = {
                 **base_params,
                 "page": page_number,
-                "size": self.budget.page_size,
+                "size": size,
             }
             payload = await self.adapter.execute(MesRequest(operation_id, params))
             if payload.footer is not None:
@@ -123,6 +135,17 @@ class BoundedPager:
 
             if expected_total is None:
                 expected_total = total
+                if not resized and total > size * self.budget.target_pages:
+                    escalated = min(
+                        -(-total // self.budget.target_pages), self.budget.page_size_ceiling
+                    )
+                    if escalated > size:
+                        size = escalated
+                        resized = True
+                        items.clear()
+                        seen_pages.clear()
+                        page_number = 1
+                        continue
             elif expected_total != total:
                 return PagedResult(
                     items=tuple(items),

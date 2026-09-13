@@ -128,3 +128,9 @@ class TestScopeGuard:
     def test_deny_message_trims_an_overlong_target(self) -> None:
         text = deny_message(Role.EMPLOYEE, "x" * 200)
         assert "x" * 200 not in text
+
+    def test_system_prompt_does_not_imply_owner_exceeds_scope_for_factory_wide(self) -> None:
+        """The owner may ask about the whole factory; the rule list must not
+        flag that as a beyond example (role ceiling is the whole tenant)."""
+        assert "老板可问全厂" in SCOPE_GUARD_SYSTEM_PROMPT
+        assert "或任何人问全厂" not in SCOPE_GUARD_SYSTEM_PROMPT

@@ -23,7 +23,6 @@ Adapter semantics (contract: ``docs/product/AI问答对外接口-整理.md``):
   「请求已过期」/「签名无效」.
 """
 
-
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol, cast
@@ -32,7 +31,7 @@ import httpx
 
 from factory_agent.data_api.catalog import ApiCatalog, CatalogOperation
 from factory_agent.data_api.credentials import CURRENT_BUNDLE, MesCredentialBundle
-from factory_agent.data_api.pagination import BoundedPager
+from factory_agent.data_api.pagination import BoundedPager, PagerBudget
 from factory_agent.data_api.schemas import (
     ROW_MODEL_BY_RESOURCE,
     gongzi_mx_row_model_for,
@@ -156,6 +155,7 @@ class HongzhaoMesAdapter:
         client: httpx.AsyncClient | None = None,
         clock: Any | None = None,
         pager: BoundedPager | None = None,
+        pager_budget: PagerBudget | None = None,
         recorder: MesCallRecorder | None = None,
         tenant_registry: TenantRegistryReader | None = None,
     ) -> None:
@@ -166,7 +166,7 @@ class HongzhaoMesAdapter:
         self._settings = settings or AdapterSettings()
         self._client = client
         self._clock = clock
-        self._pager = pager or BoundedPager(adapter=self)
+        self._pager = pager or BoundedPager(adapter=self, budget=pager_budget or PagerBudget())
         self._recorder = recorder
         self._tenant_registry = tenant_registry
 
@@ -355,6 +355,15 @@ class HongzhaoMesAdapter:
                     params["uid"] = str(employee_id)
                 else:
                     params["Uid"] = str(employee_id)
+        if operation_id == "HuohaoWtCLQuery":
+            # Server-side filter pushdown (接口文档 §7.2 实测：huohao 取值是
+            # 款号 bbreed，与 NarrowedFilters.style_codes 同口径). The customer
+            # interface accepts a single value per call, so exactly one style
+            # code pushes down; multiple codes keep the full fetch and let the
+            # reviewed local compute filter. BarcodeClQuery ignores the filter
+            # server-side (§7.1) and is intentionally not pushed down.
+            if filters.style_codes is not None and len(filters.style_codes) == 1:
+                params["huohao"] = next(iter(filters.style_codes))
         return params
 
     def _unwrap(self, envelope: Any) -> MesResponse:

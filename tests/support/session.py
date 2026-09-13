@@ -43,7 +43,19 @@ class InMemoryInteractionStore:
     async def commit(self, commit: InteractionCommit) -> None:
         self.commits += 1
         record = commit.interaction
-        self.interactions[str(record.interaction_id)] = record
+        if commit.lifecycle:
+            self.interactions[str(record.interaction_id)] = record
+        else:
+            # Informational commit: mirror the SQL store by advancing only the
+            # bookkeeping, so an in-flight progress event cannot resurrect a
+            # terminal another process persisted.
+            current = self.interactions.get(str(record.interaction_id))
+            if current is not None:
+                self.interactions[str(record.interaction_id)] = replace(
+                    current,
+                    last_event_sequence=record.last_event_sequence,
+                    updated_at=record.updated_at,
+                )
         # Mirror the ``agent_message_sequence_key`` unique constraint so a
         # duplicate (interaction, sequence) pair fails here exactly like the
         # PostgreSQL store would.

@@ -1,12 +1,13 @@
-"""Instant export download endpoint (即时生成、直接下载、不留存).
+"""Export download endpoint (即时生成、直接下载、落盘保留).
 
 Download re-validates the caller through the token exchange, resolves the
-current authorization, and then streams the transient in-memory XLSX back as a
-file response. There is no object store and no presigned URL: content lives in
-a short-TTL in-process buffer and is released when the response ends. A
-missing, expired, or foreign export id is a plain 404 — regeneration goes
-through history/favorite re-ask. A download audit event records the artifact
-ID, tenant, outcome, and an irreversible scope digest — never the row detail.
+current authorization, and then streams the XLSX back as a file response.
+Content persists in the local artifact store and stays downloadable across
+restarts until the retention window closes; the in-memory layer is only a
+read cache. A missing, expired, or foreign export id is a plain 404 —
+regeneration goes through history/favorite re-ask. A download audit event
+records the artifact ID, tenant, outcome, and an irreversible scope digest —
+never the row detail.
 """
 
 from typing import cast
@@ -31,6 +32,10 @@ export_router = APIRouter(prefix="/v1", tags=["artifacts"])
 #: Exports are served as an attachment; browsers download the stream directly
 #: and App clients save it to local storage.
 _DISPOSITION_ASCII_FALLBACK = "export.xlsx"
+
+_EXPORT_GONE_DETAIL = (
+    "export has expired or is unavailable; re-ask from history/favorites to regenerate"
+)
 
 
 def _content_disposition(filename: str) -> str:
@@ -72,7 +77,7 @@ async def download_artifact(
         # through history/favorite re-ask (重新执行 → 直接下载).
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="export is no longer available; re-ask from history/favorites to regenerate",
+            detail=_EXPORT_GONE_DETAIL,
         )
 
     scope = authorization.data_scope

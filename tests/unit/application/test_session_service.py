@@ -29,6 +29,8 @@ from factory_agent.application.usage import pseudonymous_subject
 from factory_agent.domain import (
     INTERACTION_ANSWER,
     INTERACTION_CLARIFICATION,
+    INTERACTION_PHASE,
+    INTERACTION_PROGRESS,
     INTERACTION_RESULT,
     INTERACTION_STARTED,
     CapabilityId,
@@ -264,6 +266,80 @@ async def test_event_sequence_is_monotonic_and_gap_free() -> None:
     events = await drain(service, record.interaction_id)
 
     assert [event.sequence for event in events] == list(range(1, len(events) + 1))
+
+
+@pytest.mark.asyncio
+async def test_progress_events_announce_every_silent_stage_before_it_runs() -> None:
+    """The stages that produce no other event are announced before they start."""
+    service, _, runner = build()
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    events = await drain(service, record.interaction_id)
+
+    progress = [event for event in events if event.name == INTERACTION_PROGRESS]
+    assert [event.data["stage"] for event in progress] == ["解析中", "权限检查中", "核对数据范围"]
+    assert [event.data["reason"] for event in progress] == [
+        "parse_started",
+        "authorize_started",
+        "scope_resolution_started",
+    ]
+    assert {event.data["status"] for event in progress} == {"running"}
+    # A progress event never claims a state the interaction has not reached:
+    # the whole authorization chain runs while the record still says PARSING.
+    assert {event.data["state"] for event in progress} == {SessionState.PARSING.value}
+    assert len(runner.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_progress_events_come_before_the_phase_events_they_announce() -> None:
+    service, _, _ = build()
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    events = await drain(service, record.interaction_id)
+
+    assert (events[0].name, events[1].name) == (INTERACTION_STARTED, INTERACTION_PROGRESS)
+    first_phase = next(
+        index for index, event in enumerate(events) if event.name == INTERACTION_PHASE
+    )
+    last_progress = max(
+        index for index, event in enumerate(events) if event.name == INTERACTION_PROGRESS
+    )
+    assert last_progress < first_phase
+
+
+@pytest.mark.asyncio
+async def test_progress_events_are_persisted_for_replay() -> None:
+    service, store, _ = build()
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    await drain(service, record.interaction_id)
+
+    stored = [event.name for event in store.events[str(record.interaction_id)]]
+    assert stored.count(INTERACTION_PROGRESS) == 3
+
+
+@pytest.mark.asyncio
+async def test_progress_events_replay_identically_on_reconnect() -> None:
+    service, _, runner = build()
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+    live = await drain(service, record.interaction_id)
+
+    replayed = await drain(service, record.interaction_id)
+
+    assert replayed == live
+    assert len(runner.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_chitchat_only_announces_the_parse_stage() -> None:
+    """No business call runs, so the authorization windows are never announced."""
+    service, _, _ = build([CHITCHAT_PAYLOAD], chat_text="你好呀！")
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
+
+    events = await drain(service, record.interaction_id)
+
+    progress = [event.data["stage"] for event in events if event.name == INTERACTION_PROGRESS]
+    assert progress == ["解析中"]
 
 
 @pytest.mark.asyncio

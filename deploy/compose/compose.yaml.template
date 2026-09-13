@@ -119,8 +119,9 @@ services:
       FACTORY_AGENT_REDIS_URL: ${FACTORY_AGENT_REDIS_URL:-redis://redis:6379/0}
 
       # --- 业务口径（对接期改动前先跟客户确认）---
-      # strict = 对接期：范围不一致直接拦下并暴露成集成问题
-      # production = 主路径信任 MES：exact 拦截+告警，heuristic 仅记日志
+      # 一致性校验 = advisory-only（2026-09-13 拍板「所见即所得」）：客户接口
+      # 已按权限过滤，异常只记录+告警+warning 日志，不拦截数据返回；
+      # 该值只作为 finding 记录上的阶段标签（strict=对接期 / production=主路径）
       FACTORY_AGENT_VALIDATION_MODE: ${FACTORY_AGENT_VALIDATION_MODE:-production}
       # 客户确认查询最多回溯一年
       FACTORY_AGENT_TIME_RANGE_MAX_DAYS: 366
@@ -130,9 +131,10 @@ services:
       # 工时时区：影响「今天/本月」这类相对时间的解释
       FACTORY_AGENT_FACTORY_TIMEZONE: ${FACTORY_AGENT_FACTORY_TIMEZONE:-Asia/Shanghai}
 
-      # --- 即时导出（服务端不留存：只在内存在有界缓冲里放一小会儿）---
-      FACTORY_AGENT_EXPORT_BUFFER_TTL_SECONDS: 900 # 缓冲存活秒数（60~3600）
-      FACTORY_AGENT_EXPORT_BUFFER_MAX_ENTRIES: 512 # 同时最多缓存多少个导出
+      # --- 导出产物（本地落盘保留：类网盘的本地实现，重启后仍可下载）---
+      FACTORY_AGENT_EXPORT_STORE_DIR: /app/data/exports # 导出产物落盘目录（须挂可写卷）
+      FACTORY_AGENT_EXPORT_RETENTION_SECONDS: 604800 # 产物保留秒数（默认 7 天，过期惰性清理）
+      FACTORY_AGENT_EXPORT_BUFFER_MAX_ENTRIES: 512 # 内存读缓存上限（不影响落盘可用性）
       # 注意：导出下载是 fail-closed —— 审计事件写失败会直接 503 拒发
 
       # --- 会话/SSE 编排（动之前先读 config.py 的注释，几条互相牵制）---
@@ -187,8 +189,9 @@ services:
       - -c
       - python -m factory_agent.persistence.migrations upgrade head
         && exec uvicorn factory_agent.api.server:create_app --factory --host 0.0.0.0 --port 8000
-    # 想开多进程：给 uvicorn 加 --workers N（本服务无跨进程共享内存状态，
-    # 因为日志走 stdout，多进程安全）。注意别同时改用「进程内写文件」方案。
+    # 想开多进程：给 uvicorn 加 --workers N。导出产物是按 artifact_id 独立
+    # 落盘的（一文件一产物），多进程共享磁盘安全；进程内的读缓存各自独立，
+    # 未命中会回源磁盘，不影响正确性。
     # command:
     #   - sh
     #   - -c
@@ -203,10 +206,13 @@ services:
 
     # ---------------------- 文件系统 ----------------------
     # 只读根文件系统 + 只给 /tmp 一个可写 tmpfs：应用运行期不写业务文件
-    # （导出是内存缓冲、无服务端留存），所以足够
     read_only: true
     tmpfs:
       - /tmp
+    # 导出产物落盘目录：命名卷保证容器重建（down/up）后产物仍在；
+    # 卷属主须为容器内 uid 10001（命名卷首写自动继承挂载点属主）
+    volumes:
+      - agent-exports:/app/data/exports
     # 只有在决定「让进程自己写日志文件」时才需要挂卷（见文件末尾附录 B）：
     # volumes:
     #   - ./logs/agent-api:/var/log/factory-agent
@@ -403,6 +409,7 @@ services:
 volumes:
   postgres-data: # PG 数据目录：唯一的权威业务数据，必须备份
   redis-data: # Redis AOF，可丢（缓存非权威）
+  agent-exports: # 导出产物（XLSX+元数据），保留期由 EXPORT_RETENTION_SECONDS 控制
 
 # -----------------------------------------------------------------------------
 # 网络：四个服务在同一私有网络上，靠服务名互访（postgres、redis）

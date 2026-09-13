@@ -7,6 +7,7 @@ from factory_agent.application.intent import clarification_for
 from factory_agent.application.permission_matrix import ROLE_DATA_RANGE
 from factory_agent.application.session.base import SessionCore
 from factory_agent.application.session.definitions import (
+    PROGRESS_LABELS,
     STAGE_LABELS,
     STOP_RUN_TIMEOUT,
     RunState,
@@ -17,7 +18,9 @@ from factory_agent.domain import (
     INTERACTION_ANSWER,
     INTERACTION_CLARIFICATION,
     INTERACTION_PHASE,
+    INTERACTION_PROGRESS,
     CapabilityIntent,
+    InteractionRecord,
     InteractionStatus,
     MessageKind,
     MessageRole,
@@ -174,26 +177,73 @@ class SessionOutcomeMixin(SessionCore):
         yield terminal
 
     async def _phase(self, state: RunState, target: SessionState, reason: str) -> SessionEvent:
+        """Announce and persist a completed stage transition."""
         advanced = self._advance(state.record, target, reason)
-        event = SessionEvent(
-            sequence=state.next_sequence(),
+        return await self._stage_event(
+            state,
             name=INTERACTION_PHASE,
             data={
                 "state": target.value,
                 "reason": reason,
                 "stage": STAGE_LABELS.get(target, target.value),
                 "status": "ok",
-                "duration_ms": state.duration_ms(),
             },
+            record=advanced,
+        )
+
+    async def _progress(self, state: RunState, reason: str) -> SessionEvent:
+        """Announce that a long stage is under way, without moving the state.
+
+        The slowest work runs while ``SessionState`` is still ``PARSING``:
+        parsing, the authorization chain, and the directory resolution that
+        chain depends on. Labelling it by advancing the state machine is not an
+        option — ``PARSING -> PARSING`` is not a legal transition, and entering
+        ``AUTHORIZING`` before the chain would turn a directory-ambiguity
+        clarification into an illegal ``AUTHORIZING -> CLARIFYING`` one. So the
+        display label travels in ``stage`` while ``state`` keeps reporting
+        where the interaction really is.
+
+        The commit is informational (``lifecycle=False``): every announced
+        window sits before a cooperative stop point, so rewriting the durable
+        status here would overwrite a terminal another process just persisted.
+        """
+        return await self._stage_event(
+            state,
+            name=INTERACTION_PROGRESS,
+            data={
+                "state": state.record.state.value,
+                "reason": reason,
+                "stage": PROGRESS_LABELS.get(reason, reason),
+                "status": "running",
+            },
+            record=state.record,
+            lifecycle=False,
+        )
+
+    async def _stage_event(
+        self,
+        state: RunState,
+        *,
+        name: str,
+        data: dict[str, object],
+        record: InteractionRecord,
+        lifecycle: bool = True,
+    ) -> SessionEvent:
+        """Allocate the next sequence, persist the stage event, wake followers."""
+        event = SessionEvent(
+            sequence=state.next_sequence(),
+            name=name,
+            data={**data, "duration_ms": state.duration_ms()},
         )
         state.record = replace(
-            advanced, last_event_sequence=event.sequence, updated_at=self._clock.now()
+            record, last_event_sequence=event.sequence, updated_at=self._clock.now()
         )
         await self._commit(
             InteractionCommit(
                 interaction=state.record,
                 events=(event,),
                 usage_events=drain_mes_events(),
+                lifecycle=lifecycle,
             )
         )
         return event

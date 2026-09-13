@@ -53,7 +53,10 @@ class SqlInteractionStore:
     async def commit(self, commit: InteractionCommit) -> None:
         record = commit.interaction
         async with self._engine.begin() as connection:
-            await self._upsert_interaction(connection, record)
+            if commit.lifecycle:
+                await self._upsert_interaction(connection, record)
+            else:
+                await self._touch_interaction(connection, record)
             for message in commit.messages:
                 await connection.execute(
                     _upsert(
@@ -328,6 +331,19 @@ class SqlInteractionStore:
                     "completed_at": record.completed_at,
                 },
                 (interaction_table.c.interaction_id,),
+            )
+        )
+
+    async def _touch_interaction(
+        self, connection: AsyncConnection, record: InteractionRecord
+    ) -> None:
+        await connection.execute(
+            queries.touch_interaction_run(
+                str(record.tenant_id),
+                str(record.user_id),
+                str(record.interaction_id),
+                last_event_sequence=record.last_event_sequence,
+                updated_at=record.updated_at,
             )
         )
 

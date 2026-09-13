@@ -381,3 +381,56 @@ async def test_qwen_family_thinking_on_maps_effort_and_caps_max_to_high() -> Non
     assert router.calls[0]["extra_body"] == {
         "chat_template_kwargs": {"enable_thinking": True, "thinking_effort": "high"}
     }
+
+
+@pytest.mark.asyncio
+async def test_use_registry_swaps_the_routing_table_when_order_changes() -> None:
+    """A demotion from the health monitor must rebuild litellm's Router.
+
+    The stub router lets us assert the swap without a network, by checking
+    that the gateway publishes the demoted registry on its own handle. The
+    deeper proof (the new order actually wins at completion time) lives in
+    ``tests/integration/test_llm_health.py``.
+    """
+    router = StubRouter()
+    two_tier = ModelRegistry(
+        version=1,
+        deployments=(
+            ResolvedDeployment(
+                alias="factory-fast",
+                model="Qwen/Qwen3.8-27B-FP8",
+                api_base="http://qwen.example/v1",
+                api_key=CANARY_KEY,
+                priority=1,
+                provider="openai",
+            ),
+            ResolvedDeployment(
+                alias="factory-fast",
+                model="deepseek/deepseek-chat",
+                api_base="https://api.deepseek.com/v1",
+                api_key=CANARY_KEY,
+                priority=2,
+            ),
+        ),
+        fallbacks={"factory-fast": ()},
+    )
+    built = gateway(router, reg=two_tier)
+    demoted = built._registry.with_demoted_endpoints(  # pyright: ignore[reportPrivateUsage]
+        {"http://qwen.example/v1"}
+    )
+
+    built.use_registry(demoted)
+
+    assert built._registry is demoted  # pyright: ignore[reportPrivateUsage]
+    assert built._router is not router  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_use_registry_is_a_no_op_when_the_verdict_changes_nothing() -> None:
+    router = StubRouter()
+    built = gateway(router)
+    original_router = built._router  # pyright: ignore[reportPrivateUsage]
+
+    built.use_registry(built._registry)  # pyright: ignore[reportPrivateUsage]
+
+    assert built._router is original_router  # pyright: ignore[reportPrivateUsage]

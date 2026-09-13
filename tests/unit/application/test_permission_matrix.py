@@ -3,9 +3,11 @@
 The MES token ``roles`` code gates capability availability through the reviewed
 matrix (``docs/product/需求及方案整理.md`` 功能表): personal capabilities
 FR-001..FR-004 are available to all four roles, management capabilities
-FR-005..FR-008 to group leaders and managers, and factory-wide capabilities
-FR-009..FR-012 to the owner. Data visibility inside an allowed capability is
-still enforced by MES-side row filtering (``DataScope.mes_filtered``).
+FR-005..FR-008 to group leaders, managers and the owner, and factory-wide
+capabilities FR-009..FR-012 to the owner. The owner holds every capability a
+narrower role holds (his data range is a superset). Data visibility inside an
+allowed capability is still enforced by MES-side row filtering
+(``DataScope.mes_filtered``).
 """
 
 
@@ -36,6 +38,7 @@ AS_OF = datetime(2026, 8, 21, 8, tzinfo=timezone.utc)
 
 ALL_ROLES = frozenset(Role)
 MANAGEMENT_ROLES = frozenset({Role.GROUP_LEADER, Role.MANAGER})
+MANAGEMENT_AND_OWNER_ROLES = MANAGEMENT_ROLES | {Role.OWNER}
 OWNER_ROLES = frozenset({Role.OWNER})
 
 EXPECTED_MATRIX: dict[Capability, frozenset[Role]] = {
@@ -43,10 +46,10 @@ EXPECTED_MATRIX: dict[Capability, frozenset[Role]] = {
     Capability.OWN_PAYROLL_SUMMARY: ALL_ROLES,
     Capability.OWN_PAYROLL_DETAIL: ALL_ROLES,
     Capability.GROUP_INCOME_RANK: ALL_ROLES,
-    Capability.ORDER_PROGRESS: MANAGEMENT_ROLES,
-    Capability.ORDER_OUTPUT: MANAGEMENT_ROLES,
-    Capability.WORKSHOP_COMPARISON: MANAGEMENT_ROLES,
-    Capability.TEAM_PAYROLL_LIST: MANAGEMENT_ROLES,
+    Capability.ORDER_PROGRESS: MANAGEMENT_AND_OWNER_ROLES,
+    Capability.ORDER_OUTPUT: MANAGEMENT_AND_OWNER_ROLES,
+    Capability.WORKSHOP_COMPARISON: MANAGEMENT_AND_OWNER_ROLES,
+    Capability.TEAM_PAYROLL_LIST: MANAGEMENT_AND_OWNER_ROLES,
     Capability.FACTORY_ORDER_OVERVIEW: OWNER_ROLES,
     Capability.WORKSHOP_OUTPUT_OVERVIEW: OWNER_ROLES,
     Capability.FACTORY_PAYROLL_STATS: OWNER_ROLES,
@@ -131,12 +134,31 @@ def test_denied_decision_lists_the_role_available_capabilities() -> None:
         ),
         (
             Role.OWNER,
-            {"FR-001", "FR-002", "FR-003", "FR-004", "FR-009", "FR-010", "FR-011", "FR-012"},
+            {
+                "FR-001",
+                "FR-002",
+                "FR-003",
+                "FR-004",
+                "FR-005",
+                "FR-006",
+                "FR-007",
+                "FR-008",
+                "FR-009",
+                "FR-010",
+                "FR-011",
+                "FR-012",
+            },
         ),
     ],
 )
 def test_capabilities_for_role(role: Role, expected: set[str]) -> None:
     assert {item.value for item in capabilities_for_role(role)} == expected
+
+
+@pytest.mark.parametrize("role", sorted(Role, key=str))
+def test_owner_holds_every_capability_of_every_narrower_role(role: Role) -> None:
+    """A wider role never loses a narrower role's capability (data range grows)."""
+    assert capabilities_for_role(role) <= capabilities_for_role(Role.OWNER)
 
 
 def test_tenant_mismatch_is_denied_for_every_role() -> None:

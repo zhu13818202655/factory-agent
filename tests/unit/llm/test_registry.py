@@ -84,6 +84,21 @@ def test_keys_come_only_from_the_environment(tmp_path: Path) -> None:
     assert all(item.api_key == CANARY_KEY for item in registry.deployments)
 
 
+def test_the_resolved_key_never_reaches_repr(tmp_path: Path) -> None:
+    """A frozen dataclass auto-generates ``__repr__``; the key must be excluded.
+
+    ``repr(registry)`` or an f-string interpolation is exactly how a secret
+    would reach logs, traces and error text through an incidental code path
+    (invariant: sensitive fields never enter logs, traces or errors).
+    """
+    registry = load_model_registry(write(tmp_path, VALID), environ={"KEY_A": CANARY_KEY})
+
+    assert CANARY_KEY not in repr(registry)
+    assert all(CANARY_KEY not in repr(item) for item in registry.deployments)
+    # Excluded from repr, still functional on the wire.
+    assert all(item.api_key == CANARY_KEY for item in registry.deployments)
+
+
 def test_a_literal_key_in_the_document_is_rejected(tmp_path: Path) -> None:
     body = VALID.replace("api_key_env: KEY_A", f"api_key: {CANARY_KEY}")
 

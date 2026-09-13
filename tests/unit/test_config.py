@@ -1,4 +1,4 @@
-
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +11,8 @@ def test_optional_services_are_disabled_by_default() -> None:
     assert settings.canonical_mes_base_url is None
     assert settings.postgres_url is None
     assert settings.redis_url is None
-    assert settings.export_buffer_ttl_seconds == 900
+    assert settings.export_retention_seconds == 604800
+    assert str(settings.export_store_dir) == str(Path("data/exports"))
     assert "artifact_endpoint" not in FactoryAgentSettings.model_fields
 
 
@@ -28,11 +29,13 @@ def test_settings_read_unified_environment(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("FACTORY_AGENT_CANONICAL_MES_BASE_URL", "http://mes-gateway:9002")
     monkeypatch.setenv("FACTORY_AGENT_POSTGRES_URL", "postgresql://secret@db/app")
     monkeypatch.setenv("FACTORY_AGENT_REDIS_URL", "redis://redis:6379/0")
-    monkeypatch.setenv("FACTORY_AGENT_EXPORT_BUFFER_TTL_SECONDS", "300")
+    monkeypatch.setenv("FACTORY_AGENT_EXPORT_RETENTION_SECONDS", "300")
+    monkeypatch.setenv("FACTORY_AGENT_EXPORT_STORE_DIR", "/tmp/exports-alt")
 
     settings = FactoryAgentSettings()
 
     assert settings.canonical_mes_base_url is not None
     assert settings.postgres_url is not None
     assert settings.redis_url is not None
-    assert settings.export_buffer_ttl_seconds == 300
+    assert settings.export_retention_seconds == 300
+    assert str(settings.export_store_dir) == "/tmp/exports-alt"

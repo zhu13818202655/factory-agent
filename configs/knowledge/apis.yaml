@@ -285,6 +285,10 @@ operations:
       scheme: filter
       dates: filter
       datee: filter
+      # 2026-09-13 实测支持的服务端过滤（接口文档 §7.2）：huohao 取值是款号
+      # bbreed；worktype 取值是工序名。单款号时由适配层下推 huohao。
+      huohao: filter
+      worktype: filter
     pagination: list_total
     supports_footer: true
     boolean_params: [queryFooter]

@@ -15,10 +15,12 @@ class FactoryAgentSettings(BaseSettings):
     canonical_mes_base_url: AnyHttpUrl | None = None
     postgres_url: PostgresDsn | None = None
     redis_url: RedisDsn | None = None
-    # Instant-export transient buffer (即时生成、直接下载、服务端不留存).
-    # Generated XLSX lives only in a bounded in-process buffer for this short
-    # window; there is no object store and no retention lifecycle.
-    export_buffer_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    # Export artifact store (即时生成、直接下载、落盘保留). Generated XLSX is
+    # written to a local directory (类网盘的本地实现；生产可替换为对象存储) and
+    # stays downloadable across restarts until the retention window closes.
+    # Expired artifacts are purged lazily; the in-memory cache only bounds RAM.
+    export_store_dir: Path = Path("data/exports")
+    export_retention_seconds: int = Field(default=604800, ge=60)
     export_buffer_max_entries: int = Field(default=512, ge=1)
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
@@ -31,6 +33,18 @@ class FactoryAgentSettings(BaseSettings):
     #: Proactive accessToken refresh threshold (seconds before expiry).
     mes_token_refresh_threshold_seconds: int = Field(default=300, ge=60)
 
+    # MES resource pagination (BoundedPager). The first page probes with
+    # ``mes_page_size``; when total would need more than 5 pages the pager
+    # resizes once toward ``mes_page_size_max`` and re-walks, so a month of
+    # barcode rows (~3e4) completes in a handful of pages. The real upper
+    # bound the customer interface honors is unverified: if it caps ``size``
+    # below the escalated value, pages come back short and the run surfaces
+    # as incomplete instead of silently truncating.
+    mes_page_size: int = Field(default=2000, ge=1)
+    mes_page_size_max: int = Field(default=50000, ge=1)
+    mes_max_pages: int = Field(default=20, ge=1)
+    mes_max_rows: int = Field(default=250000, ge=1)
+
     # Time-range policy. The customer confirms queries span at most the past
     # year; wider requests terminate with a friendly notice before any MES call.
     time_range_max_days: int = Field(default=366, ge=1)
@@ -41,11 +55,10 @@ class FactoryAgentSettings(BaseSettings):
     delivery_warning_ratio_percent: int = Field(default=10, ge=1, le=100)
     delivery_warning_fallback_days: int = Field(default=7, ge=1)
 
-    # Role-consistency validation staged mode: strict = 对接期
-    # (any inconsistency blocks the result and is exposed as an integration
-    # problem); production = 主路径信任 MES + two-tier handling (exact blocks
-    # with alert, heuristic only logs).
-    validation_mode: Literal["strict", "production"] = "strict"
+    # Role-consistency validation stage label. The customer MES pre-filters
+    # rows by role (所见即所得), so findings are advisory-only: recorded for
+    # review, alerted, and logged as warnings — never a block on data return.
+    validation_mode: Literal["strict", "production"] = "production"
 
     # LLM boundary (ADR-0006). Deployments and fallback order come from the
     # reviewed registry; provider keys come from the environment variables that
@@ -62,6 +75,17 @@ class FactoryAgentSettings(BaseSettings):
     llm_num_retries: int = Field(default=2, ge=0, le=5)
     llm_allowed_fails: int = Field(default=2, ge=1)
     llm_cooldown_seconds: int = Field(default=30, ge=1)
+
+    # Out-of-band endpoint health probing (ADR-0006). litellm already falls
+    # over reactively, but only after a request has paid 1 + llm_num_retries
+    # failed attempts; probing moves that cost off the user's wait. Probes run
+    # once at startup and then every llm_health_probe_interval_seconds
+    # (0 = startup only). A startup probe failure never blocks startup: the
+    # reviewed registry stays in place and litellm's own fallback still covers
+    # the request path.
+    llm_health_probe_interval_seconds: int = Field(default=300, ge=0)
+    llm_health_probe_timeout_seconds: float = Field(default=3.0, gt=0.0)
+    llm_health_probe_failures_to_demote: int = Field(default=2, ge=1)
 
     # Thinking-mode policy, global across all aliases (ADR-0006 boundary).
     # Default: thinking OFF (both current endpoints default to thinking ON, so

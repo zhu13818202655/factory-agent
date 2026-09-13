@@ -12,6 +12,7 @@ The suite creates and drops its own schema and never touches customer data.
 
 import os
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -152,6 +153,45 @@ async def test_commit_upserts_an_interaction_instead_of_duplicating_it(
 
     page = await store.list_interactions(OWNER, SESSION, limit=10)
     assert len(page.items) == 1
+
+
+async def test_informational_commit_never_resurrects_a_durable_terminal(
+    store: SqlInteractionStore,
+) -> None:
+    """A progress commit advances bookkeeping but leaves the lifecycle alone.
+
+    A live run's in-memory record still says ``running``; writing those columns
+    over a terminal another process persisted would resurrect a cancelled run.
+    """
+    await store.commit(InteractionCommit(interaction=interaction("i-1", last_event_sequence=2)))
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction(
+                "i-1",
+                status=InteractionStatus.CANCELLED,
+                state=SessionState.CANCELLED,
+                last_event_sequence=3,
+            )
+        )
+    )
+    later = NOW + timedelta(seconds=30)
+
+    await store.commit(
+        InteractionCommit(
+            interaction=replace(interaction("i-1", last_event_sequence=4), updated_at=later),
+            events=(SessionEvent(sequence=4, name="interaction.progress", data={}),),
+            lifecycle=False,
+        )
+    )
+
+    stored = await store.get_interaction(OWNER, InteractionId("i-1"))
+    assert stored is not None
+    assert stored.status is InteractionStatus.CANCELLED
+    assert stored.state is SessionState.CANCELLED
+    assert stored.last_event_sequence == 4
+    assert stored.updated_at == later
+    events = await store.list_events(OWNER, InteractionId("i-1"), after_sequence=3)
+    assert [event.name for event in events] == ["interaction.progress"]
 
 
 async def test_commit_writes_messages_and_events_in_one_transaction(

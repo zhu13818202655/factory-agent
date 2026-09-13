@@ -7,8 +7,7 @@
 | `product/` | 做什么、谁能看什么、口径确认、方案设计 | [`需求及方案整理.md`](product/需求及方案整理.md)（产品需求 + 客户确认结论）、[`AI问答对外接口-整理.md`](product/AI问答对外接口-整理.md)（客户 MES 接口契约，标准区） |
 | `adr/` | 为什么采用某项难以逆转的技术或边界决策 | [`0001-repository-and-service-boundaries.md`](adr/0001-repository-and-service-boundaries.md)、[`0002-runtime-storage-and-migration-baseline.md`](adr/0002-runtime-storage-and-migration-baseline.md)、[`0003-usage-metering-and-admin-service.md`](adr/0003-usage-metering-and-admin-service.md)、[`0004-logging-configuration-and-tracing.md`](adr/0004-logging-configuration-and-tracing.md)、[`0005-local-aggregation-over-server-shortcut.md`](adr/0005-local-aggregation-over-server-shortcut.md)、[`0006-model-provider-access-without-proxy.md`](adr/0006-model-provider-access-without-proxy.md) |
 
-实现按 [`.github/story/`](../.github/story/) 中 `#1` 到 `#3` 的顺序执行。Story 是实施清单，
-`docs/product/` 两份文档是需求与接口契约依据；实施过程中新确认的口径只回写这两份文档，
+`docs/product/` 两份文档是需求与接口契约的依据；实施过程中新确认的口径只回写这两份文档，
 不新开分散小文件。
 
 ## 权威顺序

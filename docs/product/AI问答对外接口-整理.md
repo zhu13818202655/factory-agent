@@ -33,11 +33,27 @@
 
 ### 1.3 状态码说明
 
-| 状态码 | 说明 |
+HTTP 状态码只说明**请求是否被服务端受理**；业务结果一律由响应体 `code` 判定。两者相互独立，不要互相推断。
+
+| HTTP 状态码 | 说明 |
 | --- | --- |
-| 200 | 成功 |
-| 400 | 失败，如参数为空、无效app_key、请求已过期、加密信息解析失败等，具体原因见 `message` |
+| 200 | 请求已被服务端正常受理并处理完毕。**它只表示"服务端处理了这个请求"，不代表业务成功**——业务结论看响应体 `code`，`code` 非 `1` 时 HTTP 仍是 200 |
+| 400 | 请求未被受理（参数为空、无效app_key、请求已过期、加密信息解析失败等），具体原因见 `message` |
 | 404 | 无登录权限 / 无数据 |
+
+响应体 `code` 的含义（除 `1` / `0` 外还存在业务级负值）：
+
+| `code` | 含义 | 说明 |
+| --- | --- | --- |
+| 1 | 业务成功 | `result` 为业务数据 |
+| 0 | 业务校验不通过 | `message` 给出原因（如「货号不能为空」）；`result` 为 `null` |
+| -403 | 业务级权限不足 | 请求已被正常受理与鉴权，仅因**当前调用者权限不足**而拒绝；`result` 为 `null`，`message` 说明原因（如「无权限查看该用户信息，请联系管理员」，见 §4.1） |
+
+判定规则：
+
+- 判业务结果只看 `code`；**不要把 `code` 非 `1` 说成"HTTP 请求失败"**，也不要把 HTTP 200 当成业务成功。
+- `code=-403` 是一次**成功的 API 调用**得出的业务结论——服务端听懂了请求，判定该调用者无权访问此资源。
+- 由于 `code` 可能出现 `-403` 等负值，**判成功必须写成 `code == 1`**，不能写成 `code != 0`。
 
 ## 2. 认证
 
@@ -112,6 +128,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
         "user": "01001",
         "uname": "杨基山",
         "dept": "003",
+        "manageDept": "001,005",
         "loginUserName": "",
         "appkey": "7388C46E-B4FE-46D3-BF6C-75E8CBF74E7C",
         "sign": "e401cc7b3b197e410659769f82ec020c",
@@ -134,6 +151,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.user | string | 员工工号 |
 | result.uname | string | 员工姓名 |
 | result.dept | string | 部门编号 |
+| result.manageDept | string | 移动管理岗位可管辖的部门编号，逗号分隔 |
 | result.loginUserName | string | ERP登录用户名 |
 | result.appkey | string | 弘兆分配的 app_key，调用业务接口时作为 `app_key` 参数传入 |
 | result.sign | string | 请求签名，调用业务接口时作为 `sign` 参数传入 |
@@ -199,14 +217,12 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 
 | 参数名 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| USERNAME | string | 是 | 登录用户 |
+| USERNAME | string | 否 | 登录用户（账号名）。省略时返回本应用绑定的登录账号记录 |
 
 **请求示例**
 
 ```json
-{
-    "USERNAME": "admin"
-}
+{}
 ```
 
 **响应示例**
@@ -218,10 +234,10 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
     "result": {
         "list": [
             {
-                "code": "Admin",
-                "username": "Admin",
-                "realname": "管理员",
-                "companyName": "有缝H6内销版测试",
+                "code": "002",
+                "username": "缝制车间",
+                "realname": "缝制车间",
+                "companyName": "雨泽服饰",
                 "roles": "01"
             }
         ],
@@ -236,12 +252,23 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | 参数名 | 类型 | 说明 |
 | --- | --- | --- |
 | result.list | array | 用户信息列表 |
-| result.list.code | string | 用户编码 |
-| result.list.username | string | 用户名 |
+| result.list.code | string | 用户编码（登录账号编码，非员工工号） |
+| result.list.username | string | 用户名（登录账号名） |
 | result.list.realname | string | 姓名 |
 | result.list.companyName | string | 公司名称 |
 | result.list.roles | string | 角色（移动管理岗位）：00 员工 / 01 组长 / 02 管理 / 99 老板 |
 | result.total | integer | 数据总数量 |
+
+**实测行为（2026-09-13，本厂四角色）**
+
+| 角色 | `USERNAME` 省略 / 空串 | `USERNAME` 传值 |
+| --- | --- | --- |
+| 00 员工 | `code=1`，`list` 为空（`total=0`） | `code=-403`「无权限查看该用户信息，请联系管理员」，`result=null`（HTTP 仍 200） |
+| 01 组长 / 02 管理 / 99 老板 | `code=1`，返回 **1 条**（本厂为 `code=002` / `username=缝制车间` / `companyName=雨泽服饰` / `roles=01`） | 按 `username` 过滤：命中 1 条，否则 0 条（传 `"002"`、`"admin"` 均为 0 条） |
+
+- 返回的是**本应用（`app_key`）绑定的登录账号**，并非调用者本人；四角色共用同一 `app_key` 时返回值相同（本厂均为 `缝制车间`）。
+- 员工角色实质不可用（传值 `-403`、不传值为空表）。
+- 智能体获取当前用户身份**不要依赖本接口**，直接取认证接口返回的 `user` / `uname` / `dept` / `roles` / `manageDept` / `loginUserName`（见 §2.1）。
 
 ### 4.2 用户菜单查询接口
 
@@ -292,6 +319,11 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.list.menus.sort | string | 排序号 |
 | result.total | integer | 数据总数量 |
 
+**实测口径（2026-09-13）**
+
+- 返回**调用者本人**的菜单（本厂 role 00 → `uid=1642`/`汪云梅`/`dept=001`；role 99 → `uid=6`/`尚`/`dept=005`），`total` 均为 1。
+- `menus` 内容随角色不同（如员工含「扫码计件/今日产量」，老板含「分包计件/生产改数」等）；`dept` 为真实部门编号，非空串。
+
 ### 4.3 货号信息单据接口
 
 **接口地址**：`/api/NetYf/Baseinfo/HuohaoQuery`
@@ -308,25 +340,24 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
         "huohaoList": [
             {
                 "bh": "00001",
-                "bbreed": "911",
-                "name_pk": "911",
-                "description": "女士长袖",
-                "stype": "0001",
-                "huohaotype": "衣服",
-                "dw": "件",
+                "bbreed": "25084",
+                "name_pk": "25084",
+                "description": "跑步裤-男款",
+                "stype": "0032",
+                "huohaotype": "2026款号汇总",
+                "dw": "条",
                 "lpinpai": "",
-                "isdelete": 0,
-                "jst_huohao": "911"
+                "remark": ""
             }
         ],
         "hh_total": 1,
         "huohaoTypeList": [
             {
-                "id": 1,
-                "bh": "0001",
+                "id": 33,
+                "bh": "0032",
                 "pbh": "#",
-                "name": "衣服",
-                "name_pk": "yf",
+                "name": "2026款号汇总",
+                "name_pk": "2026khhz",
                 "isdelete": 0
             }
         ],
@@ -341,25 +372,33 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | 参数名 | 类型 | 说明 |
 | --- | --- | --- |
 | result.huohaoList | array | 货号信息集合 |
-| result.huohaoList.bh | string | 货号编码 |
-| result.huohaoList.bbreed | string | 货号 |
+| result.huohaoList.bh | string | 货号编码（MES 主键流水号，老数据 4 位 / 新数据 5 位；颜色、尺码、工序、扫码产量、工资明细等均以此编号关联） |
+| result.huohaoList.bbreed | string | 款号（业务口径的「款号」，与 `bh` 一一对应） |
 | result.huohaoList.name_pk | string | 货号简拼 |
 | result.huohaoList.description | string | 品名 |
-| result.huohaoList.stype | string | 货号类型编码 |
-| result.huohaoList.huohaotype | string | 货号类型 |
+| result.huohaoList.stype | string | 货号类型编码（对应 `huohaoTypeList.bh`） |
+| result.huohaoList.huohaotype | string | 货号类型名称（冗余字段，等于 `stype` 对应类型的 `name`） |
 | result.huohaoList.dw | string | 单位 |
 | result.huohaoList.lpinpai | string | 品牌 |
-| result.huohaoList.isdelete | integer | 是否删除 |
-| result.huohaoList.jst_huohao | string | 聚水潭货号 |
+| result.huohaoList.remark | string | 备注 |
 | result.hh_total | integer | 货号信息总数 |
 | result.huohaoTypeList | array | 货号类型集合 |
 | result.huohaoTypeList.id | integer | ID |
 | result.huohaoTypeList.bh | string | 货号类型编码 |
-| result.huohaoTypeList.pbh | string | 根目录编号 |
-| result.huohaoTypeList.name | string | 货号类型 |
+| result.huohaoTypeList.pbh | string | 上级类型编号（本厂全部为 `#`，即平铺、非树形） |
+| result.huohaoTypeList.name | string | 货号类型名称 |
 | result.huohaoTypeList.name_pk | string | 货号类型简拼 |
 | result.huohaoTypeList.isdelete | integer | 是否删除 |
 | result.ht_total | integer | 货号类型总数 |
+
+**实测口径（2026-09-13，本厂全量）**
+
+- 本厂 `hh_total=1387`、`ht_total=12`；`bh` 与 `bbreed` 均为唯一值且**一一对应**（1387 : 1387）。
+- `stype` ⊆ `huohaoTypeList.bh`；`huohaotype` 与类型表 `name` 100% 一致（1387/1387），是冗余展示字段。
+- **`huohaotype` 不是「款式」/品类，而是年份归档桶**：本厂 12 个取值形如「2026款号汇总」「2025款号汇总」「2021款号汇总」「19年款」「2020客户销售单」「测试货号」。业务侧做「款式」维度时不可用它，只能用 `description`（品名）或 `bbreed`（款号）。
+- 类型表 12 条中仅 11 条被货号引用（`00010001`「2019」未被使用）；`pbh` 全部为 `#`。
+- `lpinpai`、`remark` 在本厂多为空。
+- 响应示例中的字段名以真实返回为准：**本接口 `huohaoList` 不含 `isdelete` 与 `jst_huohao`**。
 
 ### 4.4 货号信息表单接口
 
@@ -369,13 +408,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 
 | 参数名 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| huohao | string | 是 | 货号编号 |
+| huohao | string | 是 | 货号编号（`bh`）。留空时返回 `code=0`「货号不能为空」 |
 
 **请求示例**
 
 ```json
 {
-    "huohao": "00001"
+    "huohao": "00004"
 }
 ```
 
@@ -388,40 +427,39 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
     "result": {
         "huohaoList": [
             {
-                "bh": "00001",
-                "bbreed": "911",
-                "name_pk": "911",
-                "description": "女士长袖",
-                "stype": "0001",
-                "huohaotype": "衣服",
+                "bh": "00004",
+                "bbreed": "T7848大身",
+                "name_pk": "t7848ds",
+                "description": "防晒衣",
+                "stype": "0032",
+                "huohaotype": "2026款号汇总",
                 "dw": "件",
                 "lpinpai": "",
-                "isdelete": 0,
-                "jst_huohao": "911"
+                "remark": ""
             }
         ],
         "hh_total": 1,
         "huohaoColorList": [
             {
-                "id": 1,
-                "bh": "00001",
-                "color": "红色",
-                "uploadguid": "98A6CC9A-C3A9-8776-B232-D7FD027ECD6E"
+                "id": 83,
+                "bh": "00004",
+                "color": "黑色",
+                "uploadguid": "E23D09FF-7757-87D5-E931-F50A03FE036B"
             }
         ],
-        "hc_total": 1,
+        "hc_total": 6,
         "huohaoChimaList": [
             {
-                "id": 1,
-                "bh": "00001",
-                "chima": "S",
+                "id": 113,
+                "bh": "00004",
+                "chima": "XS",
                 "banx": null,
                 "kez": null,
                 "xs_price": 0,
                 "price": 0
             }
         ],
-        "hs_total": 1
+        "hs_total": 7
     },
     "timestamp": 1786544009
 }
@@ -431,17 +469,16 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 
 | 参数名 | 类型 | 说明 |
 | --- | --- | --- |
-| result.huohaoList | array | 货号信息集合 |
+| result.huohaoList | array | 货号信息集合（字段同 §4.3 `huohaoList`，含 `remark`，不含 `isdelete` / `jst_huohao`） |
 | result.huohaoList.bh | string | 货号编号 |
-| result.huohaoList.bbreed | string | 货号名称 |
+| result.huohaoList.bbreed | string | 款号 |
 | result.huohaoList.name_pk | string | 货号简拼 |
 | result.huohaoList.description | string | 品名 |
 | result.huohaoList.stype | string | 货号类型编码 |
-| result.huohaoList.huohaotype | string | 货号类型 |
+| result.huohaoList.huohaotype | string | 货号类型名称 |
 | result.huohaoList.dw | string | 单位 |
 | result.huohaoList.lpinpai | string | 品牌编号 |
-| result.huohaoList.isdelete | integer | 是否删除 |
-| result.huohaoList.jst_huohao | string | 聚水潭货号 |
+| result.huohaoList.remark | string | 备注 |
 | result.hh_total | integer | 货号信息总数 |
 | result.huohaoColorList | array | 货号颜色集合 |
 | result.huohaoColorList.id | integer | ID |
@@ -459,6 +496,11 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.huohaoChimaList.price | number | 单价 |
 | result.hs_total | integer | 货号尺码总数 |
 
+**实测口径（2026-09-13）**
+
+- `huohao` 为**必填**：省略或传空串均返回 `code=0`「货号不能为空」。
+- 传 `huohao=00004` 实测返回 `hh_total=1` / `hc_total=6` / `hs_total=7`，三个集合字段名与文档一致。
+
 ### 4.5 生产类型接口
 
 **接口地址**：`/api/NetYf/Baseinfo/ScTypeQuery`
@@ -475,14 +517,38 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
         "sctypeList": [
             {
                 "bh": "0001",
-                "name": "整件",
-                "name_pk": "zj",
+                "name": "前道",
+                "name_pk": "qd",
+                "sfjcj": 1,
+                "isdelete": 0,
+                "sfcprk": 0
+            },
+            {
+                "bh": "0002",
+                "name": "后道",
+                "name_pk": "hd",
+                "sfjcj": 1,
+                "isdelete": 0,
+                "sfcprk": 0
+            },
+            {
+                "bh": "0003",
+                "name": "外发加工",
+                "name_pk": "wfjg",
+                "sfjcj": 1,
+                "isdelete": 0,
+                "sfcprk": 0
+            },
+            {
+                "bh": "0004",
+                "name": "腰头",
+                "name_pk": "yt",
                 "sfjcj": 1,
                 "isdelete": 0,
                 "sfcprk": 0
             }
         ],
-        "total": 1
+        "total": 4
     },
     "timestamp": 1786696855
 }
@@ -494,12 +560,19 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | --- | --- | --- |
 | result.sctypeList | array | 生产类型集合 |
 | result.sctypeList.bh | string | 生产类型编号 |
-| result.sctypeList.name | string | 生产类型名称 |
+| result.sctypeList.name | string | 生产类型名称（即生产工序 `section` 的取值域，见 §4.6） |
 | result.sctypeList.name_pk | string | 简拼 |
 | result.sctypeList.sfjcj | integer | 是否计裁剪 |
 | result.sctypeList.isdelete | integer | 是否删除 |
 | result.sctypeList.sfcprk | integer | 是否成品入库 |
 | result.total | integer | 数据总数量 |
+
+**实测口径（2026-09-13）**
+
+- 本厂实测 `total=4`：`前道`(0001/qd)、`后道`(0002/hd)、`外发加工`(0003/wfjg)、`腰头`(0004/yt)。
+- 生产类型是**工厂自配字典**，不是固定枚举；`total` 随工厂配置变化，不建议在代码中写死。
+- 本厂 4 条的 `sfjcj` 全为 `1`、`sfcprk` 全为 `0`（常量，无区分度）。
+- 与生产工序的关系：`/api/NetYf/Baseinfo/RfidWorktypeQuery` 返回的 `section` 即本表 `name`（本厂实测全部为 `前道`，见 §4.6）。
 
 ### 4.6 生产工序接口
 
@@ -530,8 +603,8 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
                 "gongzi_js_type": 1,
                 "wt_sort": null,
                 "xz_price": null,
-                "default_working_hours": 42,
-                "vehicle_type": "平车"
+                "default_working_hours": 0,
+                "vehicle_type": null
             }
         ],
         "total": 1
@@ -546,11 +619,11 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | --- | --- | --- |
 | result.worktypeList | array | 生产工序集合 |
 | result.worktypeList.bh | string | 编号 |
-| result.worktypeList.name | string | 工序 |
+| result.worktypeList.name | string | 工序名称（工序维度；与「车种」是两回事，见下方实测） |
 | result.worktypeList.name_pk | string | 简码 |
 | result.worktypeList.gxtype | integer | 流转类型（0 工序流转 / 1 仓库流转 / 2 验布工资专用） |
 | result.worktypeList.isdelete | integer | 是否删除 |
-| result.worktypeList.section | string | 工段 |
+| result.worktypeList.section | string | 工段（取值即生产类型 `name`，见 §4.5） |
 | result.worktypeList.jc | string | 简称 |
 | result.worktypeList.sc_type | string | 系统工序 |
 | result.worktypeList.worktype_group | string | 工序组 |
@@ -560,8 +633,17 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.worktypeList.wt_sort | string | 工序号 |
 | result.worktypeList.xz_price | number | 限制工价 |
 | result.worktypeList.default_working_hours | number | 默认理论工时 |
-| result.worktypeList.vehicle_type | string | 车种 |
+| result.worktypeList.vehicle_type | string | 车种（如平车、拷边等；本厂未启用，见下方实测） |
 | result.total | integer | 数据总数量 |
+
+**实测口径（2026-09-13，本厂全量）**
+
+- 本厂 `total=1991`，返回字段与文档一致（16 个）。
+- `section` **全部为 `前道`**（1991/1991），即本厂工序目录未使用后道 / 外发加工 / 腰头（对应 §4.5 的 4 个生产类型）。
+- `gongzi_js_type` **全部为 `1`（实收）**，`gxtype` 全部为 `0`（工序流转）——本厂均为常量，无区分度。
+- 以下字段本厂全为 `null`：`default_price`、`xz_price`、`jc`、`worktype_group`、`vehicle_type`；`default_working_hours` 全为 `0`。
+- `wt_sort`（工序号）有 702 / 1991 为空；`sc_type`（系统工序）仅 4 条有值（`其他`、`裁剪转缝制`、`缝制转包装` 等）。
+- **「工序名」与「车种」是两个维度**：`name` 是工序（裁剪、拷边、上拉链…），`vehicle_type` 是设备车种（平车、拷边机…）。本厂 `vehicle_type` 全空，故业务侧不要用 `name` 冒充车种，也不要假设每道工序都绑定了车种。
 
 ### 4.7 货号工序接口
 
@@ -571,13 +653,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 
 | 参数名 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| huohao | string | 是 | 货号编号 |
+| huohao | string | 否 | 货号编号（`bh`）。省略时不过滤，返回全部货号绑定的工序（本厂 8690 行，响应较大） |
 
 **请求示例**
 
 ```json
 {
-    "huohao": "00001"
+    "huohao": "00004"
 }
 ```
 
@@ -590,19 +672,19 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
     "result": {
         "list": [
             {
-                "id": 3,
-                "huohao": "00001",
-                "huohaoname": "25-MMT40218F第8-1单",
-                "wt": "0001",
-                "wtname": "验布",
+                "id": 228850,
+                "huohao": "00004",
+                "huohaoname": "T7848大身",
+                "wt": "1483",
+                "wtname": "密拷两侧上拉链处",
                 "sort": 1,
-                "sctype": "0002",
-                "sctypename": "大身",
+                "sctype": "0001",
+                "sctypename": "前道",
                 "sfzb": 0,
-                "using_state": 1,
+                "using_state": 0,
                 "zhgx": 0,
                 "sfxs": 0,
-                "theoretical_work_hours": 42
+                "theoretical_work_hours": 0
             }
         ],
         "total": 1
@@ -618,18 +700,24 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.list | array | 货号工序列表 |
 | result.list.id | integer | ID |
 | result.list.huohao | string | 货号编号 |
-| result.list.huohaoname | string | 货号名称 |
-| result.list.wt | string | 工序编号 |
+| result.list.huohaoname | string | 货号名称（即 `bbreed` 款号） |
+| result.list.wt | string | 工序编号（对应生产工序 `bh`） |
 | result.list.wtname | string | 工序名称 |
 | result.list.sort | integer | 序号 |
-| result.list.sctype | string | 生产类型编号 |
-| result.list.sctypename | string | 生产类型 |
+| result.list.sctype | string | 生产类型编号（对应 §4.5 `sctypeList.bh`） |
+| result.list.sctypename | string | 生产类型名称 |
 | result.list.sfzb | integer | 是否整版（0 否 / 1 是） |
 | result.list.using_state | integer | 使用中（0 否 / 1 是） |
 | result.list.zhgx | integer | 最后工序（0 否 / 1 是） |
 | result.list.sfxs | integer | 是否线上（0 否 / 1 是） |
 | result.list.theoretical_work_hours | number | 理论工时 |
 | result.total | integer | 数据总数量 |
+
+**实测口径（2026-09-13）**
+
+- `huohao` 为**选填**：省略时不发送该过滤条件，返回全部货号绑定的工序（本厂实测 `code=1`、`total=8690`）。
+- 传 `huohao=00004` 返回该货号的工序明细（`huohaoname=T7848大身`，即该货号的款号；`sctypename=前道`）。
+- `id` 在返回 JSON 中为数值（示例按整数展示）；`using_state` 区分该货号是否在用该工序（0/1）。
 
 ### 4.8 员工信息接口
 
@@ -639,13 +727,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 
 | 参数名 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| uid | string | 否 | 员工工号 |
+| uid | string | 否 | 员工工号。省略时不过滤，**按调用者角色范围返回全量员工** |
 
 **请求示例**
 
 ```json
 {
-    "uid": "01001"
+    "uid": "1642"
 }
 ```
 
@@ -658,13 +746,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
     "result": {
         "employeeList": [
             {
-                "uid": "01001",
-                "uname": "杨基山",
-                "name_pk": "yjs",
+                "uid": "1642",
+                "uname": "汪云梅",
+                "name_pk": "wym",
                 "move_Login": 1,
-                "dept": "003",
-                "deptname": "裁剪车间",
-                "move_scan": 0,
+                "dept": "001",
+                "deptname": "缝制",
+                "move_scan": 1,
                 "loginUserName": "",
                 "zr_ck": "",
                 "dy_gongzhong": "",
@@ -685,9 +773,8 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.employeeList.uid | string | 员工工号 |
 | result.employeeList.uname | string | 员工姓名 |
 | result.employeeList.name_pk | string | 简码 |
-| result.employeeList.mobile | string | 手机号 |
 | result.employeeList.move_Login | integer | 移动登录权限 |
-| result.employeeList.dept | string | 所属部门编号 |
+| result.employeeList.dept | string | 所属部门编号（取值对应 §4.9 `deptList.id`） |
 | result.employeeList.deptname | string | 所属部门名称 |
 | result.employeeList.move_scan | integer | 移动扫描方式（0 绑定工序 / 1 选择工序） |
 | result.employeeList.loginUserName | string | 登录用户绑定 |
@@ -695,6 +782,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.employeeList.dy_gongzhong | string | 打样工种 |
 | result.employeeList.roles | string | 角色（移动管理岗位）：00 员工 / 01 组长 / 02 管理 / 99 老板 |
 | result.total | integer | 数据总数量 |
+
+**实测口径（2026-09-13）**
+
+- `uid` 为**选填**。省略 / 空串时不过滤，**按调用者角色范围返回全量员工**（本厂实测：00 员工 1 条本人、01 组长 2210 条、02 管理 2303 条、99 老板 2600 条）；传 `uid` 时按工号精确过滤，工号不存在返回 0 条（`code` 仍为 1）。
+- 该接口**受角色数据范围约束**（注意与 §4.9 部门接口的差异）：02 管理范围为认证接口 `manageDept` 所列部门及其子树（本厂 `001,005` → 缝制 2210 + 后道 93 = 2303）。
+- 本厂真实返回**不含 `mobile`** 字段，不要按旧字段定义读取手机号。
+- 全厂 2600 人角色分布：`00`×2576、`01`×22、`02`×1、`99`×1。
 
 ### 4.9 部门信息接口
 
@@ -712,28 +806,28 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
         "deptList": [
             {
                 "id": "001",
-                "name": "研发部",
+                "name": "缝制",
                 "remark": null,
-                "name_pk": "yfb",
+                "name_pk": "fz",
                 "isdelete": 0,
-                "sysdept": "本厂",
-                "company": "0001",
-                "companyName": "宇鹏",
+                "sysdept": null,
+                "company": null,
+                "companyName": null,
                 "pid": "01"
             },
             {
                 "id": "002",
-                "name": "财务部",
+                "name": "无痕",
                 "remark": null,
-                "name_pk": "cwb",
+                "name_pk": "wh",
                 "isdelete": 0,
-                "sysdept": "本厂",
-                "company": "0001",
-                "companyName": "宇鹏",
+                "sysdept": null,
+                "company": null,
+                "companyName": null,
                 "pid": "01"
             }
         ],
-        "total": 2
+        "total": 7
     },
     "timestamp": 1786696978
 }
@@ -744,7 +838,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | 参数名 | 类型 | 说明 |
 | --- | --- | --- |
 | result.deptList | array | 部门集合 |
-| result.deptList.id | string | 部门编号 |
+| result.deptList.id | string | 部门编号（对应员工 `dept`，见 §4.8） |
 | result.deptList.name | string | 部门名称 |
 | result.deptList.remark | string | 备注 |
 | result.deptList.name_pk | string | 简拼 |
@@ -752,8 +846,15 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.deptList.sysdept | string | 系统部门 |
 | result.deptList.company | string | 公司编码 |
 | result.deptList.companyName | string | 公司名称 |
-| result.deptList.pid | string | 上级编号 |
+| result.deptList.pid | string | 上级编号（子部门指向父节点；根节点不在返回列表中） |
 | result.total | integer | 数据总数量 |
+
+**实测口径（2026-09-13）**
+
+- 本厂 `total=7`：`001` 缝制、`002` 无痕、`003` 临时工、`004` 检验、`005` 后道、`006` 裁剪、`007` 测试。
+- 该接口**不受角色数据范围约束**：四角色（00/01/02/99）返回完全相同的 7 条（与 §4.8 员工接口的按角色过滤不同）。它是「部门字典」，过滤职责在业务接口侧。
+- 7 条 `pid` 全为 `"01"`，但返回列表中**不含 `id="01"` 的根节点**（根节点不返回，故按 `pid` 递归建树时需容错）。
+- `sysdept` / `company` 仅 `007`「测试」有值（`本厂` / `0001`），其余均为 `null`；`companyName`、`remark` 全为 `null`。
 
 ## 5. 生产计划
 
@@ -1211,6 +1312,10 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.list.je | number | 金额 |
 | result.total | integer | 数据总数量 |
 
+**实测口径（2026-09-13，区间 2026-08-01 ~ 2026-08-31）**
+
+- **不支持 `huohao` / `worktype` 服务端过滤**：基准 `total=60240`；追加 `huohao`（分别传货号流水号 `00063`、款号 `G2601`）、`worktype`（传工序名）、以及两者组合后，`total` 均保持 `60240` 不变 —— 参数被静默忽略，不报错、不生效。→ 按款号/工序过滤只能拉全量后本地过滤；已向客户提出在服务端支持过滤参数的请求（跟进中，确认后更新本节）。
+
 ### 7.2 工序产量查询接口
 
 **接口地址**：`/api/NetYf/Sclzd/HuohaoWtCLQuery`
@@ -1225,6 +1330,8 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | dates | string | 是 | 开始日期 |
 | datee | string | 是 | 结束日期 |
 | scheme | string | 是 | 汇总方式：货号工序 / 工序 |
+| huohao | string | 否 | 按款号过滤。**取值是款号 `bbreed`（如 `86B`），不是货号流水号 `bh`**，见下方实测 |
+| worktype | string | 否 | 按工序名称过滤（取值对应生产工序 `name`，如 `印标`、`裁剪`） |
 
 **请求示例**
 
@@ -1234,8 +1341,10 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
     "size": 50,
     "queryFooter": true,
     "dates": "2026-08-01",
-    "datee": "2026-08-14",
-    "scheme": "货号工序"
+    "datee": "2026-08-31",
+    "scheme": "货号工序",
+    "huohao": "86B",
+    "worktype": "印标"
 }
 ```
 
@@ -1248,19 +1357,19 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
     "result": {
         "list": [
             {
-                "huohao": "724-001",
-                "sssl": 1000,
-                "worktype": "包装（测试）"
+                "huohao": "86B",
+                "sssl": 114893,
+                "worktype": "印标"
             },
             {
-                "huohao": "724-001",
-                "sssl": 1000,
-                "worktype": "裁剪"
+                "huohao": "86B",
+                "sssl": 96587,
+                "worktype": "接片"
             }
         ],
-        "total": 2,
+        "total": 7,
         "footer": {
-            "sl_total": 9511
+            "sl_total": null
         }
     },
     "timestamp": 1786773213
@@ -1272,12 +1381,19 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | 参数名 | 类型 | 说明 |
 | --- | --- | --- |
 | result.list | array | 产量汇总列表 |
-| result.list.huohao | string | 货号 |
+| result.list.huohao | string | 款号（`scheme=工序` 时为 `null`，因为不按货号分组） |
 | result.list.sssl | integer | 产量 |
-| result.list.worktype | string | 工序 |
+| result.list.worktype | string | 工序名称 |
 | result.total | integer | 数据总数量 |
 | result.footer | object | 合计（queryFooter 为 true 时返回） |
 | result.footer.sl_total | integer | 产量总数 |
+
+**实测口径（2026-09-13，区间 2026-08-01 ~ 2026-08-31）**
+
+- **`huohao` 与 `worktype` 均可作过滤条件**（文档原未登记，已补）：基准（无过滤）`total=360`；`+worktype=印标` → `4`；`+worktype=裁剪` → `1`；`+huohao=86B` → `7`；两者同时 → `1`。过滤值不存在时返回 `code=1` + `total=0`（不报错）。
+- **`huohao` 的取值是款号 `bbreed`，不是货号流水号 `bh`**：取该区间 360 行的 72 个非空 `huohao` 唯一值，**72/72 全部命中 `HuohaoQuery.bbreed`**；传 `bh`（如 `00004`、`00001`）返回 0 行。**同一字段名在不同接口语义不同**（`HuohaoFormQuery` / `HuohaoWorktypeQuery` 的 `huohao` 才是 `bh`），传值前先确认接口。
+- **`scheme` 决定分组与输出**：`货号工序` → 按「款号 + 工序」分组，`huohao` 有值；`工序` → 只按工序分组，`huohao` 恒为 `null`（此时仅 `worktype` 过滤有意义）。
+- **`footer.sl_total` 不是过滤后的合计**：无过滤时为全区间合计（2,489,812）；叠加 `worktype` 过滤后 `total` 收窄到 4，但 `sl_total` **仍为 2,489,812**；一旦指定 `huohao` 则返回 `null`。→ 需要「过滤后的合计」必须自行对 `list.sssl` 求和，**不要用 `footer.sl_total`**。
 
 ### 7.3 工序进度查询接口
 
@@ -2076,3 +2192,69 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.list.je | number | 金额 |
 | result.list.sfjz | integer | 是否结账 |
 | result.total | integer | 数据总数量 |
+
+## 12. 业务口径
+
+本章是跨接口的业务白话说明，配合前 11 章的契约字段阅读。所有结论基于本厂（雨泽服饰，2026-09-13）实测，可能与客户其他工厂不同。
+
+### 12.1 货号 / 款号 / 货号类型
+
+服装厂里同一件衣服有好几个「编号」，混用会直接导致取错数据：
+
+| 名称 | 字段 | 像什么 | 例子 | 要点 |
+| --- | --- | --- | --- | --- |
+| **货号** | `bh`（参数名也叫 `huohao`） | MES 内部流水号 / 仓库货架编号 | `00001`、`1261` | 老数据 4 位、新数据 5 位。**颜色、尺码、工序、扫码产量、工资明细、制单明细全部挂这个号** |
+| **款号** | `bbreed`（也叫 `huohaoname`） | 服装吊牌上的款号，业务员和客户嘴里说的「这款」 | `T7848大身`、`25084` | 本厂与 `bh` **一一对应**，两者指向同一件东西，一个对内、一个对外 |
+| **品名** | `description` | 这是什么衣服 | `防晒衣`、`跑步裤-男款` | 1387 个货号只对应 676 个不同品名，且 384 个货号**没填**品名 |
+| **货号类型** | `huohaotype` / `stype` | **年份归档桶**，不是衣服类别 | `2026款号汇总`、`2024款号汇总`、`19年款`、`2020客户销售单`、`测试货号` | 作用是让工厂界面按年份筛货号。**与「款式」无关**，不要拿来当品类 |
+
+> 一句话记法：问「哪一款」→ 用 `bbreed`（款号）；问「什么衣服」→ 用 `description`（品名）；`huohaotype` 只说明「这批货号是哪一年归档的」。
+
+```mermaid
+graph LR
+    T["货号类型 huohaoTypeList<br/>（年份归档桶）"] -->|bh = stype| H["货号 huohaoList<br/>bh 流水号"]
+    H -->|"1:1"| B["款号 bbreed<br/>（业务说的『款』）"]
+    H -->|bh| C["颜色 huohaoColorList"]
+    H -->|bh| S["尺码 huohaoChimaList"]
+    H -->|huohao| W["货号工序 huohaoWorktype"]
+    W -->|wt| R["生产工序 RfidWorktype"]
+    R -->|section| Y["生产类型 ScTypeQuery"]
+```
+
+### 12.2 生产类型与生产工序
+
+#### 12.2.1 生产类型（`ScTypeQuery`）= 把成衣生产切成的几个大段
+
+本厂实测**只有 4 段**：
+
+| 编号 | 名称 | 白话解释 | 本厂使用情况 |
+| --- | --- | --- | --- |
+| `0001` | 前道 | 主体流水线：裁剪 → 缝制 → 上拉链等主工序 | **1991 道工序全部挂在这里** |
+| `0002` | 后道 | 缝好之后的收尾：整烫、检验、包装 | 本厂暂无工序挂在此段 |
+| `0003` | 外发加工 | 自己做不完、发给外部加工厂做的部分 | 本厂未使用 |
+| `0004` | 腰头 | 专做「腰头」（裤腰/裙腰那一圈）的独立段 | 本厂未使用 |
+
+注意：生产类型是**工厂自配字典**，不是全行业固定枚举——换一家工厂名称和数量都可能不同，代码里不要写死。本厂 4 条的 `sfjcj` 全为 `1`、`sfcprk` 全为 `0`（常量，无区分度）。
+
+#### 12.2.2 生产工序（`RfidWorktypeQuery`）= 每道具体工序
+
+本厂实测 1991 道，字段与文档一致（16 个）。实测分布：
+
+| 字段 | 本厂取值 | 说明 |
+| --- | --- | --- |
+| `section` | **全部 = `前道`** | 即该工序属于哪个生产类型，取值 = 生产类型 `name` |
+| `gongzi_js_type` | **全部 = `1`（实收）** | 工资结算方式，本厂为常量 |
+| `gxtype` | 全部 `0`（工序流转） | 本厂为常量 |
+| `default_price` / `xz_price` / `jc` / `worktype_group` / `vehicle_type` | 全部 `null` | 本厂未启用这些维度 |
+| `default_working_hours` | 全部 `0` | 未填理论工时 |
+| `wt_sort` | 702 / 1991 为 `null` | 工序号有近三成缺失 |
+| `sc_type` | 仅 4 条有值 | `其他`、`裁剪转缝制`、`缝制转包装` 等 |
+
+**「工序名」与「车种」是两个维度，不能互相顶替**：`name` 是工序（裁剪、拷边、上拉链…），`vehicle_type` 是设备车种（平车、拷边机…）。本厂 `vehicle_type` 全为 `null`，业务侧不要用 `name` 冒充车种，也不要假设每道工序都绑定了车种。
+
+```mermaid
+graph TD
+    Y["生产类型 ScTypeQuery<br/>前道 / 后道 / 外发加工 / 腰头"] -->|section| R["生产工序 RfidWorktypeQuery<br/>1991 道，本厂全属前道"]
+    R -->|wt| HW["货号工序 HuohaoWorktype<br/>某货号用哪些工序、顺序"]
+    HW -->|huohao| H["货号 HuohaoQuery / 款号 bbreed"]
+```

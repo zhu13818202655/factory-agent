@@ -29,6 +29,7 @@ from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
 from factory_agent.data_api.directory import MesDirectorySource
 from factory_agent.data_api.hongzhao import AdapterSettings, HongzhaoMesAdapter
+from factory_agent.data_api.pagination import PagerBudget
 from factory_agent.data_api.schemas import BASE_DATA_RESOURCES, ROW_MODEL_BY_RESOURCE
 from factory_agent.data_api.token_gateway import (
     GatewayTokenRefresher,
@@ -42,6 +43,7 @@ from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import default_metric_registry
 from factory_agent.export_service import ExportService
 from factory_agent.infrastructure.cache import RedisCacheStore
+from factory_agent.llm.health import EndpointHealthMonitor, HttpModelsProbe
 from factory_agent.llm.registry import ModelRegistry, load_model_registry
 from factory_agent.llm.router_gateway import LiteLlmRouterGateway
 from factory_agent.observability.audit import AuditSink, StructuredLogAuditSink
@@ -131,6 +133,7 @@ class ApplicationContainer:
     reporting: ReportingService | None = None
     cache: AuthAwareCache | None = None
     credential_exchange: TokenCredentialExchange | None = None
+    model_health: EndpointHealthMonitor | None = None
     readiness: dict[str, str] = field(default_factory=lambda: {})
 
 
@@ -177,6 +180,12 @@ def build_container(
             settings=AdapterSettings(
                 refresh_threshold_seconds=settings.mes_token_refresh_threshold_seconds,
             ),
+            pager_budget=PagerBudget(
+                page_size=settings.mes_page_size,
+                page_size_ceiling=settings.mes_page_size_max,
+                max_pages=settings.mes_max_pages,
+                max_rows=settings.mes_max_rows,
+            ),
             recorder=mes_recorder,
             tenant_registry=tenant_registry,
         )
@@ -188,10 +197,12 @@ def build_container(
     if supplied.model is not None:
         model: ModelGateway = supplied.model
         model_status = "fake"
+        model_health: EndpointHealthMonitor | None = None
     else:
         registry = _load_registry(settings)
+        model_health = None
         if registry is not None and registry.is_usable():
-            model = LiteLlmRouterGateway(
+            gateway_impl = LiteLlmRouterGateway(
                 registry,
                 default_timeout_seconds=settings.llm_timeout_seconds,
                 default_temperature=settings.llm_temperature,
@@ -202,6 +213,13 @@ def build_container(
                 cooldown_seconds=settings.llm_cooldown_seconds,
                 thinking_enabled=settings.llm_thinking_enabled,
                 thinking_effort=settings.llm_thinking_effort,
+            )
+            model = gateway_impl
+            model_health = EndpointHealthMonitor(
+                registry,
+                HttpModelsProbe(timeout_seconds=settings.llm_health_probe_timeout_seconds),
+                apply=gateway_impl.use_registry,
+                failures_to_demote=settings.llm_health_probe_failures_to_demote,
             )
             model_status = "configured"
         else:
@@ -291,6 +309,7 @@ def build_container(
         reporting=reporting,
         cache=cache,
         credential_exchange=credential_exchange,
+        model_health=model_health,
         sessions_service=_build_session_service(
             settings,
             supplied,
@@ -512,18 +531,20 @@ def _build_export_service(
     settings: FactoryAgentSettings,
     clock: Clock,
 ) -> tuple[ArtifactStore | None, ArtifactExporter | None]:
-    """Compose the instant no-retention exporter.
+    """Compose the retained local-disk exporter.
 
-    The exporter is purely in-memory (transient buffer): it needs no object
-    store and no PostgreSQL. It is built whenever an injected override is
-    absent, so generated exports are always downloadable within the short
-    buffer window for any configured deployment.
+    XLSX artifacts persist to ``settings.export_store_dir`` and stay
+    downloadable across restarts within ``settings.export_retention_seconds``.
+    It needs no object store and no PostgreSQL. It is built whenever an
+    injected override is absent, so generated exports are always downloadable
+    for any configured deployment.
     """
     if supplied.artifact_exporter is not None:
         return supplied.artifacts, supplied.artifact_exporter
     exporter = ExportService(
+        store_dir=settings.export_store_dir,
         clock=clock.now,
-        ttl_seconds=settings.export_buffer_ttl_seconds,
+        retention_seconds=settings.export_retention_seconds,
         max_entries=settings.export_buffer_max_entries,
     )
     return supplied.artifacts, exporter

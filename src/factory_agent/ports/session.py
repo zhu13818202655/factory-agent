@@ -59,12 +59,20 @@ class InteractionCommit:
     Usage events are handed to the owning service's metering store, which writes
     them in a separate transaction after the business commit; a metering failure
     is caught and alerted without rolling back or blocking the answer.
+
+    ``lifecycle`` is ``False`` for informational commits (progress events): they
+    append their events and advance the run's ``last_event_sequence`` and
+    ``updated_at``, but never rewrite the interaction's lifecycle columns. Such
+    a commit can therefore never resurrect a run another process already
+    cancelled — it hands the store an unchanged in-memory record, and that
+    record's stale ``running`` status must not win over the durable terminal.
     """
 
     interaction: InteractionRecord
     messages: tuple[MessageRecord, ...] = ()
     events: tuple[SessionEvent, ...] = ()
     usage_events: tuple[UsageEvent, ...] = ()
+    lifecycle: bool = True
 
 
 @dataclass(frozen=True, slots=True)

@@ -246,8 +246,9 @@ class SessionPipelineMixin(SessionConsistencyMixin):
     ) -> AsyncIterator[SessionEvent]:
         """Run every denial path before any business-data call.
 
-        Fills ``plan`` and yields nothing on success; otherwise yields the
-        failure / clarification / denial events and leaves ``plan`` untouched.
+        Fills ``plan``, announcing the scope-resolution progress event on the
+        way; otherwise yields the failure / clarification / denial events and
+        leaves ``plan`` untouched.
         """
         # Re-resolve scope after parsing so a context patch can never reuse an
         # older, broader scope. Authorization, business-filter resolution and
@@ -302,6 +303,9 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         # call and never falls back to a broader scope.
         resolved = EMPTY_BUSINESS_FILTERS
         if self._business_filters is not None:
+            # Directory lookups (dept/employee names) read the MES-filtered
+            # directory and can take a while; announce them before the first one.
+            yield await self._progress(state, "scope_resolution_started")
             try:
                 resolved = await self._business_filters.resolve(scope, intent.slots)
             except DirectoryError as exc:
@@ -399,6 +403,9 @@ class SessionPipelineMixin(SessionConsistencyMixin):
             async for event in self._stop_here(state, usage_events, stop):
                 yield event
             return
+        # The parse call stays silent for as long as the model takes; announce
+        # the stage before it starts so the caller watches progress, not a stall.
+        yield await self._progress(state, "parse_started")
         try:
             parsed = await self._parse(state, history, usage_events)
         except ModelGatewayError as exc:
@@ -446,6 +453,10 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 yield event
             return
 
+        # The chain judges the role, runs the scope-guard model call, and
+        # resolves the caller's directory names before any business call:
+        # announce it up front so none of that is a black box.
+        yield await self._progress(state, "authorize_started")
         plan = _ExecutionPlan()
         async for event in self._authorize_request(
             authorization, state, intent, parsed.rewrite_query, capability_id, usage_events, plan

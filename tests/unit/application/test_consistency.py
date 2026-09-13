@@ -6,8 +6,6 @@ guarantee the safety net must prove — a well-scoped return is never flagged
 the kernel-level tests in ``tests/security/``.
 """
 
-
-
 from datetime import datetime, timezone
 
 from factory_agent.application.consistency import (
@@ -87,7 +85,7 @@ def test_employee_personal_wage_with_own_rows_is_ok() -> None:
 
 
 def test_employee_personal_wage_with_other_employee_rows_is_exact_hit() -> None:
-    """00 查他人工资场景：返回数据含非本人 uid → 精确命中，严格与生产均拦截."""
+    """00 查他人工资场景：返回数据含非本人 uid → 精确命中，记录告警不拦截."""
     expected = _ctx(Role.EMPLOYEE, depts=("dept-a1",))
     verdict = VALIDATOR.validate(
         result=_result(
@@ -102,7 +100,7 @@ def test_employee_personal_wage_with_other_employee_rows_is_exact_hit() -> None:
     )
     assert verdict.finding is not None
     assert verdict.finding.level is ValidationLevel.EXACT_HIT
-    assert verdict.action is ValidationAction.BLOCK
+    assert verdict.action is ValidationAction.PROCEED
     assert verdict.finding.sample_count == 1
     # No raw uid ever reaches the finding surface (only digests).
     assert "01002" not in verdict.finding.actual
@@ -124,7 +122,7 @@ def test_manager_team_list_with_out_of_bound_dept_row_is_exact_hit() -> None:
     )
     assert verdict.finding is not None
     assert verdict.finding.level is ValidationLevel.EXACT_HIT
-    assert verdict.action is ValidationAction.BLOCK
+    assert verdict.action is ValidationAction.PROCEED
 
 
 def test_management_overview_observed_depts_within_bound_is_ok() -> None:
@@ -160,7 +158,7 @@ def test_owner_whole_factory_never_flagged_even_with_all_depts() -> None:
 
 
 def test_single_subject_multiple_rows_is_heuristic_and_mode_disposes() -> None:
-    """单主体语义返回多行 → 启发式命中；严格模式阻塞、生产模式不拦截."""
+    """单主体语义返回多行 → 启发式命中；两种模式均只记录告警、不拦截."""
     expected = _ctx(Role.EMPLOYEE, depts=("dept-a1",))
     result = _result(
         "FR-002",
@@ -180,7 +178,7 @@ def test_single_subject_multiple_rows_is_heuristic_and_mode_disposes() -> None:
     )
     assert strict.finding is not None
     assert strict.finding.level is ValidationLevel.HEURISTIC_HIT
-    assert strict.action is ValidationAction.BLOCK
+    assert strict.action is ValidationAction.PROCEED
     assert production.finding is not None
     assert production.action is ValidationAction.PROCEED
 

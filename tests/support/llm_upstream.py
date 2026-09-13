@@ -58,6 +58,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             self._send(200, b'{"status":"ok"}')
             return
+        if self.path.rstrip("/").endswith("/models"):
+            if DEFAULT_SCENARIO == "server_error":
+                self._send(500, b'{"error":{"message":"upstream exploded"}}')
+                return
+            self._send(200, b'{"object":"list","data":[]}')
+            return
         self._send(404, b"{}")
 
     def do_POST(self):
@@ -113,6 +119,11 @@ class TemporaryUpstream:
     @property
     def chat_completions_url(self) -> str:
         return f"{self.base_url}/chat/completions"
+
+
+def unreachable_base_url() -> str:
+    """A loopback base URL nothing is listening on (a real dead endpoint)."""
+    return f"http://127.0.0.1:{_free_port()}/v1"
 
 
 def _free_port() -> int:

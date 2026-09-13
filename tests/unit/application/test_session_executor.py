@@ -253,7 +253,7 @@ async def test_two_connections_share_one_execution_and_one_terminal() -> None:
 async def test_unexpected_pipeline_crash_persists_a_failed_terminal() -> None:
     """3.4.3: a store failure mid-run still ends in a durable failed terminal."""
     gateway = GatedModelGateway()
-    # start() 落库 = #1，started 事件落库 = #2，_pipeline 第一个 phase 落库 = #3：
+    # start() 落库 = #1，started 事件落库 = #2，_pipeline 首个进度事件落库 = #3：
     # 让提交在管线内部炸掉，验证 _run 的兜底守卫。
     store = FlakyCommitStore(fail_on={3})
     service, store, runner = build(gateway, store=store)

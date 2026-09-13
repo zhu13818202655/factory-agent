@@ -7,21 +7,38 @@ never leak past ``data_api/``.
 Models mirror the customer envelope ``{code, message, result,
 timestamp}`` and the list shell ``result.{list, total}`` with optional
 ``result.footer`` (pagination walks to ``result.total``; the envelope ``code``
-is judged only as 1/0 — see ``docs/product/AI问答对外接口-整理.md`` §1).
+may be ``1`` (success) / ``0`` (validation) / ``-403`` (business-level permission
+denial) — see ``docs/product/AI问答对外接口-整理.md`` §1.3).
 """
 
 # Customer field names intentionally preserve mixed casing from the upstream API.
 # ruff: noqa: N815
 
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
+
+from factory_agent.observability.logging_adapter import get_logger
 
 
 class MesEnvelope(BaseModel):
-    """Customer response envelope; ``code`` is only 0 or 1."""
+    """Customer response envelope; ``code`` may be 1 / 0 / -403 (§1.3)."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # extra="ignore" (real-environment decision, 2026-09-13): the customer can
+    # add a top-level envelope field (e.g. a trace id) at any time without
+    # notice, and ``extra="forbid"`` would fail every MES call at once. Shape
+    # changes that actually matter are still caught: the required fields fail
+    # validation when renamed, and a renamed ``result`` is caught by the
+    # ``successful response has no result`` check in hongzhao.py.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     code: int
     message: str
@@ -87,6 +104,15 @@ class CredentialBundleResponse(BaseModel):
         return _normalize_role_codes(value)
 
 
+#: Rows log under the module path so upstream contract drift is alertable.
+_ROW_LOGGER = get_logger("factory_agent.data_api.schemas")
+
+#: Warn once per (model, field) per process. A missing lenient field is a
+#: contract-drift signal, not a per-row event: one line per row would flood
+#: the sink on a 1387-row roster (real HuohaoQuery scale).
+_WARNED_MISSING_FIELDS: set[tuple[str, str]] = set()
+
+
 class _CustomerRow(BaseModel):
     """Base for validated customer rows.
 
@@ -126,6 +152,46 @@ class _CustomerRow(BaseModel):
             return str(value)
         return value
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_absent_lenient_fields(cls, data: object) -> object:
+        """Fill declared-default fields the customer stopped sending.
+
+        Real-environment finding (2026-09-13): the customer MES dropped
+        documented fields (``HuohaoRow.isdelete`` / ``jst_huohao``) without
+        notice. A field the model author marked as not consumed (it declares
+        a default) must not fail the interaction: fill the default and log
+        one warning per (model, field) so the drift stays observable and the
+        user still gets an answer. Fields without a default stay required —
+        a missing consumed value fails closed rather than fabricating a zero.
+        """
+        if not isinstance(data, Mapping):
+            return data
+        rows = cast("dict[str, Any]", data)
+        absent: dict[str, Any] = {}
+        for name, field in cls.model_fields.items():
+            if name in rows or field.is_required():
+                continue
+            if field.default_factory is not None:
+                factory = cast("Callable[[], Any]", field.default_factory)
+                absent[name] = factory()
+            else:
+                absent[name] = field.default
+        if not absent:
+            return rows
+        filled = {**rows, **absent}
+        for name, value in absent.items():
+            key = (cls.__name__, name)
+            if key not in _WARNED_MISSING_FIELDS:
+                _WARNED_MISSING_FIELDS.add(key)
+                _ROW_LOGGER.warning(
+                    "mes.row.field_missing",
+                    model=cls.__name__,
+                    field=name,
+                    filled=value,
+                )
+        return filled
+
 
 # ---------------------------------------------------------------------------
 # Resource row models. Field names are copied verbatim from the customer
@@ -156,8 +222,8 @@ class HuohaoRow(_CustomerRow):
     huohaotype: str
     dw: str
     lpinpai: str
-    isdelete: bool
-    jst_huohao: str
+    # 真实环境实测（2026-09-13）：`isdelete` / `jst_huohao` 不再由客户下发；
+    # 历史文档的 `remark` 同样从不出现，且当前无下游消费，整列移除即可。
 
 
 class ScTypeRow(_CustomerRow):
@@ -182,7 +248,10 @@ class RfidWorktypeRow(_CustomerRow):
     yfgs: int
     default_price: str
     gongzi_js_type: int
-    wt_sort: int
+    # 真实环境实测（2026-09-13）：702 / 1991 行 `wt_sort` 为 null，改为可选字符串
+    # 与本表其它数值字段（`default_price` / `xz_price` / `default_working_hours`）
+    # 的声明风格一致；`_CustomerRow` 的标量归一化负责 `null → ""`。
+    wt_sort: str = ""
     xz_price: str
     default_working_hours: str
     vehicle_type: str

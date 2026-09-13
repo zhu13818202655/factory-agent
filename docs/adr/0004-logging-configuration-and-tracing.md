@@ -150,8 +150,9 @@ overrides explicitly rather than mutating global state.
 | `FACTORY_AGENT_CANONICAL_MES_BASE_URL` | URL | Customer MES base URL |
 | `FACTORY_AGENT_POSTGRES_URL` | Postgres DSN | Application metadata and metering database |
 | `FACTORY_AGENT_REDIS_URL` | Redis DSN | Optional cache endpoint; non-authoritative |
-| `FACTORY_AGENT_EXPORT_BUFFER_TTL_SECONDS` | int | Transient export window (Story 3: 不留存) |
-| `FACTORY_AGENT_EXPORT_BUFFER_MAX_ENTRIES` | int | In-memory export buffer cap |
+| `FACTORY_AGENT_EXPORT_STORE_DIR` | path | Local artifact store directory (落盘保留) |
+| `FACTORY_AGENT_EXPORT_RETENTION_SECONDS` | int | Export retention window; expired artifacts purged lazily |
+| `FACTORY_AGENT_EXPORT_BUFFER_MAX_ENTRIES` | int | In-memory export read-cache cap (availability never depends on it) |
 | `FACTORY_AGENT_MODEL_REGISTRY_PATH` | path | Reviewed model registry; see ADR-0006 |
 | `FACTORY_AGENT_LLM_KEY_*` | secret | Provider keys named by the registry (ADR-0006) |
 | `FACTORY_AGENT_LLM_*` | various | Logical alias and sampling/safety defaults; see `config.py` (`llm_fast_alias`, `llm_reasoning_alias`, `llm_summary_alias`, temperature, top-p, timeout, max repair attempts) |

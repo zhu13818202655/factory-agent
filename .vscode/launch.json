@@ -138,28 +138,6 @@
             "envFile": "${workspaceFolder}/.env",
             "justMyCode": true,
             "console": "integratedTerminal"
-        },
-        {
-            // 直连客户 MES 复现各类 incomplete_reason（不经 8000）。
-            // envFile 注入 .env，等价于在终端先执行 set -a; source .env; set +a。
-            "name": "复现 incomplete_reason（直连 MES）",
-            "consoleName": "FA-REPRO",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/tools/reproduce_incomplete.py",
-            // 占位参数：--role 选 00/01/02/99；--section 选 all/pagination/metric/
-            // reconciliation/upstream。需要换角色或只看某一节时直接改这里即可。
-            "args": [
-                "--role",
-                "00",         // 00/01/02/99
-                "--section",
-                "pagination"  // all/pagination/metric/reconciliation/upstream
-            ],
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/.env",
-            "justMyCode": false,
-            "console": "integratedTerminal"
         }
     ],
     "compounds": [

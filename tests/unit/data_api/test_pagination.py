@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from factory_agent.data_api.hongzhao import MesRequest, MesResponse
 from factory_agent.data_api.pagination import BoundedPager, PagerBudget
 from tests.support.mes_adapter import FakeMesAdapter, FakeOperation, FakePage, FaultScript
 
@@ -121,7 +122,6 @@ async def test_row_budget_exhaustion_returns_incomplete() -> None:
 @pytest.mark.asyncio
 async def test_null_field_drift_raises_upstream_invalid() -> None:
     """A null ID field inside an item must fail validation upstream-side."""
-    from factory_agent.data_api.hongzhao import MesRequest, MesResponse
     from factory_agent.domain.errors import UpstreamInvalidError
 
     class _BrokenAdapter(FakeMesAdapter):
@@ -137,7 +137,6 @@ async def test_null_field_drift_raises_upstream_invalid() -> None:
 @pytest.mark.asyncio
 async def test_extra_field_drift_raises_upstream_invalid() -> None:
     """Unknown fields in items are rejected by the strict item model."""
-    from factory_agent.data_api.hongzhao import MesRequest, MesResponse
     from factory_agent.domain.errors import UpstreamInvalidError
 
     class _DriftAdapter(FakeMesAdapter):
@@ -154,3 +153,72 @@ async def test_extra_field_drift_raises_upstream_invalid() -> None:
     pager = _pager(_DriftAdapter())
     with pytest.raises(UpstreamInvalidError):
         await pager.fetch_all("YskQuery", {}, item_model=_Item)
+
+
+class _SizedAdapter(FakeMesAdapter):
+    """Serves ``size``-honoring pages generated on demand from a fixed total."""
+
+    def __init__(self, total: int) -> None:
+        super().__init__()
+        self._total = total
+
+    async def execute(self, request: MesRequest) -> MesResponse:
+        self.requests.append(request)
+        size = int(request.params["size"])
+        page = int(request.params["page"])
+        start = (page - 1) * size
+        items = [
+            {"record_id": f"r{start + index}"}
+            for index in range(min(size, max(0, self._total - start)))
+        ]
+        return MesResponse(result={"list": items, "total": self._total}, footer=None)
+
+
+@pytest.mark.asyncio
+async def test_large_total_escalates_page_size_once_and_completes() -> None:
+    """total=80 at size=10 needs 8 pages; the pager resizes once to 16 (5 pages)."""
+    adapter = _SizedAdapter(total=80)
+    pager = BoundedPager(
+        adapter,  # type: ignore[arg-type]
+        budget=PagerBudget(page_size=10, page_size_ceiling=100, target_pages=5),
+    )
+
+    result = await pager.fetch_all("YskQuery", {}, item_model=_Item)
+
+    assert result.complete is True
+    assert result.total == 80
+    assert result.pages_fetched == 5
+    sizes = [int(request.params["size"]) for request in adapter.requests]
+    assert sizes[0] == 10
+    assert set(sizes[1:]) == {16}
+    assert [int(request.params["page"]) for request in adapter.requests] == [1, 1, 2, 3, 4, 5]
+
+
+@pytest.mark.asyncio
+async def test_escalation_never_exceeds_the_page_size_ceiling() -> None:
+    adapter = _SizedAdapter(total=1000)
+    pager = BoundedPager(
+        adapter,  # type: ignore[arg-type]
+        budget=PagerBudget(page_size=10, page_size_ceiling=100, target_pages=5),
+    )
+
+    result = await pager.fetch_all("YskQuery", {}, item_model=_Item)
+
+    assert result.complete is True
+    assert result.pages_fetched == 10
+    assert max(int(request.params["size"]) for request in adapter.requests) == 100
+
+
+@pytest.mark.asyncio
+async def test_small_total_fetches_without_resize() -> None:
+    adapter = _SizedAdapter(total=30)
+    pager = BoundedPager(
+        adapter,  # type: ignore[arg-type]
+        budget=PagerBudget(page_size=10, page_size_ceiling=100, target_pages=5),
+    )
+
+    result = await pager.fetch_all("YskQuery", {}, item_model=_Item)
+
+    assert result.complete is True
+    assert result.pages_fetched == 3
+    assert {int(request.params["size"]) for request in adapter.requests} == {10}

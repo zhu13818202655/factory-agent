@@ -10,7 +10,9 @@
 # BarcodeCl 明细既是计件工资来源之一，也是参与人数去重的依据，因此跨来源不会
 # 重复累计产量（产量只取 HuohaoWtCL 的 sssl）。
 #
-# 可选 style_codes 业务过滤：货号精确匹配；跨租户货号由 MES 行级过滤返回空。
+# 可选 style_codes 业务过滤：货号（款号 bbreed）精确匹配；单款号时由适配层
+# 下推为 HuohaoWtCLQuery 的 huohao 服务端过滤（接口文档 §7.2），多款号仍全量
+# 拉取后由下方 compute 本地过滤；跨租户货号由 MES 行级过滤返回空。
 version: 1
 capabilities:
   - capability_id: fr006_order_output

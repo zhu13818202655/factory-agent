@@ -110,15 +110,34 @@ class LiteLlmRouterGateway:
         self._default_temperature = default_temperature
         self._default_top_p = default_top_p
         self._default_max_output_tokens = default_max_output_tokens
+        self._num_retries = num_retries
+        self._allowed_fails = allowed_fails
+        self._cooldown_seconds = cooldown_seconds
         self._thinking_enabled = thinking_enabled
         self._thinking_effort = (thinking_effort or "high").lower()
-        self._router = router or Router(
+        self._router = router or self._build_router(registry)
+
+    def use_registry(self, registry: ModelRegistry) -> None:
+        """Adopt a routing table reordered by the endpoint health monitor.
+
+        litellm's Router is built from a static ``model_list``, so a changed
+        ``order`` means a new router; an unchanged one is left in place so a
+        periodic probe never churns the connection pools.
+        """
+        if registry.deployments == self._registry.deployments:
+            self._registry = registry
+            return
+        self._registry = registry
+        self._router = self._build_router(registry)
+
+    def _build_router(self, registry: ModelRegistry) -> Router:
+        return Router(
             model_list=_model_list(registry),
             fallbacks=_fallbacks(registry),
-            num_retries=num_retries,
-            allowed_fails=allowed_fails,
-            cooldown_time=cooldown_seconds,
-            timeout=default_timeout_seconds,
+            num_retries=self._num_retries,
+            allowed_fails=self._allowed_fails,
+            cooldown_time=self._cooldown_seconds,
+            timeout=self._default_timeout_seconds,
             set_verbose=False,
         )
 

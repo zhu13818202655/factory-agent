@@ -93,8 +93,8 @@
 
 `parsing`（解析）→ `clarifying`（追问）/ `authorizing`（鉴权）→ `executing`（取数）→
 `composing`（计算）→ `answered`（已回答）；终态另有 `cancelled`、`failed`、`archived`。
-前端可将 `state` 与阶段文案的映射用于进度展示，阶段变化以
-`interaction.phase` 事件为准。
+前端可将 `state` 与阶段文案的映射用于进度展示：阶段**变化**以 `interaction.phase` 为准，
+阶段**进行中**以 `interaction.progress` 为准（§5.2）。
 
 ### 3.3 Message
 
@@ -146,10 +146,9 @@
 
 ### 3.4 Artifact（导出产物）
 
-结果导出采用**即时生成、直接下载、服务端不留存**策略：导出文件在内存中即时渲染，
-只短暂保留在进程内缓冲（约 15 分钟窗口），服务端**不落盘、不入对象存储、无生命周期**；
-"回头再取"通过历史记录/收藏一键复问**重新执行 → 直接下载**，留查询不留文件。
-`interaction.result` 携带的 `artifact_id` 是一次导出的短时效凭证：
+结果导出采用**即时生成、直接下载、落盘保留**策略：导出文件在内存中即时渲染后写入
+服务端本地产物目录（类网盘的本地实现，保留期默认 7 天、过期自动清理），**重启服务后
+在保留期内仍可下载**。`interaction.result` 携带的 `artifact_id` 是一次导出的下载凭证：
 
 ```json
 { "artifact_id": "art_xxx" }
@@ -157,7 +156,8 @@
 
 前端拿到 `artifact_id` 后调用 `GET /v1/artifacts/{artifact_id}/download`，响应即文件
 本体（`Content-Disposition: attachment`），浏览器直接下载、App 端保存到本地；不再需要
-预签名链接。链接过期或文件不可得（返回 404）时，引导用户用历史/收藏一键复问重新生成。
+预签名链接。文件过期、被清理或 `artifact_id` 不属于当前用户（返回 404）时，引导用户
+用历史/收藏一键复问重新生成。
 
 ## 4. 接口清单
 
@@ -415,10 +415,11 @@ Query：`limit`（默认 50，上限 200）。响应：`Favorite[]`（结构同�
 响应即文件本体（流式返回，`Content-Disposition: attachment`），前端/浏览器直接把响应当
 文件下载；App 端保存到本地。文件名按"角色_功能_时间范围_生成时间"约定。
 
-- `artifact_id` 来自 `interaction.result` 事件（§5.3），是一次导出的短时效凭证。
-- 导出**即时生成、直接下载、服务端不留存**：XLSX 在内存渲染后仅短暂保留于进程内缓冲
-  （约 15 分钟窗口），无对象存储、无预签名链接、无留存生命周期；缓冲过期或文件不可得
-  时接口返回 404，应引导用户用历史/收藏一键复问**重新执行 → 直接下载**。
+- `artifact_id` 来自 `interaction.result` 事件（§5.3），是一次导出的下载凭证。
+- 导出**即时生成、直接下载、落盘保留**：XLSX 在内存渲染后写入服务端本地产物目录，
+  保留期默认 7 天（过期自动清理），**服务重启后在保留期内仍可下载**；无对象存储、
+  无预签名链接。文件过期、被清理或不可得时接口返回 404，应引导用户用历史/收藏
+  一键复问**重新执行 → 直接下载**。
 - 下载会重新校验凭据与归属：他人 `artifact_id`、已过期的与不存在的 `artifact_id` 一律
   返回 404（刻意不可区分）。
 
@@ -500,7 +501,8 @@ data: {JSON}
 | 事件名 | 说明 | 是否终态 |
 | --- | --- | --- |
 | `interaction.started` | 本轮开始 | 否 |
-| `interaction.phase` | 阶段推进 | 否 |
+| `interaction.phase` | 阶段**完成**推进（`status` 为 `ok`） | 否 |
+| `interaction.progress` | 某阶段**进行中**（`status` 为 `running`），用于填充长耗时阶段的等待 | 否 |
 | `interaction.clarification` | 追问补全参数 | 否 |
 | `interaction.answer` | 闲聊应答全文（问候/闲聊/常识问答） | 否 |
 | `interaction.result` | 结果卡片数据 | 否 |
@@ -508,6 +510,9 @@ data: {JSON}
 | `interaction.completed` | 本轮正常结束（结果就绪或进入追问） | 是 |
 | `interaction.failed` | 本轮失败（含权限不足友好拒绝）；`data.message` 携带面向用户的中文文案，建议直接展示，不要只显示「查询失败」 | 是 |
 | `interaction.cancelled` | 本轮被用户取消 | 是 |
+
+> **前向兼容**：事件名集合此后仍可能扩充（本表即新增过 `interaction.progress`）。前端必须
+> 忽略无法识别的 `event` 值，只处理自己认识的类型；未知事件不得报错、不得终止流。
 
 > **越权拒绝（`error_category=scope_forbidden`）**：用户请求超出其角色可查询范围的数据时
 > （如普通员工问「全组的工资明细」），服务在**任何业务取数之前**直接拒绝并返回友好文案，
@@ -537,7 +542,28 @@ data: {"state":"authorizing","reason":"intent_complete","stage":"鉴权","status
 
 `state` 取值见 §3.2；`stage` 为中文阶段名（接收/解析/追问/鉴权/取数/计算/完成/失败/取消），
 可直接用于进度条文案。典型顺序：`authorizing`（鉴权）→ `executing`（取数）→
-`composing`（计算）。
+`composing`（计算）。该事件表示阶段**已完成**（`status` 为 `ok`）。
+
+`interaction.progress`（阶段进行中）：
+
+```text
+id: 2
+event: interaction.progress
+data: {"state":"parsing","reason":"parse_started","stage":"解析中","status":"running","duration_ms":180}
+```
+
+一轮问答中有三段耗时工作不会产生任何其他过程事件：意图解析、权限校验（含范围守卫的模型
+调用）、过滤条件的目录解析。每段开始前各发一条 `interaction.progress`，前端可据此把「加载中」
+替换成正在做的具体事情，避免长等待期间界面无信息可展示。
+
+- `stage` 固定文案，按顺序出现：`解析中` → `权限检查中` → `核对数据范围`，可原样展示。
+- `reason` 为机器可读的起点标识（`parse_started` / `authorize_started` /
+  `scope_resolution_started`），可用于埋点与耗时对比。
+- `state` 是**当前真实状态**，这三条都为 `parsing`：整条鉴权链在状态机仍处于解析阶段时完成，
+  进度事件不推进状态机。请用它旁边的 `stage` 渲染文案，不要用 `state` 反推阶段。
+- `duration_ms` 与 `interaction.phase` 同义：自本轮运行起的累计耗时，不是与上一阶段的间隔。
+- 闲聊与追问轮次只会出现 `解析中`：这两条路径没有任何业务取数。
+- 随后照常收到 `interaction.phase`（`stage` 为 `鉴权`/`取数`/`计算`），表示对应阶段已结束。
 
 `interaction.clarification`（缺时间、款号、小组等条件时的追问）：
 
@@ -680,9 +706,9 @@ data: {"text":"你好呀！我是工厂助手，有什么可以帮你的吗？"}
 
 - `text`：可直接展示的回复全文。涉及实时或无法核实的信息（如今天的天气、实时行情）时，
   回复会说明"无法获取实时数据"，不会编造，也不会查询任何工厂数据。
-- 闲聊轮事件序列：`interaction.started` → `interaction.answer` →
-  `interaction.completed`（`status` 为 `"completed"`），无 `interaction.phase` 与
-  `interaction.result`；不占用追问轮次，不进入查询历史/收藏。
+- 闲聊轮事件序列：`interaction.started` → `interaction.progress`（仅 `解析中`）→
+  `interaction.answer` → `interaction.completed`（`status` 为 `"completed"`），既无
+  `interaction.phase` 也无 `interaction.result`；不占用追问轮次，不进入查询历史/收藏。
 - 回复同时以 `role=assistant`、`kind=chat` 消息持久化，历史消息接口（§4.5）可取回。
 
 ### 5.5 失败与取消事件
@@ -733,25 +759,40 @@ event: interaction.started
 data: {"interaction_id":"it_xxx","session_id":"sess_xxx","state":"parsing","stage":"接收","status":"accepted"}
 
 id: 2
-event: interaction.phase
-data: {"state":"authorizing","reason":"intent_complete","stage":"鉴权","status":"ok","duration_ms":410}
+event: interaction.progress
+data: {"state":"parsing","reason":"parse_started","stage":"解析中","status":"running","duration_ms":12}
 
 id: 3
-event: interaction.phase
-data: {"state":"executing","reason":"authorized","stage":"取数","status":"ok","duration_ms":425}
+event: interaction.progress
+data: {"state":"parsing","reason":"authorize_started","stage":"权限检查中","status":"running","duration_ms":1180}
 
 id: 4
-event: interaction.phase
-data: {"state":"composing","reason":"execution_complete","stage":"计算","status":"ok","duration_ms":2130}
+event: interaction.progress
+data: {"state":"parsing","reason":"scope_resolution_started","stage":"核对数据范围","status":"running","duration_ms":1590}
 
 id: 5
+event: interaction.phase
+data: {"state":"authorizing","reason":"intent_complete","stage":"鉴权","status":"ok","duration_ms":1880}
+
+id: 6
+event: interaction.phase
+data: {"state":"executing","reason":"authorized","stage":"取数","status":"ok","duration_ms":1895}
+
+id: 7
+event: interaction.phase
+data: {"state":"composing","reason":"execution_complete","stage":"计算","status":"ok","duration_ms":3600}
+
+id: 8
 event: interaction.result
 data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","huohao","customer_name","plan_qty","completed_qty","progress_ratio","delivery_warning","days_remaining"],"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx"}
 
-id: 6
+id: 9
 event: interaction.completed
 data: {"interaction_id":"it_xxx","status":"completed"}
 ```
+
+顺序要点：`interaction.progress` 永远出现在它所描述的耗时工作**之前**，
+`interaction.phase` 出现在该阶段**结束**时；两者成对理解，不要把 `progress` 当成阶段完成。
 
 ## 6. 错误码约定
 
@@ -779,8 +820,9 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 - SSE 断开**不等于**任务取消：后端执行是持久化且幂等单跑的，重连后通过
   `Last-Event-ID` 续传即可拿到完整事件序列；只有用户明确点击停止才调用 cancel（§4.4）。
 - 建议前端为 SSE 设置读超时（大于服务端心跳间隔 15 秒，如 30–45 秒），超时即重连。
-- 问答整体耗时取决于取数与计算，典型为数秒级；阶段以 `interaction.phase` 事件驱动，
-  前端不要按固定超时掐断，以终态事件为准。
+- 问答整体耗时取决于取数与计算，典型为数秒级；阶段进行中以 `interaction.progress` 驱动、
+  阶段完成以 `interaction.phase` 驱动（§5.2）。前端不要按固定超时掐断，以终态事件为准，
+  也无需为进度事件另设超时。
 - `401` 出现时引导用户重新进入（凭据由宿主系统刷新）；`502` 可提示稍后重试。
 - 时间范围约束：查询上限为**近一年**（366 天），超范围请求不会取数，直接以友好提示
   终止（§5.5 `time_range_exceeds_limit`）。
@@ -799,8 +841,9 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 - `incomplete == true` 时必须向用户明示结果不完整，不能当完整结果展示。
 - 交期预警等异常高亮由前端依据标记字段（`delivery_warning` / `days_remaining`）自行
   渲染，后端不下发任何样式。
-- 导出短时效、不留存：点击导出时调 `GET /v1/artifacts/{artifact_id}/download`，把响应
-  当作文件直接下载/保存；需要"回头再取"时走历史/收藏一键复问重新生成。
+- 导出落盘保留（默认 7 天，重启后保留期内仍可下载）：点击导出时调
+  `GET /v1/artifacts/{artifact_id}/download`，把响应当作文件直接下载/保存；收到 404
+  （已过期/被清理）时走历史/收藏一键复问重新生成。
 
 ### 推送偏好与每日早报（Story 3B 已落地）
 
@@ -813,7 +856,7 @@ data: {"interaction_id":"it_xxx","status":"completed"}
   接口：`GET /v1/push/preferences`（含 `morning_report_enabled: true` 固定标记）、
   `PUT /v1/push/preferences`、`GET /v1/push/preferences/options`（§4.11）。
 
-## 附录 A：四角色能力与数据范围矩阵
+## 附录 B：前端集成约定
 - 快捷问题、能力可用性、数据范围都由角色决定且服务端权威：前端不要本地硬编码角色-功能
   映射来做放行判断，直接消费 `GET /v1/quick-questions` 与拒绝文案即可。
 - 双入口同构：PC 悬浮小助手与 App 端调用同一套接口；App 端下载保存到本地，
@@ -831,17 +874,20 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 | FR-002 | 个人工资（当日/当月汇总） | ✓ | ✓ | ✓ | ✓ |
 | FR-003 | 个人工资明细 | ✓ | ✓ | ✓ | ✓ |
 | FR-004 | 收入排名（组内名次） | ✓ | ✓ | ✓ | ✓ |
-| FR-005 | 订单/款号进度查询 | — | ✓ | ✓ | — |
-| FR-006 | 订单/款号产量查询 | — | ✓ | ✓ | — |
-| FR-007 | 小组/车间产量对比 | — | ✓ | ✓ | — |
-| FR-008 | 员工工资清单 | — | ✓ | ✓ | — |
+| FR-005 | 订单/款号进度查询 | — | ✓ | ✓ | ✓ |
+| FR-006 | 订单/款号产量查询 | — | ✓ | ✓ | ✓ |
+| FR-007 | 小组/车间产量对比 | — | ✓ | ✓ | ✓ |
+| FR-008 | 员工工资清单 | — | ✓ | ✓ | ✓ |
 | FR-009 | 各订单进度（全厂订单进度总览，含交期预警列） | — | — | — | ✓ |
 | FR-010 | 车间产量总览 | — | — | — | ✓ |
 | FR-011 | 全厂工资统计 | — | — | — | ✓ |
 | FR-012 | 员工工资查询（任一员工） | — | — | — | ✓ |
 
 说明：FR-001~FR-004 为个人能力（本人维度），四角色均可用；FR-005~FR-008 为管理能力，
-限组长/管理；FR-009~FR-012 为全厂能力，仅老板。矩阵外的请求以友好拒绝处理（§5.5）。
+组长/管理可用；FR-009~FR-012 为全厂能力，仅老板。**老板拥有所有能力**：其数据范围是
+下级角色的超集，因此 FR-005~FR-008 同样对老板开放（老板问某款号/某订单/某小组的数据
+不应被拒）；反向不成立，01/02 不因老板能力而获得 FR-009~FR-012。矩阵外的请求以友好
+拒绝处理（§5.5）。
 闲聊（保留能力 `chitchat`）不属于业务矩阵：四角色均可用、不占用追问轮次、不进查询历史/
 收藏。
 
