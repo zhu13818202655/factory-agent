@@ -1,0 +1,4 @@
+[submodule "frontend"]
+	path = frontend
+	url = git@codeup.aliyun.com:junerda/ai-fczs/ai-management-font.git
+	branch = master
