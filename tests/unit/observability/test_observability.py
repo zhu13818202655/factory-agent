@@ -13,6 +13,7 @@ from factory_agent.observability.audit import (
     AuditEventType,
     AuditOutcome,
     InMemoryAuditSink,
+    StructuredLogAuditSink,
     scope_fingerprint,
 )
 from factory_agent.observability.context import (
@@ -147,6 +148,45 @@ async def test_in_memory_audit_sink_records_denials() -> None:
     await sink.record(event)
 
     assert sink.events == [event]
+
+
+@pytest.mark.asyncio
+async def test_structured_log_audit_sink_emits_a_redacted_correlated_record(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging(FactoryAgentSettings(environment="production", log_format="json"))
+    bind_request_id("req-audit")
+    fingerprint = scope_fingerprint("tenant-a", ("employee-a1",), ("group-a1",))
+    sink = StructuredLogAuditSink()
+
+    await sink.record(
+        AuditEvent(
+            event_type=AuditEventType.DOWNLOAD,
+            outcome=AuditOutcome.ALLOWED,
+            capability_id=None,
+            intent_summary=None,
+            scope_fingerprint=fingerprint,
+            employee_count=1,
+            dept_count=1,
+            whole_tenant=False,
+            tenant_id="tenant-a",
+            status="allowed",
+            occurred_at=datetime(2026, 8, 21, tzinfo=timezone.utc),
+            request_id="artifact-a1",
+        )
+    )
+
+    output = capsys.readouterr().out
+
+    assert "audit.download" in output
+    assert "'environment': 'production'" in output
+    assert fingerprint in output
+    # The event is namespaced, so its own request_id cannot shadow the inbound
+    # request correlation field on the same record.
+    assert "'request_id': 'req-audit'" in output
+    assert "'request_id': 'artifact-a1'" in output
+    for leak in ("employee-a1", "group-a1"):
+        assert leak not in output
 
 
 def test_request_id_header_validation() -> None:

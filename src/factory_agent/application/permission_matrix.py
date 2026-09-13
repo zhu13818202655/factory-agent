@@ -89,13 +89,13 @@ class AuthorizationDecision:
     reason: str | None = None
     available_capabilities: tuple[str, ...] = ()
 
-    @staticmethod
-    def deny(capability_id: str, reason: str, role: Role | None = None) -> Self:
+    @classmethod
+    def deny(cls, capability_id: str, reason: str, role: Role | None = None) -> Self:
         if role is not None:
             available = tuple(sorted(item.value for item in capabilities_for_role(role)))
         else:
             available = tuple(sorted(item.value for item in REGISTERED_CAPABILITIES))
-        return AuthorizationDecision(
+        return cls(
             allowed=False,
             capability_id=capability_id,
             reason=reason,

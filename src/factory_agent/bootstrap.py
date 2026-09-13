@@ -44,7 +44,7 @@ from factory_agent.export_service import ExportService
 from factory_agent.infrastructure.cache import RedisCacheStore
 from factory_agent.llm.registry import ModelRegistry, load_model_registry
 from factory_agent.llm.router_gateway import LiteLlmRouterGateway
-from factory_agent.observability.audit import AuditSink, InMemoryAuditSink
+from factory_agent.observability.audit import AuditSink, StructuredLogAuditSink
 from factory_agent.persistence.engine import create_session_engine
 from factory_agent.persistence.metering import SqlMeteringStore
 from factory_agent.persistence.personal_store import (
@@ -269,6 +269,9 @@ def build_container(
     reporting = _build_reporting(
         supplied, authorization, capability_runner, business_filters, clock, push_channel
     )
+    # One audit sink per process: the fail-closed download gate and the
+    # best-effort consistency alert must report to the same sink.
+    audit = supplied.audit or StructuredLogAuditSink()
     return ApplicationContainer(
         settings=settings,
         capabilities=CapabilityRegistry(),
@@ -279,7 +282,7 @@ def build_container(
         artifacts=artifact_store or supplied.artifacts or NotConfiguredArtifactStore(),
         clock=clock,
         authorization=authorization,
-        audit=supplied.audit or InMemoryAuditSink(),
+        audit=audit,
         interactions=interactions,
         capability_runner=capability_runner,
         artifact_exporter=exporter,
@@ -300,6 +303,7 @@ def build_container(
             business_filters,
             personalization,
             credential_exchange,
+            audit,
         ),
         readiness=readiness,
     )
@@ -409,6 +413,7 @@ def _build_session_service(
     business_filters: BusinessFilterResolver | None,
     personalization: PersonalizationService | None = None,
     credential_exchange: TokenCredentialExchange | None = None,
+    audit: AuditSink | None = None,
 ) -> SessionService | None:
     """Only compose the session pipeline when its dependencies exist."""
     if interactions is None or capability_runner is None:
@@ -454,7 +459,7 @@ def _build_session_service(
         time_range_max_days=settings.time_range_max_days,
         validator=ConsistencyValidator(),
         violations=_build_scope_violation_store(settings),
-        audit=supplied.audit or InMemoryAuditSink(),
+        audit=audit,
         chat=chat,
         summarizer=summarizer,
         scope_guard=scope_guard,

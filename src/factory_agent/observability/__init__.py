@@ -7,6 +7,7 @@ from factory_agent.observability.audit import (
     AuditSink,
     AuditWriteError,
     InMemoryAuditSink,
+    StructuredLogAuditSink,
     scope_fingerprint,
 )
 from factory_agent.observability.context import (
@@ -26,6 +27,7 @@ __all__ = [
     "AuditSink",
     "AuditWriteError",
     "InMemoryAuditSink",
+    "StructuredLogAuditSink",
     "accept_request_id",
     "bind_interaction_id",
     "bind_request_id",

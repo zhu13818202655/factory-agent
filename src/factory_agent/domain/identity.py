@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Self
+from typing import Self, cast
 
 from factory_agent.domain.identifiers import TenantId
 
@@ -72,7 +72,7 @@ class Role(str, Enum):
         authorization decisions.
         """
         try:
-            return _ROLE_BY_MES_CODE[code.strip()]
+            return cast(Self, _ROLE_BY_MES_CODE[code.strip()])
         except KeyError as error:
             raise ValueError(f"unknown MES role code: {code!r}") from error
 

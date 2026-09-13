@@ -19,6 +19,7 @@ from factory_agent.application.authorization import (
     IdentityRejectionError,
 )
 from factory_agent.domain import Role
+from factory_agent.observability.context import bind_tenant_id, current_log_context
 from tests.support.authorization import (
     FakeMembershipSource,
     FakeOrganizationSource,
@@ -142,3 +143,18 @@ async def test_role_is_display_only_so_scope_is_identical_across_roles() -> None
     assert employee.data_scope.employee_ids == frozenset({employee.tenant_context.employee_id})
     assert manager.data_scope.employee_ids == frozenset({manager.tenant_context.employee_id})
     assert employee.data_scope.mes_filtered is manager.data_scope.mes_filtered is False
+
+
+@pytest.mark.asyncio
+async def test_resolved_tenant_is_bound_to_the_log_correlation_context() -> None:
+    """Every log record after authorization must carry its tenant."""
+    bind_tenant_id(None)
+    memberships = FakeMembershipSource(
+        memberships_by_credential={
+            ("tenant-a", "user-a"): membership("user-a", "tenant-a", "employee-a1", Role.EMPLOYEE)
+        }
+    )
+
+    await build_service(memberships).authorize(credential("tenant-a", "user-a"), AS_OF)
+
+    assert current_log_context()["tenant_id"] == "tenant-a"

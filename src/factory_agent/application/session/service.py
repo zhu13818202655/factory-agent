@@ -30,6 +30,7 @@ from factory_agent.domain import (
     SessionStateMachine,
     terminal_event_name,
 )
+from factory_agent.observability.context import bind_interaction_id
 from factory_agent.ports import InteractionCommit, TrustedCredential
 
 
@@ -55,6 +56,7 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
 
         now = self._clock.now()
         interaction_id = InteractionId(self._new_id())
+        bind_interaction_id(str(interaction_id))
         # Bind the usage context before authorization so MES directory calls
         # (EmployeeQuery/DeptQuery) during scope resolution are metered too.
         usage = UsageContext(
@@ -122,6 +124,10 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
         events like any other connection — the execution lifecycle is bound to
         the interaction, not to any SSE connection.
         """
+        # Bound before the claim so the background executor task, created with
+        # ``asyncio.create_task``, inherits this correlation id with its copy of
+        # the current context and every pipeline log record carries it.
+        bind_interaction_id(str(interaction_id))
         owner, authorization = await self._resolve_owner(credential)
         record = await self._load(owner, interaction_id)
 
@@ -164,6 +170,7 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
         self, credential: TrustedCredential, interaction_id: InteractionId
     ) -> InteractionRecord:
         """Persist a cancelled terminal state and stop the remaining call budget."""
+        bind_interaction_id(str(interaction_id))
         owner, _ = await self._resolve_owner(credential)
         record = await self._load(owner, interaction_id)
         if record.status in TERMINAL_STATUSES:

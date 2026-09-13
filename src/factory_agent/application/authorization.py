@@ -27,6 +27,7 @@ from factory_agent.domain import (
     TenantId,
     TenantMembership,
 )
+from factory_agent.observability.context import bind_tenant_id
 from factory_agent.ports.contracts import TrustedCredential
 
 __all__ = [
@@ -133,6 +134,10 @@ class AuthorizationService:
             role=membership.role,
             resolved_at=as_of,
         )
+        # Authorized identity is established here, before any business-data
+        # call; binding it now puts ``tenant_id`` on every downstream log
+        # record, including the directory lookups below.
+        bind_tenant_id(str(tenant_context.tenant_id))
         dept_ids = await self._current_depts(membership)
         version = self._versions.new_version()
         data_scope = DataScope(

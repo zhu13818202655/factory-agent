@@ -18,7 +18,12 @@ from factory_agent.domain import (
     Role,
     TenantContext,
 )
-from factory_agent.observability.audit import AuditEvent, AuditEventType, AuditOutcome
+from factory_agent.observability.audit import (
+    AuditEvent,
+    AuditEventType,
+    AuditOutcome,
+    scope_fingerprint,
+)
 from factory_agent.ports import (
     CapabilityRunResult,
     ModelGatewayError,
@@ -195,7 +200,11 @@ class SessionConsistencyMixin(SessionOutcomeMixin):
                         outcome=(AuditOutcome.DENIED if blocked else AuditOutcome.ALLOWED),
                         capability_id=str(capability),
                         intent_summary=None,
-                        scope_fingerprint=None,
+                        scope_fingerprint=scope_fingerprint(
+                            str(context.tenant_id),
+                            tuple(scope.employee_ids),
+                            tuple(scope.dept_ids),
+                        ),
                         employee_count=len(scope.employee_ids),
                         dept_count=len(scope.dept_ids),
                         whole_tenant=scope.mes_filtered,
@@ -205,7 +214,12 @@ class SessionConsistencyMixin(SessionOutcomeMixin):
                         request_id=interaction_id,
                     )
                 )
-            except Exception:  # noqa: BLE001 - audit must not break the pipeline
+            except Exception:  # noqa: BLE001 - alert path: the durable finding is already written
+                # Deliberately softer than the download gate in
+                # ``api/exports.py``, which withholds data on an audit failure.
+                # Here the finding is already durable in the review table
+                # above, so the audit event is only the real-time alert carrier
+                # and no sink failure may break the run.
                 session_logger.opt(exception=True).warning("session.consistency.audit_failed")
         session_logger.bind(
             level=finding.level.value,

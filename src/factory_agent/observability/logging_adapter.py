@@ -5,6 +5,7 @@
 import logging
 import sys
 import traceback
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from factory_agent.config import FactoryAgentSettings
@@ -40,29 +41,41 @@ class _InterceptHandler(logging.Handler):
             logging.getLogger(__name__).debug("log forwarding dropped a record")
 
 
-def _json_sink(message: Any) -> None:  # pragma: no cover - exercised via logging capture
-    record = message.record
-    from factory_agent import __version__
+def _build_json_sink(environment: str) -> Callable[[Any], None]:
+    """Build the structured one-line JSON sink used in containers.
 
-    payload = {
-        "timestamp": record["time"].isoformat(),
-        "level": record["level"].name,
-        "service": "factory-agent",
-        "version": __version__,
-        "component": record["extra"].get("component", "app"),
-        "event": record["message"],
-        **current_log_context(),
-        **redact_mapping(
-            {key: value for key, value in record["extra"].items() if key != "component"}
-        ),
-    }
-    if record["exception"] is not None:
-        # loguru wraps the original exception in a RecordException namedtuple;
-        # ``.type`` is the real exception class.
-        payload["error_type"] = record["exception"].type.__name__
-        rendered = "".join(traceback.format_exception(*record["exception"]))
-        payload["error_traceback"] = redact_text(rendered)
-    sys.stdout.write(repr(payload) + "\n")
+    ``environment`` comes from settings at startup, so the sink needs no global
+    state and stays reusable across tests.
+    """
+
+    def sink(message: Any) -> None:  # pragma: no cover - exercised via logging capture
+        record = message.record
+        from factory_agent import __version__
+
+        payload = {
+            "timestamp": record["time"].isoformat(),
+            "level": record["level"].name,
+            "service": "factory-agent",
+            "version": __version__,
+            "environment": environment,
+            "component": record["extra"].get("component", "app"),
+            # Event names are stable identifiers, but redact anyway: a value
+            # interpolated into the message must not become a leak path.
+            "event": redact_text(record["message"]),
+            **current_log_context(),
+            **redact_mapping(
+                {key: value for key, value in record["extra"].items() if key != "component"}
+            ),
+        }
+        if record["exception"] is not None:
+            # loguru wraps the original exception in a RecordException namedtuple;
+            # ``.type`` is the real exception class.
+            payload["error_type"] = record["exception"].type.__name__
+            rendered = "".join(traceback.format_exception(*record["exception"]))
+            payload["error_traceback"] = redact_text(rendered)
+        sys.stdout.write(repr(payload) + "\n")
+
+    return sink
 
 
 def _console_sink(message: Any) -> None:  # pragma: no cover - local development only
@@ -90,7 +103,9 @@ def configure_logging(settings: FactoryAgentSettings) -> None:
     loguru_logger.remove()
     serialize = settings.log_format == "json"
     if serialize:
-        loguru_logger.add(_json_sink, level=settings.log_level, enqueue=False)
+        loguru_logger.add(
+            _build_json_sink(settings.environment), level=settings.log_level, enqueue=False
+        )
     else:
         loguru_logger.add(_console_sink, level=settings.log_level, enqueue=False)
 

@@ -5,8 +5,8 @@ current authorization, and then streams the transient in-memory XLSX back as a
 file response. There is no object store and no presigned URL: content lives in
 a short-TTL in-process buffer and is released when the response ends. A
 missing, expired, or foreign export id is a plain 404 — regeneration goes
-through history/favorite re-ask. A download audit event records only the
-artifact ID, tenant, and outcome — never the row detail.
+through history/favorite re-ask. A download audit event records the artifact
+ID, tenant, outcome, and an irreversible scope digest — never the row detail.
 """
 
 from typing import cast
@@ -17,7 +17,13 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from factory_agent.api.identity import resolve_credential
 from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.bootstrap import ApplicationContainer
-from factory_agent.observability.audit import AuditEvent, AuditEventType, AuditOutcome
+from factory_agent.observability.audit import (
+    AuditEvent,
+    AuditEventType,
+    AuditOutcome,
+    AuditWriteError,
+    scope_fingerprint,
+)
 from factory_agent.ports.session import InteractionOwner
 
 export_router = APIRouter(prefix="/v1", tags=["artifacts"])
@@ -69,22 +75,36 @@ async def download_artifact(
             detail="export is no longer available; re-ask from history/favorites to regenerate",
         )
 
-    await container.audit.record(
-        AuditEvent(
-            event_type=AuditEventType.DOWNLOAD,
-            outcome=AuditOutcome.ALLOWED,
-            capability_id=None,
-            intent_summary=None,
-            scope_fingerprint=None,
-            employee_count=None,
-            dept_count=None,
-            whole_tenant=False,
-            tenant_id=str(authorization.tenant_context.tenant_id),
-            status="allowed",
-            occurred_at=container.clock.now(),
-            request_id=str(artifact_id),
+    scope = authorization.data_scope
+    try:
+        await container.audit.record(
+            AuditEvent(
+                event_type=AuditEventType.DOWNLOAD,
+                outcome=AuditOutcome.ALLOWED,
+                capability_id=None,
+                intent_summary=None,
+                scope_fingerprint=scope_fingerprint(
+                    str(authorization.tenant_context.tenant_id),
+                    tuple(scope.employee_ids),
+                    tuple(scope.dept_ids),
+                ),
+                employee_count=len(scope.employee_ids),
+                dept_count=len(scope.dept_ids),
+                whole_tenant=scope.mes_filtered,
+                tenant_id=str(authorization.tenant_context.tenant_id),
+                status="allowed",
+                occurred_at=container.clock.now(),
+                request_id=str(artifact_id),
+            )
         )
-    )
+    except AuditWriteError as exc:
+        # Releasing payroll data without an audit record is not acceptable
+        # (DEC-014): the bytes stay in the transient buffer, and the caller can
+        # retry once the sink recovers.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="audit is unavailable; the export was not released",
+        ) from exc
     return Response(
         content=content.content,
         media_type=content.content_type,

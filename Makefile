@@ -20,7 +20,7 @@ LOAD_ENV := if [ -f "$(ENV_FILE)" ]; then set -a; . "./$(ENV_FILE)"; set +a; \
 .DEFAULT_GOAL := help
 
 .PHONY: help bootstrap lint typecheck test-unit test-integration
-.PHONY: test-e2e security check dev dev-usage-admin pre-commit compose-config compose-up compose-down compose-reset middleware-up middleware-down middleware-reset
+.PHONY: test-e2e security check dev dev-usage-admin pre-commit compose-config compose-config-template compose-up compose-down compose-reset middleware-up middleware-down middleware-reset
 .PHONY: migrate migrate-agent migrate-usage-admin migrate-status pg-grants build-images test-images
 
 help:
@@ -28,6 +28,7 @@ help:
 		'make bootstrap         Install the complete uv workspace' \
 		'make check             Run all repository code checks' \
 		'make compose-config    Validate development Compose files' \
+		'make compose-config-template  Parse the production Compose template' \
 		'make compose-up        Start all application services' \
 		'make compose-down      Stop all application services' \
 		'make compose-reset     Wipe all local data volumes and restart' \
@@ -80,6 +81,12 @@ pre-commit:
 compose-config:
 	bash deploy/compose/check.sh all
 	bash deploy/compose/check.sh middleware
+	bash deploy/compose/check.sh template
+
+# Parses the production reference menu with placeholder values: YAML syntax,
+# anchors, and variable interpolation are checked, but nothing is started.
+compose-config-template:
+	bash deploy/compose/check.sh template
 
 compose-up:
 	bash deploy/compose/start.sh all

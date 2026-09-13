@@ -10,6 +10,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
+from factory_agent.observability.logging_adapter import get_logger
+
 
 class AuditEventType(StrEnum):
     QUERY = "query"
@@ -107,6 +109,34 @@ class InMemoryAuditSink:
         self.events.append(event)
 
 
+class StructuredLogAuditSink:
+    """Durable audit sink emitting one redacted structured record per event.
+
+    The process owns no audit table, so retention and querying belong to
+    whatever collects the service stdout — the sink decides no schema and no
+    retention window of its own. Every field goes out through the whitelisted
+    ``AuditEvent.to_payload`` projection and the logging adapter's redaction,
+    so the emitted record carries the same guarantee as the in-memory one.
+
+    An emission failure raises ``AuditWriteError``; whether that denies the
+    audited action or only alerts is the caller's decision.
+    """
+
+    def __init__(self, component: str = "audit") -> None:
+        self._logger = get_logger(component)
+
+    async def record(self, event: AuditEvent) -> None:
+        payload = event.to_payload()
+        event_name = str(payload.pop("event_type"))
+        try:
+            # The event rides in one namespaced field so it can never shadow a
+            # correlation field the log context contributes — ``request_id``
+            # here means the inbound request, not the audited artifact.
+            self._logger.info(f"audit.{event_name}", audit=payload)
+        except Exception as error:  # noqa: BLE001 - any sink failure is an audit failure
+            raise AuditWriteError("audit event could not be emitted") from error
+
+
 __all__ = [
     "AuditEvent",
     "AuditEventType",
@@ -114,5 +144,6 @@ __all__ = [
     "AuditSink",
     "AuditWriteError",
     "InMemoryAuditSink",
+    "StructuredLogAuditSink",
     "scope_fingerprint",
 ]

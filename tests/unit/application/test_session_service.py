@@ -45,6 +45,7 @@ from factory_agent.domain import (
     TenantId,
     UserId,
 )
+from factory_agent.observability.context import bind_interaction_id, current_log_context
 from factory_agent.ports import InteractionOwner, ModelErrorCategory, ModelGatewayError
 from factory_agent.ports.contracts import TrustedCredential
 from tests.support.authorization import (
@@ -219,6 +220,16 @@ async def drain(
         credential(), interaction_id, after_sequence=after_sequence, history=history
     )
     return [event async for event in stream]
+
+
+@pytest.mark.asyncio
+async def test_start_binds_the_interaction_to_the_log_correlation_context() -> None:
+    bind_interaction_id(None)
+    service, _, _ = build()
+
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    assert current_log_context()["interaction_id"] == str(record.interaction_id)
 
 
 @pytest.mark.asyncio
