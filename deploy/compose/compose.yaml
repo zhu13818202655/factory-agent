@@ -1,6 +1,19 @@
 name: factory-agent
 
 services:
+  assistant-web:
+    image: mes-ai-assistant:latest
+    container_name: mes-ai-assistant
+    restart: unless-stopped
+    ports:
+      # 宿主端口可通过 .env 里的 HTTP_PORT 调整，容器内固定 80
+      - "${HTTP_PORT:-31080}:80"
+    environment:
+      # 监听地址：:80 内网 http；改成域名时记得去掉 Caddyfile 中的 auto_https off
+      SITE_ADDR: ":80"
+      # 智能体后端地址（容器内可直连的地址）
+      BACKEND_URL: "${BACKEND_URL:-http://127.0.0.1:31000}"
+
   agent-api:
     build:
       context: ../..
