@@ -596,8 +596,14 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                     result=result,
                 )
                 artifact_id = outcome.artifact_id
-            except Exception:
-                # A failed export must never change the answer outcome.
+            except Exception:  # noqa: BLE001 - a failed export must never change the answer outcome
+                # Degrades to "no export button this time" (artifact_id=None);
+                # the warning makes an unwritable store or renderer fault
+                # diagnosable instead of a silently missing button.
+                session_logger.opt(exception=True).warning(
+                    "session.export.failed",
+                    interaction_id=str(state.record.interaction_id),
+                )
                 artifact_id = None
 
         state.record = replace(state.record, capability_id=capability_id)

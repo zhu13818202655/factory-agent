@@ -73,7 +73,11 @@ class ExportService:
         self._retention_seconds = retention_seconds
         self._max_entries = max_entries
         self._cache: dict[str, _Entry] = {}
-        self._store_dir.mkdir(parents=True, exist_ok=True)
+        # The directory is created lazily on the first write, not here: an
+        # unwritable store (e.g. a read-only container FS without the export
+        # volume) must degrade to "no export this time" instead of crashing
+        # the whole service at startup. The write path converts the OSError
+        # into a structured ExportError.
 
     async def export(
         self,

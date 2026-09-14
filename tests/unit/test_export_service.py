@@ -152,3 +152,25 @@ async def test_cache_is_bounded_but_disk_keeps_every_artifact(tmp_path: Path) ->
     content = await service.fetch(_OWNER, first)
     assert content is not None
     assert content.content[:2] == b"PK"
+
+
+@pytest.mark.asyncio
+async def test_unwritable_store_degrades_instead_of_crashing_startup(tmp_path: Path) -> None:
+    """A read-only FS must not crash construction; the first export fails
+    structured (the session pipeline degrades to artifact_id=None)."""
+    from factory_agent.ports.artifacts import ExportError
+
+    ro_dir = tmp_path / "ro"
+    ro_dir.mkdir()
+    ro_dir.chmod(0o555)
+    try:
+        service = _service(ro_dir, new_id=_ids())  # must not raise
+
+        with pytest.raises(ExportError):
+            await _export_one(service, "it-1")
+
+        # No artifact was written and nothing is fetchable.
+        assert list(ro_dir.iterdir()) == []
+        assert await service.fetch(_OWNER, "art-1") is None
+    finally:
+        ro_dir.chmod(0o755)  # let pytest clean tmp_path up
