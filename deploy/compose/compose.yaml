@@ -19,6 +19,8 @@ services:
       FACTORY_AGENT_LLM_API_BASE: ${FACTORY_AGENT_LLM_API_BASE:-}
       FACTORY_AGENT_LLM_MODEL: ${FACTORY_AGENT_LLM_MODEL:-}
       FACTORY_AGENT_LLM_KEY_DEEPSEEK: ${FACTORY_AGENT_LLM_KEY_DEEPSEEK:-}
+      FACTORY_AGENT_EXPORT_STORE_DIR: ${FACTORY_AGENT_EXPORT_STORE_DIR:-/app/data/exports}
+      FACTORY_AGENT_EXPORT_RETENTION_SECONDS: ${FACTORY_AGENT_EXPORT_RETENTION_SECONDS:-604800}
     # Auto-migration on start: apply own Alembic baseline before serving.
     # Failure aborts startup; the step is idempotent (alembic version table).
     command:
@@ -31,6 +33,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      - agent-exports:/app/data/exports
     cap_drop:
       - ALL
     security_opt:
@@ -136,3 +140,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  agent-exports:
