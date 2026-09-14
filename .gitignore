@@ -13,6 +13,8 @@ dist/
 # Anchored: only the repository-root runtime output directory, never fixtures
 # such as tests/data/.
 /data/
+# Bind-mounted export artifact store when compose lives in deploy/compose/.
+deploy/compose/data/
 
 # agent memory
 .workbuddy/
