@@ -209,19 +209,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    # 导出产物落盘目录，二选一（容器内用户 uid 10001，两边都必须可写）：
-    #
-    # A. 命名卷（推荐默认）：镜像已预建 /app/data/exports 并 chown 给 app，
-    #    命名卷首挂时继承该属主，无需手工处理权限
+    # 导出产物落盘目录：命名卷保证容器重建（down/up）后产物仍在。
+    # 属主依赖镜像预建目录：Dockerfile 在 USER app 前 mkdir + chown 了
+    # /app/data/exports，命名卷首挂时继承 app 属主——所以**必须用本次
+    # 构建的镜像**，旧镜像建出的卷是 root 属主，uid 10001 写不进。
     volumes:
       - agent-exports:/app/data/exports
-    #
-    # B. 绑定宿主机目录（文件直接可见、可直接备份；注意相对路径基准是
-    #    **本 compose 文件所在目录**，不是仓库根）：
-    # volumes:
-    #   - ./data:/app/data/exports
-    #   宿主机先建目录并交给容器内用户：
-    #   sudo mkdir -p ./data && sudo chown -R 10001:10001 ./data
     # 只有在决定「让进程自己写日志文件」时才需要挂卷（见文件末尾附录 B）：
     # volumes:
     #   - ./logs/agent-api:/var/log/factory-agent
