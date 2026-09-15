@@ -135,10 +135,6 @@ ROLE_SHAPE_INTERPRETATION: dict[tuple[Role, RowSemantic], str] = {
         Role.MANAGER,
         RowSemantic.PERSONAL_SUMMARY,
     ): "管理查本人工资汇总返回 1 条为正常",
-    (
-        Role.EMPLOYEE,
-        RowSemantic.GROUP_RANK,
-    ): "员工查组内排名返回 1 条（本人名次）为正常",
 }
 
 #: Reviewed heuristic rules, registered as data with a reason. Kept deliberately

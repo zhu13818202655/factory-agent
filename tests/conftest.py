@@ -1,7 +1,5 @@
 """Shared fixtures for repository tests."""
 
-
-
 import logging
 
 # ---------------------------------------------------------------------------
@@ -12,6 +10,8 @@ import logging
 # FACTORY_AGENT_*，保证测试内的 settings 构造只看到测试本意提供的环境。
 # 例外：FACTORY_AGENT_TEST_POSTGRES_URL 是集成套件显式注入的测试库 DSN
 # （tests/integration/test_session_store_postgres.py），不来自 .env，需保留。
+# 同理保留 FACTORY_AGENT_TEST_S3_* ：S3 集成套件（tests/integration/test_artifact_store_s3.py）
+# 显式指向本机 SeaweedFS；漏列会让该套件永远拿不到配置而静默 skip。
 # ---------------------------------------------------------------------------
 import os as _os
 from collections.abc import Iterator
@@ -23,8 +23,17 @@ try:
     import litellm as _litellm  # noqa: F401  (import 副作用：触发一次 .env 注入)
 except Exception:  # pragma: no cover - 环境缺 litellm 时无需清理
     pass
+_KEEP = frozenset(
+    {
+        "FACTORY_AGENT_TEST_POSTGRES_URL",
+        "FACTORY_AGENT_TEST_S3_ENDPOINT_URL",
+        "FACTORY_AGENT_TEST_S3_BUCKET",
+        "FACTORY_AGENT_TEST_S3_ACCESS_KEY",
+        "FACTORY_AGENT_TEST_S3_SECRET_KEY",
+    }
+)
 for _k in list(_os.environ):
-    if _k.startswith("FACTORY_AGENT_") and _k != "FACTORY_AGENT_TEST_POSTGRES_URL":
+    if _k.startswith("FACTORY_AGENT_") and _k not in _KEEP:
         del _os.environ[_k]
 
 

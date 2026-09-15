@@ -1,6 +1,6 @@
 
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 import pytest
@@ -48,7 +48,12 @@ from factory_agent.domain import (
     UserId,
 )
 from factory_agent.observability.context import bind_interaction_id, current_log_context
-from factory_agent.ports import InteractionOwner, ModelErrorCategory, ModelGatewayError
+from factory_agent.ports import (
+    InteractionCommit,
+    InteractionOwner,
+    ModelErrorCategory,
+    ModelGatewayError,
+)
 from factory_agent.ports.contracts import TrustedCredential
 from tests.support.authorization import (
     FakeMembershipSource,
@@ -147,6 +152,17 @@ def authorization(role: Role = Role.EMPLOYEE) -> AuthorizationService:
         organizations=FakeOrganizationSource(depts_by_employee={"emp-1": ("dept-1",)}),
         versions=FixedScopeVersionAssigner(),
     )
+
+
+@dataclass
+class _StateRecordingStore(InMemoryInteractionStore):
+    """In-memory store that also records the state each commit persisted."""
+
+    persisted_states: list[SessionState] = field(default_factory=lambda: [])
+
+    async def commit(self, commit: InteractionCommit) -> None:
+        self.persisted_states.append(commit.interaction.state)
+        await super().commit(commit)
 
 
 def build(
@@ -277,17 +293,64 @@ async def test_progress_events_announce_every_silent_stage_before_it_runs() -> N
     events = await drain(service, record.interaction_id)
 
     progress = [event for event in events if event.name == INTERACTION_PROGRESS]
-    assert [event.data["stage"] for event in progress] == ["解析中", "权限检查中", "核对数据范围"]
+    assert [event.data["stage"] for event in progress] == ["解析中", "权限检查中"]
     assert [event.data["reason"] for event in progress] == [
         "parse_started",
         "authorize_started",
-        "scope_resolution_started",
     ]
     assert {event.data["status"] for event in progress} == {"running"}
     # A progress event never claims a state the interaction has not reached:
     # the whole authorization chain runs while the record still says PARSING.
     assert {event.data["state"] for event in progress} == {SessionState.PARSING.value}
+    # No slot names a department or employee here, so the directory lookup never
+    # runs and must not be announced.
+    assert "scope_resolution_started" not in [event.data["reason"] for event in progress]
     assert len(runner.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_named_slots_still_announce_the_directory_lookup() -> None:
+    """A slot naming a department or employee reads the MES-filtered directory,
+    so that stage is announced before the first lookup."""
+    service, _, _ = build([ANY_EMPLOYEE_PAYLOAD], role=Role.OWNER)
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="查模拟员工甲的工资")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    progress = [event for event in events if event.name == INTERACTION_PROGRESS]
+    assert [event.data["reason"] for event in progress] == [
+        "parse_started",
+        "authorize_started",
+        "scope_resolution_started",
+    ]
+    assert progress[-1].data["stage"] == "核对数据范围"
+
+
+@pytest.mark.asyncio
+async def test_adjacent_phase_transitions_never_persist_a_half_advanced_run() -> None:
+    """AUTHORIZING and EXECUTING are announced in one commit, so AUTHORIZING is
+    never a durable state — while both events keep their own sequence."""
+    store = _StateRecordingStore()
+    service, _, _ = build(store=store)
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+
+    events = await drain(service, record.interaction_id)
+
+    assert SessionState.AUTHORIZING not in store.persisted_states
+    phases = [event for event in events if event.name == INTERACTION_PHASE]
+    assert [event.data["reason"] for event in phases] == [
+        "intent_complete",
+        "authorized",
+        "execution_complete",
+    ]
+    assert [event.sequence for event in phases] == [
+        phases[0].sequence,
+        phases[0].sequence + 1,
+        phases[0].sequence + 2,
+    ]
+    assert store.interactions[str(record.interaction_id)].state is SessionState.ANSWERED
 
 
 @pytest.mark.asyncio
@@ -315,7 +378,9 @@ async def test_progress_events_are_persisted_for_replay() -> None:
     await drain(service, record.interaction_id)
 
     stored = [event.name for event in store.events[str(record.interaction_id)]]
-    assert stored.count(INTERACTION_PROGRESS) == 3
+    # Two: 解析中 and 权限检查中. The directory-lookup announcement is skipped
+    # because no slot names a department or employee.
+    assert stored.count(INTERACTION_PROGRESS) == 2
 
 
 @pytest.mark.asyncio

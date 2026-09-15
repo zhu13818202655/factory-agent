@@ -166,10 +166,10 @@ confirmed_metrics:
     source: AI问答对外接口 §8.2；客户确认结论·接口与字段口径 3
   payroll.group_rank:
     formula: 本人 uid 定位后，按本人所在小组（dept）过滤得到的组内位次
-    source: 需求及方案整理·员工功能表（收入排名）；客户确认结论·接口与字段口径 3
+    source: 需求及方案整理·管理功能表（收入排名）；客户确认结论·接口与字段口径 3
   payroll.group_size:
     formula: 按本人所在小组（dept）过滤后的可见列表计数（组内总人数）
-    source: 需求及方案整理·员工功能表（收入排名）
+    source: 需求及方案整理·管理功能表（收入排名）；客户确认结论·接口与字段口径 3
   payroll.package_count:
     formula: GongziJeOrderQuery 返回的 bs（包数，计件件数口径）
     source: AI问答对外接口 §8.2

@@ -1,7 +1,7 @@
 """Session service core: dependency wiring and cross-cutting primitives."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 
 from factory_agent.application.authorization import AuthorizationService
@@ -13,13 +13,14 @@ from factory_agent.application.intent import CapabilityIntentParser
 from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.scope_guard import ScopeGuard
 from factory_agent.application.session.definitions import (
-    DEFAULT_TIME_RANGE_MAX_DAYS,
     IdFactory,
     SessionLimits,
 )
 from factory_agent.application.session.executor import InteractionRunExecutor
 from factory_agent.application.summary import ResultSummarizer
+from factory_agent.application.time_expressions import DEFAULT_TIME_RANGE_MAX_DAYS
 from factory_agent.application.usage import (
+    LLM_CALL_EVENT_TYPE,
     UsageContext,
     completion_status,
     interaction_completed_event,
@@ -48,6 +49,16 @@ from factory_agent.ports import (
 from factory_agent.ports.artifacts import ArtifactExporter
 from factory_agent.ports.contracts import CredentialBinder
 from factory_agent.ports.scope_violation import ScopeViolationStore
+
+
+def _llm_duration_ms(event: UsageEvent) -> int:
+    """Wall-clock milliseconds one model call spent, failed attempts included."""
+    if event.event_type != LLM_CALL_EVENT_TYPE:
+        return 0
+    value = event.payload.get("duration_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
 
 
 class SessionCore:
@@ -155,16 +166,22 @@ class SessionCore:
         *,
         result: CapabilityRunResult | None,
         error_category: str | None,
+        usage_events: Sequence[UsageEvent] = (),
     ) -> UsageEvent:
         duration_ms = max(0, int((record.updated_at - record.created_at).total_seconds() * 1000))
+        llm_duration_ms = sum(_llm_duration_ms(event) for event in usage_events)
+        mes_duration_ms = result.duration_ms if result is not None else 0
         return interaction_completed_event(
             self._usage_context(record),
             occurred_at=record.updated_at,
             status=completion_status(record.status),
             duration_ms=duration_ms,
-            mes_duration_ms=result.duration_ms if result is not None else 0,
-            llm_duration_ms=0,
-            local_duration_ms=0,
+            mes_duration_ms=mes_duration_ms,
+            llm_duration_ms=llm_duration_ms,
+            # Residual: wall clock the interaction spent outside MES and model
+            # calls. It includes queueing and waiting, so it is not a pure
+            # "local computation" figure.
+            local_duration_ms=max(0, duration_ms - llm_duration_ms - mes_duration_ms),
             result_row_count=len(result.rows) if result is not None else 0,
             error_category=error_category,
         )

@@ -16,7 +16,10 @@ ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     "execution": {"domain", "observability", "ports"},
     "persistence": {"config", "domain", "observability", "ports"},
     "llm": {"domain", "ports"},
-    "export": {"domain", "ports"},
+    # local_store.py/s3_store.py log store anomalies (corrupt metadata, purge
+    # failures) through observability.logging_adapter, the same cross-cutting
+    # logger used by application/data_api/execution/persistence.
+    "export": {"domain", "observability", "ports"},
     "observability": {"config", "domain", "ports"},
     "infrastructure": {"domain", "ports"},
 }

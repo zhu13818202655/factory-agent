@@ -63,7 +63,7 @@ rectangle "执行（L1 确定性 DAG，单一 bounded 执行器）" {
 
 rectangle "结果与产物" {
   component "ResultTable + 指标注册表\n(unavailable 不伪造；交期预警标记字段)" as RT
-  component "卡片/SSE result 事件 / XLSX 导出\n(presigned 即时下载，不留存)" as OUT
+  component "卡片/SSE result 事件 / XLSX 导出\n(落盘保留，默认保留期 90 天)" as OUT
   component "usage metering → 共享 PostgreSQL\n(业务提交后独立事务；仅 factory-agent 写计量表)" as USAGE
 }
 
@@ -125,7 +125,7 @@ business formulas remain replaceable configuration or Adapter concerns.
 | Interaction processing | One in-memory DuckDB connection per interaction | Validated authorized rows only; no persistence or external/file access |
 | Model access | LiteLLM Router SDK with a reviewed deployment registry (ADR-0006) | Business code only names logical aliases; keys live in the environment; fallback/retry/cooldown are owned by the Router |
 | Cache | TTL-based application cache; Redis optional and added only if measurements justify it | Optional optimization; PostgreSQL/MES remain authoritative |
-| Export | XlsxWriter from `ResultTable`; delivery follows the customer-confirmed no-server-retention policy | XLSX only in the first release; external text is always written as text |
+| Export | XlsxWriter from `ResultTable`; delivery follows the customer-confirmed retention policy (artifacts persist server-side with a 90-day default retention window) | XLSX only in the first release; external text is always written as text |
 | Artifact storage | Filesystem fake for unit tests; S3-compatible port with SeaweedFS as the Apache-2.0 reference implementation | PostgreSQL stores metadata, never file contents; application code uses no vendor API, and the production endpoint waits for deployment review |
 | Observability | Structured JSON logs and OpenTelemetry-compatible traces/metrics | Sensitive fields and raw prompts are filtered before emission |
 | Delivery | OCI images and Docker Compose for development/integration | Production orchestrator and managed services remain deployment decisions |

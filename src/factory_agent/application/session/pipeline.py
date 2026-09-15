@@ -5,7 +5,6 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
-from datetime import timedelta
 
 from factory_agent.application.authorization import ResolvedAuthorization
 from factory_agent.application.business_filters import DirectoryError
@@ -19,6 +18,10 @@ from factory_agent.application.context import ConversationTurn
 from factory_agent.application.filters import FilterRejectionError, NarrowedFilters
 from factory_agent.application.intent import IntentParseOutcome
 from factory_agent.application.permission_matrix import Capability, authorize_capability
+from factory_agent.application.scope_guard import (
+    ScopeClassification,
+    scope_classification_payload,
+)
 from factory_agent.application.session.consistency import SessionConsistencyMixin
 from factory_agent.application.session.definitions import (
     EMPTY_BUSINESS_FILTERS,
@@ -29,6 +32,7 @@ from factory_agent.application.session.definitions import (
 from factory_agent.application.session.executor import InteractionRunExecutor
 from factory_agent.application.structured import StructuredOutputError
 from factory_agent.application.summary import fallback_result_answer, format_aggregate_value
+from factory_agent.application.time_expressions import time_range_violation
 from factory_agent.application.usage import (
     drain_mes_events,
     llm_call_event,
@@ -96,11 +100,6 @@ def result_aggregates(result: CapabilityRunResult) -> list[tuple[str, str]]:
             label = f"{label}（{unit}）"
         aggregates.append((label, format_aggregate_value(value, types.get(name))))
     return aggregates
-
-
-def exceeds_time_range_limit(time_range: TimeRange, max_days: int) -> bool:
-    """The customer-confirmed ceiling: queries span at most the past year."""
-    return (time_range.end - time_range.start) > timedelta(days=max_days)
 
 
 def consistency_payload(verdict: ConsistencyVerdict | None) -> dict[str, object] | None:
@@ -243,12 +242,15 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         capability_id: CapabilityId,
         usage_events: list[UsageEvent],
         plan: _ExecutionPlan,
+        scope_classification: ScopeClassification | None = None,
     ) -> AsyncIterator[SessionEvent]:
         """Run every denial path before any business-data call.
 
         Fills ``plan``, announcing the scope-resolution progress event on the
         way; otherwise yields the failure / clarification / denial events and
-        leaves ``plan`` untouched.
+        leaves ``plan`` untouched. The scope decision comes from
+        ``scope_classification`` when the EXTRACT call produced a usable one,
+        and from the dedicated guard call otherwise.
         """
         # Re-resolve scope after parsing so a context patch can never reuse an
         # older, broader scope. Authorization, business-filter resolution and
@@ -273,14 +275,19 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 yield event
             return
 
-        # Dedicated scope guard (方案二): a question can name a target that is
+        # Pre-execution scope check: a question can name a target that is
         # outside the caller's range while still mapping to an allowed
         # capability (e.g. an employee asking for the whole group's wage
         # detail maps to FR-003 and would silently come back as their own
-        # rows). Deny before any business-data call; the guard can only
-        # narrow access, never grant it.
+        # rows). Deny before any business-data call; the check can only narrow
+        # access, never grant it. The merged EXTRACT payload classifies the
+        # scope in the same call when it produced a usable verdict; a missing
+        # or invalid key falls through to the dedicated call, which keeps the
+        # fail-open availability promise (a model failure never blocks the run).
         guard = self._scope_guard
-        if guard is not None:
+        if scope_classification is not None:
+            denial = self._merged_scope_denial(state, scope_classification, decision_context.role)
+        elif guard is not None:
             question = rewrite_query or state.record.input_text
             denial = await self._run_scope_guard(
                 state,
@@ -290,12 +297,12 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 decision_context.role,
                 usage_events,
             )
-            if denial is not None:
-                async for event in self._reject_message(
-                    state, "scope_forbidden", denial, usage_events
-                ):
-                    yield event
-                return
+        else:
+            denial = None
+        if denial is not None:
+            async for event in self._reject_message(state, "scope_forbidden", denial, usage_events):
+                yield event
+            return
 
         # Resolve user business filters (dept/employee names, order/
         # style/plan codes) from the intent slots against the MES-filtered
@@ -304,8 +311,12 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         resolved = EMPTY_BUSINESS_FILTERS
         if self._business_filters is not None:
             # Directory lookups (dept/employee names) read the MES-filtered
-            # directory and can take a while; announce them before the first one.
-            yield await self._progress(state, "scope_resolution_started")
+            # directory and can take a while; announce them before the first
+            # one — but only when a slot actually names a department or
+            # employee. A personal query whose slots carry no names resolves
+            # nothing, and announcing it would be a misleading front-end hint.
+            if intent.slots.dept_names or intent.slots.employee_names:
+                yield await self._progress(state, "scope_resolution_started")
             try:
                 resolved = await self._business_filters.resolve(scope, intent.slots)
             except DirectoryError as exc:
@@ -370,7 +381,17 @@ class SessionPipelineMixin(SessionConsistencyMixin):
             async for event in self._fail(state, "time_range_missing", usage_events):
                 yield event
             return
-        if exceeds_time_range_limit(time_range, self._time_range_max_days):
+        # The customer-confirmed ceiling (past year) is judged by the same
+        # shared redline the parser uses for a model-proposed range, so the
+        # span rule is written once.
+        if (
+            time_range_violation(
+                time_range.start,
+                time_range.end,
+                max_days=self._time_range_max_days,
+            )
+            == "too_long"
+        ):
             # Customer-confirmed ceiling: at most the past year. Terminate with
             # a friendly notice before any MES call.
             notice = (
@@ -407,7 +428,9 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         # the stage before it starts so the caller watches progress, not a stall.
         yield await self._progress(state, "parse_started")
         try:
-            parsed = await self._parse(state, history, usage_events)
+            parsed = await self._parse(
+                state, history, usage_events, role=authorization.tenant_context.role
+            )
         except ModelGatewayError as exc:
             async for event in self._fail(state, f"gateway_{exc.category.value}", usage_events):
                 yield event
@@ -459,7 +482,14 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         yield await self._progress(state, "authorize_started")
         plan = _ExecutionPlan()
         async for event in self._authorize_request(
-            authorization, state, intent, parsed.rewrite_query, capability_id, usage_events, plan
+            authorization,
+            state,
+            intent,
+            parsed.rewrite_query,
+            capability_id,
+            usage_events,
+            plan,
+            parsed.scope_verdict,
         ):
             yield event
         if (
@@ -485,8 +515,12 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 yield event
             return
 
-        yield await self._phase(state, SessionState.AUTHORIZING, "intent_complete")
-        yield await self._phase(state, SessionState.EXECUTING, "authorized")
+        for event in await self._phases(
+            state,
+            (SessionState.AUTHORIZING, "intent_complete"),
+            (SessionState.EXECUTING, "authorized"),
+        ):
+            yield event
 
         try:
             result = await self._runner.run(
@@ -668,7 +702,12 @@ class SessionPipelineMixin(SessionConsistencyMixin):
             session_id=str(state.record.session_id),
         )
         usage_events.append(
-            self._completion_event(state.record, result=result, error_category=None)
+            self._completion_event(
+                state.record,
+                result=result,
+                error_category=None,
+                usage_events=tuple(usage_events),
+            )
         )
         await self._commit(
             InteractionCommit(
@@ -713,6 +752,8 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         state: RunState,
         history: tuple[ConversationTurn, ...],
         usage_events: list[UsageEvent],
+        *,
+        role: Role,
     ) -> IntentParseOutcome:
         logical_call_id = self._new_id()
         now = self._clock.now()
@@ -722,6 +763,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 now=now,
                 logical_call_id=logical_call_id,
                 history=history,
+                role=role,
             )
         except ModelGatewayError as exc:
             usage_events.append(
@@ -736,6 +778,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                     duration_ms=exc.duration_ms,
                     status="failed",
                     error_category=exc.category.value,
+                    includes_scope=self._parser_includes_scope(role),
                 )
             )
             raise
@@ -750,9 +793,23 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 attempt=outcome.attempts,
                 duration_ms=outcome.duration_ms,
                 status="completed",
+                includes_scope=outcome.includes_scope,
+                scope_verdict=(
+                    scope_classification_payload(outcome.scope_verdict)
+                    if outcome.scope_verdict is not None
+                    else None
+                ),
             )
         )
         return outcome
+
+    def _parser_includes_scope(self, role: Role) -> bool:
+        """Whether the parser asks its EXTRACT call for a scope classification.
+
+        Mirrors the parser's own rule so the failed-attempt event reports the
+        same shape as a successful one.
+        """
+        return self._parser.includes_scope_for(role)
 
     async def _chat(
         self,

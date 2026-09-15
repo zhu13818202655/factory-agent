@@ -12,7 +12,7 @@ from factory_agent.application.intent import (
     CapabilitySpec,
     clarification_for,
 )
-from factory_agent.domain import CapabilityId
+from factory_agent.domain import CapabilityId, Role
 from tests.support.session import ScriptedModelGateway
 
 NOW = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
@@ -324,3 +324,263 @@ def test_describe_lists_chinese_titles_descriptions_and_slot_labels() -> None:
     assert "- fr001_personal_output（个人产量统计）：按日期" in text
     assert "需要提供：时间范围" in text
     assert "- chitchat（闲聊与常识问答）" in text
+
+
+@pytest.mark.asyncio
+async def test_prompt_carries_the_clock_anchor_and_the_time_slot_keys() -> None:
+    gateway = ScriptedModelGateway(contents=[payload()])
+
+    await parser(gateway).parse("上个月产量", now=NOW, logical_call_id="c1")
+
+    system = gateway.requests[0].messages[0].content
+    assert "今天是 2026-08-24" in system
+    assert "time_range_start" in system
+    assert "time_range_end" in system
+
+
+@pytest.mark.asyncio
+async def test_naive_iso_range_is_localized_to_the_factory_timezone() -> None:
+    """A model that omits the offset means factory local time, as the rules do."""
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                slots={
+                    "time_range_start": "2026-08-01",
+                    "time_range_end": "2026-08-02",
+                }
+            )
+        ]
+    )
+
+    outcome = await parser(gateway).parse("8月1日的产量", now=NOW, logical_call_id="c1")
+
+    slots = outcome.intent.slots
+    assert slots.time_range_start is not None
+    assert slots.time_range_start.isoformat() == "2026-07-31T16:00:00+00:00"
+    assert slots.time_range_end is not None
+    assert slots.time_range_end.isoformat() == "2026-08-01T16:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_model_range_beyond_the_ceiling_falls_back_to_the_rule_layer() -> None:
+    """A hallucinated two-year span for \"本月\" must not become a rejection."""
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                slots={
+                    "time_expression": "本月",
+                    "time_range_start": "2025-01-01T00:00:00+00:00",
+                    "time_range_end": "2027-01-01T00:00:00+00:00",
+                }
+            )
+        ]
+    )
+
+    outcome = await parser(gateway).parse("本月产量", now=NOW, logical_call_id="c1")
+
+    assert "time_range" not in outcome.intent.ambiguous
+    assert outcome.intent.needs_clarification is False
+    slots = outcome.intent.slots
+    assert slots.time_range_start is not None
+    assert slots.time_range_start.isoformat() == "2026-07-31T16:00:00+00:00"
+    assert slots.time_range_end is not None
+    assert slots.time_range_end.isoformat() == "2026-08-31T16:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_model_range_starting_past_tomorrow_is_discarded() -> None:
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                slots={
+                    "time_expression": "本月",
+                    "time_range_start": "2028-01-01T00:00:00+00:00",
+                    "time_range_end": "2028-02-01T00:00:00+00:00",
+                }
+            )
+        ]
+    )
+
+    outcome = await parser(gateway).parse("本月产量", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.slots.time_range_start is not None
+    assert outcome.intent.slots.time_range_start.isoformat() == "2026-07-31T16:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_wide_range_survives_for_the_ceiling_gate() -> None:
+    """超一年的显式区间要走会话上限提示，而不是被降级成一次追问。"""
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                slots={
+                    "time_range_start": "2025-01-01T00:00:00+00:00",
+                    "time_range_end": "2026-08-01T00:00:00+00:00",
+                }
+            )
+        ]
+    )
+
+    outcome = await parser(gateway).parse("近两年的产量", now=NOW, logical_call_id="c1")
+
+    slots = outcome.intent.slots
+    assert outcome.intent.needs_clarification is False
+    assert slots.time_range_start is not None
+    assert slots.time_range_start.isoformat() == "2025-01-01T00:00:00+00:00"
+    assert slots.time_range_end is not None
+    assert slots.time_range_end.isoformat() == "2026-08-01T00:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_rejected_model_range_without_a_rule_layer_phrase_asks_instead() -> None:
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                slots={
+                    "time_expression": "很久以前",
+                    "time_range_start": "2028-01-01T00:00:00+00:00",
+                    "time_range_end": "2028-02-01T00:00:00+00:00",
+                }
+            )
+        ]
+    )
+
+    outcome = await parser(gateway).parse("很久以前的产量", now=NOW, logical_call_id="c1")
+
+    assert "time_range" in outcome.intent.ambiguous
+    assert outcome.intent.slots.time_range_start is None
+
+
+@pytest.mark.asyncio
+async def test_rule_primary_mode_ignores_the_model_range() -> None:
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                slots={
+                    "time_expression": "本月",
+                    "time_range_start": "2026-07-01T00:00:00+00:00",
+                    "time_range_end": "2026-07-02T00:00:00+00:00",
+                }
+            )
+        ]
+    )
+    rule_parser = CapabilityIntentParser(
+        gateway,
+        CATALOG,
+        model_alias="factory-fast",
+        timezone_name=TZ,
+        time_parse_mode="rule_primary",
+    )
+
+    outcome = await rule_parser.parse("本月产量", now=NOW, logical_call_id="c1")
+
+    slots = outcome.intent.slots
+    assert slots.time_range_start is not None
+    assert slots.time_range_start.isoformat() == "2026-07-31T16:00:00+00:00"
+    assert slots.time_range_end is not None
+    assert slots.time_range_end.isoformat() == "2026-08-31T16:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_an_inverted_model_range_is_flagged_and_never_used() -> None:
+    """\"从8月10日到8月1日\" has no usable span: ask, and say why."""
+    gateway = ScriptedModelGateway(
+        contents=[
+            payload(
+                slots={
+                    "time_range_start": "2026-08-10T00:00:00+08:00",
+                    "time_range_end": "2026-08-01T00:00:00+08:00",
+                }
+            )
+        ]
+    )
+
+    outcome = await parser(gateway).parse("从8月10日到8月1日", now=NOW, logical_call_id="c1")
+
+    assert outcome.intent.slots.time_range_start is None
+    assert outcome.intent.slots.time_range_end is None
+    assert "time_range" in outcome.intent.ambiguous
+    assert outcome.clarification is not None
+
+
+def guarding_parser(
+    gateway: ScriptedModelGateway, *, mode: str = "merged"
+) -> CapabilityIntentParser:
+    return CapabilityIntentParser(
+        gateway,
+        CATALOG,
+        model_alias="factory-fast",
+        timezone_name=TZ,
+        scope_guard_mode="dedicated" if mode == "dedicated" else "merged",
+    )
+
+
+@pytest.mark.asyncio
+async def test_merged_mode_asks_for_the_scope_verdict_with_the_caller_role() -> None:
+    gateway = ScriptedModelGateway(contents=[payload()])
+
+    await guarding_parser(gateway).parse(
+        "全组的工资明细", now=NOW, logical_call_id="c1", role=Role.EMPLOYEE
+    )
+
+    system_text = gateway.requests[0].messages[0].content
+    assert "权限范围判定" in system_text
+    assert "00（普通员工）" in system_text
+    assert "本人的产量与工资数据" in system_text
+    assert '"scope"' in system_text
+
+
+@pytest.mark.asyncio
+async def test_merged_mode_reads_the_scope_key() -> None:
+    scope = {"verdict": "beyond", "target": "全组的工资明细"}
+    gateway = ScriptedModelGateway(contents=[payload(scope=scope)])
+
+    outcome = await guarding_parser(gateway).parse(
+        "全组的工资明细", now=NOW, logical_call_id="c1", role=Role.EMPLOYEE
+    )
+
+    assert outcome.includes_scope is True
+    assert outcome.scope_verdict is not None
+    assert outcome.scope_verdict.beyond is True
+    assert outcome.scope_verdict.target == "全组的工资明细"
+
+
+@pytest.mark.asyncio
+async def test_merged_mode_without_a_usable_scope_key_reports_no_verdict() -> None:
+    """A missing or invalid key must leave the dedicated call in charge."""
+    gateway = ScriptedModelGateway(contents=[payload(scope={"verdict": "也许"})])
+
+    outcome = await guarding_parser(gateway).parse(
+        "上个月产量", now=NOW, logical_call_id="c1", role=Role.EMPLOYEE
+    )
+
+    assert outcome.includes_scope is True
+    assert outcome.scope_verdict is None
+
+
+@pytest.mark.asyncio
+async def test_merged_mode_without_a_role_asks_for_nothing_extra() -> None:
+    """The rules are role-relative, so an unknown role means no scope section."""
+    scope = {"verdict": "beyond", "target": "全组"}
+    gateway = ScriptedModelGateway(contents=[payload(scope=scope)])
+
+    outcome = await guarding_parser(gateway).parse("上个月产量", now=NOW, logical_call_id="c1")
+
+    assert "权限范围判定" not in gateway.requests[0].messages[0].content
+    assert outcome.includes_scope is False
+    assert outcome.scope_verdict is None
+
+
+@pytest.mark.asyncio
+async def test_dedicated_mode_ignores_the_scope_key_entirely() -> None:
+    """``dedicated`` must reproduce today's prompt and today's metering shape."""
+    scope = {"verdict": "beyond", "target": "全组"}
+    gateway = ScriptedModelGateway(contents=[payload(scope=scope)])
+
+    outcome = await guarding_parser(gateway, mode="dedicated").parse(
+        "上个月产量", now=NOW, logical_call_id="c1", role=Role.EMPLOYEE
+    )
+
+    assert "权限范围判定" not in gateway.requests[0].messages[0].content
+    assert outcome.includes_scope is False
+    assert outcome.scope_verdict is None

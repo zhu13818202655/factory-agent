@@ -5,7 +5,9 @@
 # The PostgreSQL data directory is a named volume, so ``down`` alone keeps the
 # data. Only deleting the volume makes ``postgres/init-databases.sql`` run again
 # on the next start, which is what gives you a factory-fresh database (empty
-# tables, no migration state).
+# tables, no migration state). The same applies to the SeaweedFS volume: wiping
+# it also discards every retained export object, so previously handed-out
+# download ids become 404.
 
 set -euo pipefail
 
@@ -16,16 +18,16 @@ ASSUME_YES=0
 
 usage() {
     printf 'Usage: %s [all|middleware] [--no-start] [-y|--yes]\n' "$(basename "$0")" >&2
-    printf '  all        Wipe the complete local stack volumes (PostgreSQL + Redis) and restart it.\n' >&2
-    printf '  middleware Wipe the debugging middleware volumes (PostgreSQL + Redis) and restart it.\n' >&2
+    printf '  all        Wipe the complete local stack volumes (PostgreSQL + Redis + SeaweedFS exports) and restart it.\n' >&2
+    printf '  middleware Wipe the debugging middleware volumes (PostgreSQL + Redis + SeaweedFS exports) and restart it.\n' >&2
     printf '  --no-start Destroy the volumes and leave everything stopped.\n' >&2
     printf '  -y, --yes  Skip the confirmation prompt (for scripted runs).\n' >&2
 }
 
 choose_target() {
     printf '请选择要清库的目标：\n' >&2
-    printf '  1) all        清空完整本地栈的数据卷：PostgreSQL、Redis（并重启整栈）\n' >&2
-    printf '  2) middleware 只清空调试中间件的数据卷：PostgreSQL、Redis\n' >&2
+    printf '  1) all        清空完整本地栈的数据卷：PostgreSQL、Redis、SeaweedFS 导出对象（并重启整栈）\n' >&2
+    printf '  2) middleware 只清空调试中间件的数据卷：PostgreSQL、Redis、SeaweedFS 导出对象\n' >&2
     printf '请输入 1/2 或 all/middleware: ' >&2
     read -r choice
 
@@ -102,7 +104,7 @@ if ((${#volumes[@]} == 0)); then
 else
     printf '  %s\n' "${volumes[@]}" >&2
 fi
-printf '容器内所有 PostgreSQL 数据库、迁移状态与 Redis AOF 都会被永久删除。\n' >&2
+printf '容器内所有 PostgreSQL 数据库、迁移状态、Redis AOF 与 SeaweedFS 已保留的导出对象都会被永久删除。\n' >&2
 
 if ((ASSUME_YES == 0)); then
     if [[ ! -t 0 ]]; then

@@ -34,7 +34,8 @@ migration baseline shared by `factory-agent` and `usage-admin`.
   application caches (see `src/factory_agent/application/cache.py`); a dedicated store such as
   Redis is introduced only when measurements justify it.
 - Export renders with XlsxWriter from `ResultTable` (see `src/factory_agent/export/`). Delivery
-  follows the customer-confirmed no-server-retention policy (报表导出与文件留存策略 in
+  follows the customer-confirmed retention policy: artifacts persist server-side with a 90-day
+  default retention window (报表导出与文件留存策略 in
   `docs/product/需求及方案整理.md`).
 - Emit structured JSON logs and OpenTelemetry-compatible telemetry after applying data
   classification and redaction (ADR-0004).

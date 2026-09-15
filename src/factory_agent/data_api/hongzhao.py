@@ -23,6 +23,7 @@ Adapter semantics (contract: ``docs/product/AI问答对外接口-整理.md``):
   「请求已过期」/「签名无效」.
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol, cast
@@ -165,6 +166,9 @@ class HongzhaoMesAdapter:
         self._refresher = refresher
         self._settings = settings or AdapterSettings()
         self._client = client
+        #: Guards the lazy first creation of the shared client against a
+        #: concurrent fan-out.
+        self._client_lock = asyncio.Lock()
         self._clock = clock
         self._pager = pager or BoundedPager(adapter=self, budget=pager_budget or PagerBudget())
         self._recorder = recorder
@@ -186,13 +190,23 @@ class HongzhaoMesAdapter:
             return self._clock.now()
         return datetime.now(timezone.utc)
 
-    def _ensure_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._settings.timeout_seconds,
-            )
-        return self._client
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        """The shared client, created once even under a concurrent fan-out.
+
+        A fan-out step issues several calls at the same moment, so the lazy
+        first creation must not race: without the lock each concurrent first
+        caller would build its own client and all but the last would leak an
+        unclosed connection pool.
+        """
+        if self._client is not None:
+            return self._client
+        async with self._client_lock:
+            if self._client is None:
+                self._client = httpx.AsyncClient(
+                    base_url=self._base_url,
+                    timeout=self._settings.timeout_seconds,
+                )
+            return self._client
 
     async def aclose(self) -> None:
         if self._client is not None:
@@ -402,7 +416,7 @@ class HongzhaoMesAdapter:
             attempts_left -= 1
             started = self._now()
             try:
-                response = await self._ensure_client().post(
+                response = await (await self._ensure_client()).post(
                     operation.path,
                     json=body,
                     headers={"Authorization": f"Bearer {bundle.access_token}"},

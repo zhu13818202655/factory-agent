@@ -41,10 +41,11 @@ def test_quick_questions_derive_from_registered_capabilities() -> None:
 
     questions = service.quick_questions(CREDENTIAL, Role.EMPLOYEE)
 
-    assert 4 <= len(questions) <= 6
+    assert len(questions) == 3
     capabilities = {question.capability_id for question in questions}
-    # Employees see personal capabilities only.
-    assert capabilities <= {"FR-001", "FR-002", "FR-003", "FR-004"}
+    # Employees see the personal capabilities they may use only; FR-004 收入排名
+    # is not available to them.
+    assert capabilities == {"FR-001", "FR-002", "FR-003"}
     # FR-012 needs an employee name slot, so it must not be a one-click question.
     assert "FR-012" not in capabilities
     assert all(question.capability_id for question in questions)

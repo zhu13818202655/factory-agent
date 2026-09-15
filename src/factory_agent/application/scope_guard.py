@@ -1,17 +1,23 @@
-"""Pre-execution scope guard: the dedicated permission chain (方案二).
+"""Pre-execution scope guard: classification rules plus the dedicated chain.
 
-Runs after intent selection and the capability-role matrix, before any
-business-data call or filter narrowing. The model only *classifies* the data
-scope the user is asking for; the decision to deny narrows access and never
-grants it — the authoritative bounds stay the token role matrix and MES-side
-row filtering (``DataScope.mes_filtered``). On any model failure the guard
-fails open: the run proceeds and MES filtering still bounds every row, so
-availability never depends on the model while data safety never depends on it
-either.
+The classification runs before any business-data call or filter narrowing. The
+model only *classifies* the data scope the user is asking for; the decision to
+deny narrows access and never grants it — the authoritative bounds stay the
+token role matrix and MES-side row filtering (``DataScope.mes_filtered``). On
+any model failure the guard fails open: the run proceeds and MES filtering
+still bounds every row, so availability never depends on the model while data
+safety never depends on it either.
+
+The rules and the payload contract below are shared verbatim by both carriers:
+``SCOPE_GUARD_SYSTEM_PROMPT`` (the dedicated SCOPE_GUARD call) and the merged
+EXTRACT prompt in ``application/intent.py``. The merged carrier answers the
+scope question in the same payload as capability selection, and the dedicated
+call remains the fallback whenever that payload carries no usable ``scope``.
 """
 
 
 from dataclasses import dataclass
+from typing import cast
 
 from factory_agent.application.permission_matrix import ROLE_DATA_RANGE
 from factory_agent.application.structured import (
@@ -26,11 +32,9 @@ from factory_agent.ports import (
     ModelStage,
 )
 
-#: Persona for the SCOPE_GUARD stage. It sees only the caller's role, the
-#: authoritative range text, and the user's question — never any business row.
-SCOPE_GUARD_SYSTEM_PROMPT = (
-    "你是工厂问答助手的权限范围审核器。根据调用者的角色与可查询范围，"
-    "判断用户问题所请求的数据范围是否超出其权限。\n"
+#: The reviewed judgement rules, shared verbatim by the dedicated guard prompt
+#: and the merged EXTRACT prompt so both carriers classify by one standard.
+SCOPE_JUDGEMENT_RULES = (
     "判断规则：\n"
     "- 只判断“请求的数据范围”，不判断问题本身是否合理、不改写问题；\n"
     "- “我的/本人的/我自己的”永远在范围内；\n"
@@ -39,8 +43,21 @@ SCOPE_GUARD_SYSTEM_PROMPT = (
     "- 问的是自己管辖范围内的（如组长问“我们组”、管理问“我们车间”）判为 within；\n"
     "- 无法确定时判为 within（后续系统仍会由 MES 按权限过滤数据）；\n"
     "- 绝不输出任何业务数据、SQL、URL、员工编号、部门编号或内部信息。\n"
+)
+
+#: The verdict output contract, shared by both carriers.
+SCOPE_OUTPUT_CONTRACT = (
     '只输出一个 JSON 对象：{"verdict": "within" 或 "beyond", '
     '"target": "超出范围时用不超过 20 字描述请求对象（如：全组的工资明细），within 时为空字符串"}'
+)
+
+#: Persona for the SCOPE_GUARD stage. It sees only the caller's role, the
+#: authoritative range text, and the user's question — never any business row.
+SCOPE_GUARD_SYSTEM_PROMPT = (
+    "你是工厂问答助手的权限范围审核器。根据调用者的角色与可查询范围，"
+    "判断用户问题所请求的数据范围是否超出其权限。\n"
+    f"{SCOPE_JUDGEMENT_RULES}"
+    f"{SCOPE_OUTPUT_CONTRACT}"
 )
 
 #: MES token role codes (00 员工 / 01 组长 / 02 管理 / 99 老板) and labels for
@@ -53,6 +70,41 @@ _ROLE_PROMPT_NAMES: dict[Role, str] = {
 }
 
 _TARGET_MAX_CHARS = 40
+
+
+def merged_scope_block(role: Role) -> str:
+    """The scope section the merged EXTRACT prompt appends for one caller.
+
+    Reuses the reviewed rules verbatim and restates them as an *added* key of
+    the payload the intent call already returns, so the model never has to
+    choose between two competing output contracts. It carries only the token
+    role and the reviewed range text for that role.
+    """
+    return (
+        "权限范围判定（与上面的能力选择在同一次输出中完成）：\n"
+        f"{SCOPE_JUDGEMENT_RULES}"
+        "把判定结果并入上面的 JSON，新增一个 scope 子对象：\n"
+        '{"scope": {"verdict": "within" 或 "beyond", '
+        '"target": "超出范围时用不超过 20 字描述请求对象（如：全组的工资明细），'
+        'within 时为空字符串"}}\n'
+        "权限范围判定的输入：\n"
+        f"- 调用者角色：{_ROLE_PROMPT_NAMES[role]}\n"
+        f"- 可查询范围：{ROLE_DATA_RANGE[role]}\n"
+        "只判断“请求的数据范围”，不改变能力选择与槽位提取的结果。"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeClassification:
+    """One classified request scope, independent of which carrier produced it.
+
+    Deliberately carries no model or duration fields: a merged classification
+    belongs to the EXTRACT call's own usage event, so attributing a second
+    call's numbers to it would fabricate metering that never happened.
+    """
+
+    beyond: bool
+    target: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +138,35 @@ def _clean_target(raw: object) -> str:
     if len(text) > _TARGET_MAX_CHARS:
         text = text[:_TARGET_MAX_CHARS]
     return text
+
+
+def parse_scope_classification(raw: object) -> ScopeClassification | None:
+    """Validate one ``scope`` value from either carrier's payload.
+
+    ``None`` means "no usable classification": the key is absent, the shape is
+    not a mapping, or the verdict is outside the reviewed domain. Callers treat
+    that as "fall back to the dedicated call", never as "within".
+    """
+    if not isinstance(raw, dict):
+        return None
+    mapping = cast("dict[str, object]", raw)
+    verdict = mapping.get("verdict")
+    if verdict not in ("within", "beyond"):
+        return None
+    return ScopeClassification(
+        beyond=verdict == "beyond",
+        target=_clean_target(mapping.get("target")),
+    )
+
+
+def scope_classification_payload(classification: ScopeClassification) -> dict[str, object]:
+    """Non-sensitive projection carried on a merged EXTRACT usage event.
+
+    Only the verdict travels. The ``target`` text can echo a user-named person
+    or group, and the dedicated carrier never metered it either, so the merged
+    carrier keeps the same boundary.
+    """
+    return {"verdict": "beyond" if classification.beyond else "within"}
 
 
 class ScopeGuard:
@@ -135,14 +216,14 @@ class ScopeGuard:
                 max_output_tokens=self._max_output_tokens,
             ),
         )
-        verdict = result.payload.get("verdict")
-        if verdict not in ("within", "beyond"):
+        verdict = parse_scope_classification(result.payload)
+        if verdict is None:
             raise StructuredOutputError(
                 "scope verdict is missing or invalid", attempts=result.attempts
             )
         return ScopeVerdict(
-            beyond=verdict == "beyond",
-            target=_clean_target(result.payload.get("target")),
+            beyond=verdict.beyond,
+            target=verdict.target,
             model_alias=self.model_alias,
             actual_model=result.response.actual_model,
             duration_ms=result.response.duration_ms,
@@ -157,7 +238,13 @@ class ScopeGuard:
 
 __all__ = [
     "SCOPE_GUARD_SYSTEM_PROMPT",
+    "SCOPE_JUDGEMENT_RULES",
+    "SCOPE_OUTPUT_CONTRACT",
+    "ScopeClassification",
     "ScopeGuard",
     "ScopeVerdict",
     "deny_message",
+    "merged_scope_block",
+    "parse_scope_classification",
+    "scope_classification_payload",
 ]

@@ -28,6 +28,24 @@ Two buildable units live in this repository and never import each other:
 Both production services migrate one shared database with separate Alembic version tables, so
 migrations can run in any order.
 
+## Exports and object storage
+
+Exports are generated on demand and retained on disk (never held only in memory), with the
+customer-confirmed 90-day default retention window and lazy cleanup on access. Both services write
+their artifacts to the same S3-compatible gateway but keep separate buckets, and both serve
+downloads through their own backend-proxied endpoint: the service re-checks ownership, writes an
+audit event, and refuses to release bytes when that audit fails (fail-closed).
+
+| Service | Backend selection | Default bucket |
+|---|---|---|
+| `factory-agent` | `FACTORY_AGENT_S3_ENDPOINT_URL` set → S3; empty → `FACTORY_AGENT_EXPORT_STORE_DIR` local directory | `factory-agent-exports` |
+| `usage-admin` | `USAGE_ADMIN_S3_ENDPOINT_URL` set → S3; empty → `USAGE_ADMIN_EXPORT_STORE_DIR`; both empty → memory (dev/test only, lost on restart) | `usage-admin-exports` |
+
+The reference deployment uses single-node SeaweedFS; `make middleware-up` starts it alongside
+PostgreSQL and Redis, and `make compose-up` starts the complete stack. See
+[ADR-0009](docs/adr/0009-export-artifact-storage-backend.md) for the decisions behind the storage
+split and [deploy/compose/README.md](deploy/compose/README.md) for the deployment details.
+
 ## Development
 
 ```bash

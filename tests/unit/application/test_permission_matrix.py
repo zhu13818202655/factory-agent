@@ -2,12 +2,14 @@
 
 The MES token ``roles`` code gates capability availability through the reviewed
 matrix (``docs/product/需求及方案整理.md`` 功能表): personal capabilities
-FR-001..FR-004 are available to all four roles, management capabilities
-FR-005..FR-008 to group leaders, managers and the owner, and factory-wide
-capabilities FR-009..FR-012 to the owner. The owner holds every capability a
-narrower role holds (his data range is a superset). Data visibility inside an
-allowed capability is still enforced by MES-side row filtering
-(``DataScope.mes_filtered``).
+FR-001..FR-003 are available to all four roles, FR-004 收入排名（组内名次）to
+group leaders, managers and the owner (its only data source is the customer's
+wage-ranking query, which the customer MES refuses for the 00 员工 role with
+``code=-403``), management capabilities FR-005..FR-008 to group leaders,
+managers and the owner, and factory-wide capabilities FR-009..FR-012 to the
+owner. The owner holds every capability a narrower role holds (his data range is
+a superset). Data visibility inside an allowed capability is still enforced by
+MES-side row filtering (``DataScope.mes_filtered``).
 """
 
 
@@ -45,7 +47,7 @@ EXPECTED_MATRIX: dict[Capability, frozenset[Role]] = {
     Capability.OWN_OUTPUT: ALL_ROLES,
     Capability.OWN_PAYROLL_SUMMARY: ALL_ROLES,
     Capability.OWN_PAYROLL_DETAIL: ALL_ROLES,
-    Capability.GROUP_INCOME_RANK: ALL_ROLES,
+    Capability.GROUP_INCOME_RANK: MANAGEMENT_AND_OWNER_ROLES,
     Capability.ORDER_PROGRESS: MANAGEMENT_AND_OWNER_ROLES,
     Capability.ORDER_OUTPUT: MANAGEMENT_AND_OWNER_ROLES,
     Capability.WORKSHOP_COMPARISON: MANAGEMENT_AND_OWNER_ROLES,
@@ -99,6 +101,18 @@ def test_reviewed_matrix_matches_the_product_function_tables() -> None:
     assert CAPABILITY_ROLES == EXPECTED_MATRIX
 
 
+def test_group_income_rank_is_denied_for_an_employee() -> None:
+    """收入排名只对 01/02/99 开放：其唯一数据源被客户 MES 以 code=-403 拒绝."""
+    decision = authorize_capability(
+        Capability.GROUP_INCOME_RANK, make_context(Role.EMPLOYEE), scope()
+    )
+
+    assert not decision.allowed
+    assert decision.reason == "capability is not available for the current role"
+    assert "FR-004" not in decision.available_capabilities
+    assert Capability.GROUP_INCOME_RANK in capabilities_for_role(Role.GROUP_LEADER)
+
+
 @pytest.mark.parametrize("capability", sorted(REGISTERED_CAPABILITIES, key=str))
 def test_capability_is_allowed_exactly_for_its_matrix_roles(capability: Capability) -> None:
     allowed_roles = EXPECTED_MATRIX[capability]
@@ -117,13 +131,13 @@ def test_denied_decision_lists_the_role_available_capabilities() -> None:
     )
     assert not decision.allowed
     # An employee can only use the personal capabilities.
-    assert set(decision.available_capabilities) == {"FR-001", "FR-002", "FR-003", "FR-004"}
+    assert set(decision.available_capabilities) == {"FR-001", "FR-002", "FR-003"}
 
 
 @pytest.mark.parametrize(
     ("role", "expected"),
     [
-        (Role.EMPLOYEE, {"FR-001", "FR-002", "FR-003", "FR-004"}),
+        (Role.EMPLOYEE, {"FR-001", "FR-002", "FR-003"}),
         (
             Role.GROUP_LEADER,
             {"FR-001", "FR-002", "FR-003", "FR-004", "FR-005", "FR-006", "FR-007", "FR-008"},

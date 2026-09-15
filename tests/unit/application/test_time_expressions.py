@@ -1,12 +1,14 @@
 
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from factory_agent.application.time_expressions import (
     TimeExpressionError,
     resolve_time_expression,
+    time_range_violation,
 )
 
 TZ = "Asia/Shanghai"
@@ -90,3 +92,43 @@ def test_unreviewed_expressions_are_rejected(expression: str) -> None:
 
 def test_the_same_expression_resolves_identically_for_the_same_clock() -> None:
     assert iso("上个月") == iso("上个月")
+
+
+def test_span_redline_boundary_is_exactly_the_confirmed_ceiling() -> None:
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    assert time_range_violation(start, start + timedelta(days=366), max_days=366) is None
+    assert time_range_violation(start, start + timedelta(days=367), max_days=366) == "too_long"
+
+
+def test_empty_and_inverted_ranges_are_rejected() -> None:
+    start = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
+
+    assert time_range_violation(start, start, max_days=366) == "empty"
+    assert time_range_violation(start, start - timedelta(days=1), max_days=366) == "empty"
+
+
+def test_a_start_past_tomorrow_is_rejected_as_future() -> None:
+    tomorrow = datetime(2026, 8, 25, tzinfo=ZoneInfo(TZ))
+    beyond = tomorrow + timedelta(days=2)
+
+    assert (
+        time_range_violation(
+            tomorrow,
+            tomorrow + timedelta(days=1),
+            max_days=366,
+            now=NOW,
+            tz_name=TZ,
+        )
+        is None
+    )
+    assert (
+        time_range_violation(
+            beyond,
+            beyond + timedelta(days=1),
+            max_days=366,
+            now=NOW,
+            tz_name=TZ,
+        )
+        == "future"
+    )

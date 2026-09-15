@@ -11,24 +11,37 @@ short clarification question instead of an unbounded query.
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, cast
+from datetime import datetime, timezone
+from typing import Any, Literal, cast
+from zoneinfo import ZoneInfo
 
 from factory_agent.application.context import ConversationTurn, compact_history
+from factory_agent.application.scope_guard import (
+    ScopeClassification,
+    merged_scope_block,
+    parse_scope_classification,
+)
 from factory_agent.application.structured import (
     StructuredOutputError,
     request_structured_object,
 )
 from factory_agent.application.time_expressions import (
+    DEFAULT_TIME_RANGE_MAX_DAYS,
     TimeExpressionError,
     resolve_time_expression,
+    time_range_violation,
 )
 from factory_agent.domain import (
     CapabilityId,
     CapabilityIntent,
     IntentSlots,
+    Role,
+    TimeRange,
 )
+from factory_agent.observability.logging_adapter import get_logger
 from factory_agent.ports import ModelGateway, ModelMessage, ModelRequest, ModelStage
+
+_LOGGER = get_logger("factory_agent.application.intent")
 
 MIN_CAPABILITY_CONFIDENCE = 0.6
 
@@ -141,13 +154,30 @@ SYSTEM_PROMPT = (
     "不要臆造默认时间（如“本月”“今天”），由系统追问补全。\n"
     "6. 无法判断应归属哪个能力时，capability_id 设为 null。\n"
     "不得发明新的能力，不得输出 SQL、URL、员工编号或部门编号。\n"
+    "时间解析（slots 的时间字段）：\n"
+    "7. 已知具体日期时，把区间换算成 ISO 8601 填入 time_range_start / time_range_end，"
+    "按半开区间 [start, end) 表示，end 取区间结束日的次日零点；同时把用户原话填进"
+    "time_expression 便于核对。\n"
+    "8. 相对表达一律以系统给出的“今天是 …”为基准换算（如“本月”填本月一日零点到"
+    "次月一日零点，“昨天”填昨天零点到今天零点）。\n"
+    "9. 不在常见词表里的表达，只要按语义能定出绝对区间也要换算（如“6月15号”"
+    "“上个季度”）。\n"
+    "10. 问题没有提到任何时间时，time_expression、time_range_start、time_range_end "
+    "三个字段都留空，由系统追问补全，不要臆造默认时间。\n"
     "严格输出一个 JSON 对象：\n"
     '{"type": "chitchat" 或 "capability", "content": "...", "rewrite_query": "...", '
     '"capability_id": "<列表中的 id 或 null>", "confidence": 0.0-1.0, '
-    '"slots": {"time_expression": "...", "order_codes": [], "plan_codes": [], '
-    '"style_codes": [], "dept_names": [], "employee_names": []}, "ambiguous": []}\n'
+    '"slots": {"time_expression": "...", "time_range_start": null, '
+    '"time_range_end": null, "order_codes": [], "plan_codes": [], "style_codes": [], '
+    '"dept_names": [], "employee_names": []}, "ambiguous": []}\n'
     "不要输出解释或代码块。"
 )
+
+
+def _today_line(now: datetime, tz_name: str) -> str:
+    """Clock anchor for relative time expressions, in the factory timezone."""
+    local = now.astimezone(ZoneInfo(tz_name))
+    return f"今天是 {local.date().isoformat()}（{tz_name}）。"
 
 
 def build_intent_messages(
@@ -157,10 +187,21 @@ def build_intent_messages(
     *,
     max_turns: int,
     max_chars: int,
+    today_line: str | None = None,
+    scope_block: str | None = None,
 ) -> tuple[ModelMessage, ...]:
-    system = ModelMessage(
-        role="system", content=f"{SYSTEM_PROMPT}\n\n可用能力:\n{catalog.describe()}"
-    )
+    """Compose the EXTRACT request.
+
+    ``scope_block`` adds the merged scope-judgement section for the caller's
+    role. It is omitted entirely when the deployment runs the dedicated guard,
+    so that mode sends a byte-identical prompt to the one already in service.
+    """
+    system_content = f"{SYSTEM_PROMPT}\n\n可用能力:\n{catalog.describe()}"
+    if today_line:
+        system_content = f"{system_content}\n\n{today_line}"
+    if scope_block:
+        system_content = f"{system_content}\n\n{scope_block}"
+    system = ModelMessage(role="system", content=system_content)
     compacted = compact_history(history, max_turns=max_turns, max_chars=max_chars)
     return (system, *compacted, ModelMessage(role="user", content=user_text))
 
@@ -172,12 +213,16 @@ class ParsedIntent:
     ``content`` carries the chit-chat reply when the same call produced one
     (merged single-call path); ``rewrite_query`` carries the standalone query
     the model produced for a multi-turn follow-up, when one was needed.
+    ``scope_verdict`` carries the scope classification when the same call was
+    asked for one; ``None`` means the caller must fall back to the dedicated
+    guard call, never that the request is within range.
     """
 
     intent: CapabilityIntent
     rejected_slots: tuple[str, ...] = ()
     content: str | None = None
     rewrite_query: str | None = None
+    scope_verdict: ScopeClassification | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +235,24 @@ class IntentParseOutcome:
     rejected_slots: tuple[str, ...] = ()
     content: str | None = None
     rewrite_query: str | None = None
+    #: True when this call was asked to classify the scope as well, so the
+    #: metering event can say so even when the model omitted the key.
+    includes_scope: bool = False
+    scope_verdict: ScopeClassification | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelRange:
+    """Outcome of judging the model's ISO time range against the redlines."""
+
+    start: datetime | None = None
+    end: datetime | None = None
+    #: A real span beyond the ceiling: the session gate owns the user-facing
+    #: notice, so the range is handed through rather than questioned again.
+    oversize: tuple[datetime, datetime] | None = None
+    #: The model produced a range that cannot be used and is not a ceiling
+    #: case, so a time-range clarification is the honest answer.
+    unusable: bool = False
 
 
 class CapabilityIntentParser:
@@ -206,6 +269,9 @@ class CapabilityIntentParser:
         max_history_turns: int = 8,
         max_history_chars: int = 32768,
         min_confidence: float = MIN_CAPABILITY_CONFIDENCE,
+        time_range_max_days: int = DEFAULT_TIME_RANGE_MAX_DAYS,
+        time_parse_mode: Literal["llm_primary", "rule_primary"] = "llm_primary",
+        scope_guard_mode: Literal["merged", "dedicated"] = "merged",
     ) -> None:
         self._gateway = gateway
         self._catalog = catalog
@@ -215,6 +281,17 @@ class CapabilityIntentParser:
         self._max_history_turns = max_history_turns
         self._max_history_chars = max_history_chars
         self._min_confidence = min_confidence
+        self._time_range_max_days = time_range_max_days
+        self._time_parse_mode = time_parse_mode
+        self._scope_guard_mode = scope_guard_mode
+
+    def includes_scope_for(self, role: Role | None) -> bool:
+        """Whether an EXTRACT call for this caller also carries the scope verdict.
+
+        A call only carries it in ``merged`` mode and only when the caller's
+        role is known, because the reviewed judgement rules are role-relative.
+        """
+        return self._scope_guard_mode == "merged" and role is not None
 
     async def parse(
         self,
@@ -223,10 +300,15 @@ class CapabilityIntentParser:
         now: datetime,
         logical_call_id: str,
         history: tuple[ConversationTurn, ...] = (),
+        role: Role | None = None,
     ) -> IntentParseOutcome:
         if not user_text.strip():
             raise StructuredOutputError("user text is empty", attempts=0)
 
+        # The merged carrier needs the caller's role; without one (or with the
+        # dedicated guard selected) the prompt asks for nothing extra and the
+        # scope decision stays with the dedicated call.
+        includes_scope = self.includes_scope_for(role)
         request = ModelRequest(
             model_alias=self._model_alias,
             messages=build_intent_messages(
@@ -235,6 +317,8 @@ class CapabilityIntentParser:
                 history,
                 max_turns=self._max_history_turns,
                 max_chars=self._max_history_chars,
+                today_line=_today_line(now, self._timezone_name),
+                scope_block=merged_scope_block(role) if includes_scope and role else None,
             ),
             stage=ModelStage.EXTRACT,
             logical_call_id=logical_call_id,
@@ -243,7 +327,7 @@ class CapabilityIntentParser:
         result = await request_structured_object(
             self._gateway, request, max_repair_attempts=self._max_repair_attempts
         )
-        parsed = self.interpret(result.payload, now=now)
+        parsed = self.interpret(result.payload, now=now, with_scope=includes_scope)
         return IntentParseOutcome(
             intent=parsed.intent,
             clarification=clarification_for(parsed.intent),
@@ -253,19 +337,26 @@ class CapabilityIntentParser:
             rejected_slots=parsed.rejected_slots,
             content=parsed.content,
             rewrite_query=parsed.rewrite_query,
+            includes_scope=includes_scope,
+            scope_verdict=parsed.scope_verdict,
         )
 
-    def interpret(self, payload: dict[str, object], *, now: datetime) -> ParsedIntent:
+    def interpret(
+        self, payload: dict[str, object], *, now: datetime, with_scope: bool = False
+    ) -> ParsedIntent:
         """Validate a raw model payload into a typed intent.
 
         ``type`` discriminates chit-chat from business capability routing. The
         schema is additive and backward compatible: a legacy payload without
         ``type`` is still routed by ``capability_id == "chitchat"``, and an
         absent ``content``/``rewrite_query`` is simply ``None``. Chit-chat
-        content is only ever accepted when the payload is a chit-chat.
+        content is only ever accepted when the payload is a chit-chat. A
+        ``scope`` value is read only when ``with_scope`` says this call was
+        asked for it; otherwise it is ignored like any other unknown key.
         """
         ambiguous = list(_string_list(payload.get("ambiguous")))
         confidence = _confidence(payload.get("confidence"))
+        scope_verdict = parse_scope_classification(payload.get("scope")) if with_scope else None
         raw_slots = payload.get("slots")
         slots_mapping: dict[str, Any] = (
             cast("dict[str, Any]", raw_slots) if isinstance(raw_slots, dict) else {}
@@ -287,6 +378,7 @@ class CapabilityIntentParser:
                         ambiguous=tuple(dict.fromkeys(ambiguous)),
                     ),
                     rejected_slots=rejected,
+                scope_verdict=scope_verdict,
                     rewrite_query=rewrite_query,
                 )
             if confidence < self._min_confidence:
@@ -298,6 +390,7 @@ class CapabilityIntentParser:
                     ambiguous=tuple(dict.fromkeys(ambiguous)),
                 ),
                 rejected_slots=rejected,
+                scope_verdict=scope_verdict,
                 content=_trimmed_text(payload.get("content")),
                 rewrite_query=rewrite_query,
             )
@@ -312,6 +405,7 @@ class CapabilityIntentParser:
                     ambiguous=tuple(dict.fromkeys(ambiguous)),
                 ),
                 rejected_slots=rejected,
+                scope_verdict=scope_verdict,
                 rewrite_query=rewrite_query,
             )
         if confidence < self._min_confidence:
@@ -329,6 +423,7 @@ class CapabilityIntentParser:
                 ambiguous=tuple(dict.fromkeys(ambiguous)),
             ),
             rejected_slots=rejected,
+            scope_verdict=scope_verdict,
             rewrite_query=rewrite_query,
         )
 
@@ -342,19 +437,38 @@ class CapabilityIntentParser:
     ) -> tuple[IntentSlots, tuple[str, ...]]:
         ambiguous: list[str] = []
         expression = raw.get("time_expression")
-        start = _parse_datetime(raw.get("time_range_start"))
-        end = _parse_datetime(raw.get("time_range_end"))
 
-        if (start is None or end is None) and isinstance(expression, str) and expression.strip():
+        # The reviewed rule layer runs first: it is the fallback whenever the
+        # model's ISO range is absent or fails a redline, and its resolution is
+        # the counterpart the mismatch log compares against.
+        rule_range: TimeRange | None = None
+        rule_failed = False
+        if isinstance(expression, str) and expression.strip():
             try:
-                resolved = resolve_time_expression(expression, now, self._timezone_name)
+                rule_range = resolve_time_expression(expression, now, self._timezone_name)
             except TimeExpressionError:
+                rule_failed = True
+
+        start: datetime | None = None
+        end: datetime | None = None
+        oversize: tuple[datetime, datetime] | None = None
+        unusable = False
+        if self._time_parse_mode == "llm_primary":
+            model = self._model_range(raw, now=now, rule_range=rule_range)
+            start, end = model.start, model.end
+            oversize = model.oversize
+            unusable = model.unusable
+
+        if start is None or end is None:
+            if rule_range is not None:
+                start, end = rule_range.start, rule_range.end
+            elif oversize is not None:
+                # Nothing reviewed to fall back on and the requested span really
+                # is explicit: keep it so the session's ceiling gate answers with
+                # the friendly notice instead of asking the user again.
+                start, end = oversize
+            elif rule_failed or unusable:
                 ambiguous.append("time_range")
-            else:
-                start, end = resolved.start, resolved.end
-        if start is not None and end is not None and start >= end:
-            start, end = None, None
-            ambiguous.append("time_range")
 
         return (
             IntentSlots(
@@ -369,6 +483,48 @@ class CapabilityIntentParser:
             ),
             tuple(ambiguous),
         )
+
+    def _model_range(
+        self,
+        raw: dict[str, Any],
+        *,
+        now: datetime,
+        rule_range: TimeRange | None,
+    ) -> _ModelRange:
+        """Judge the model's ISO range against the shared redlines.
+
+        The range is accepted when it clears every redline. A ``too_long`` span
+        is held back as ``oversize`` for the session's ceiling gate, because an
+        explicitly requested wide range deserves the friendly notice rather than
+        a fresh question. Anything else implausible (inverted, starting after
+        tomorrow) is marked ``unusable``, so a hallucinated span — "本月" read as
+        two years — falls back to the reviewed rule layer instead of becoming a
+        rejection.
+        """
+        start = _parse_datetime(raw.get("time_range_start"), self._timezone_name)
+        end = _parse_datetime(raw.get("time_range_end"), self._timezone_name)
+        if start is None or end is None:
+            return _ModelRange()
+        reason = time_range_violation(
+            start,
+            end,
+            max_days=self._time_range_max_days,
+            now=now,
+            tz_name=self._timezone_name,
+        )
+        if reason is None:
+            if rule_range is not None and (rule_range.start, rule_range.end) != (start, end):
+                _LOGGER.debug(
+                    "intent.time_mismatch llm={llm_start}/{llm_end} rule={rule_start}/{rule_end}",
+                    llm_start=start.isoformat(),
+                    llm_end=end.isoformat(),
+                    rule_start=rule_range.start.isoformat(),
+                    rule_end=rule_range.end.isoformat(),
+                )
+            return _ModelRange(start=start, end=end)
+        if reason == "too_long":
+            return _ModelRange(oversize=(start, end))
+        return _ModelRange(unusable=True)
 
 
 def clarification_for(intent: CapabilityIntent) -> str | None:
@@ -421,14 +577,22 @@ def _code_list(raw: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item[:_MAX_CODE_CHARS] for item in items))[:_MAX_LIST_ITEMS]
 
 
-def _parse_datetime(raw: object) -> datetime | None:
+def _parse_datetime(raw: object, tz_name: str) -> datetime | None:
+    """Parse a model-emitted ISO instant, localizing a naive value.
+
+    The model routinely omits the offset; reading a naive value as the factory's
+    local wall clock is the same convention the reviewed rule layer uses, so a
+    bare ``2026-08-01`` denotes the same instants on both paths.
+    """
     if not isinstance(raw, str) or not raw.strip():
         return None
     try:
         parsed = datetime.fromisoformat(raw.strip())
     except ValueError:
         return None
-    return parsed if parsed.tzinfo is not None else None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(tz_name))
+    return parsed.astimezone(timezone.utc)
 
 
 def dump_intent(intent: CapabilityIntent) -> str:

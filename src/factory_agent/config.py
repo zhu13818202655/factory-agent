@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn
+from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,13 +15,29 @@ class FactoryAgentSettings(BaseSettings):
     canonical_mes_base_url: AnyHttpUrl | None = None
     postgres_url: PostgresDsn | None = None
     redis_url: RedisDsn | None = None
-    # Export artifact store (即时生成、直接下载、落盘保留). Generated XLSX is
-    # written to a local directory (类网盘的本地实现；生产可替换为对象存储) and
-    # stays downloadable across restarts until the retention window closes.
-    # Expired artifacts are purged lazily; the in-memory cache only bounds RAM.
+    # Export artifact store (即时生成、落盘保留，默认保留期 90 天). Generated XLSX is
+    # written to the configured backend (local directory by default, object storage
+    # when ``s3_endpoint_url`` is set) and stays downloadable across restarts until
+    # the retention window closes. Expired artifacts are purged lazily; the in-memory
+    # cache only bounds RAM.
     export_store_dir: Path = Path("data/exports")
-    export_retention_seconds: int = Field(default=604800, ge=60)
+    export_retention_seconds: int = Field(default=7776000, ge=60)
     export_buffer_max_entries: int = Field(default=512, ge=1)
+
+    # S3-compatible artifact store (SeaweedFS in the reference deployment).
+    # An empty endpoint means S3 is off and exports fall back to the local
+    # directory above; operators switch backends with configuration alone.
+    # Credentials never belong in a reviewed config file, so they arrive only
+    # through the environment (see deploy/compose/.env.example).
+    s3_endpoint_url: str = ""
+    s3_bucket: str = "factory-agent-exports"
+    s3_region: str = "us-east-1"
+    s3_access_key: SecretStr = SecretStr("")
+    s3_secret_key: SecretStr = SecretStr("")
+    #: Path-style addressing avoids the per-bucket DNS lookup that a
+    #: single-node gateway does not serve.
+    s3_path_style: bool = True
+
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     request_id_header: str = "X-Request-ID"
@@ -48,6 +64,22 @@ class FactoryAgentSettings(BaseSettings):
     # Time-range policy. The customer confirms queries span at most the past
     # year; wider requests terminate with a friendly notice before any MES call.
     time_range_max_days: int = Field(default=366, ge=1)
+    # Time parsing. ``llm_primary`` trusts a redline-checked ISO range from the
+    # intent call and falls back to the reviewed rule layer when it is missing
+    # or implausible; ``rule_primary`` ignores the model's range entirely.
+    time_parse_mode: Literal["llm_primary", "rule_primary"] = "llm_primary"
+
+    # Pre-execution scope guard carrier. ``merged`` asks the EXTRACT call for
+    # the scope verdict in the same payload (one fewer round trip per business
+    # question); ``dedicated`` always uses the separate SCOPE_GUARD call. The
+    # dedicated call stays wired as the fallback either way, so a merged
+    # payload without a usable verdict never loses the guard.
+    scope_guard_mode: Literal["merged", "dedicated"] = "merged"
+
+    # Fan-out concurrency for bound-parameter API steps (FR-009 batch
+    # progress): one request per distinct bound value, executed in bounded
+    # batches. ``1`` reproduces the serial walk exactly.
+    mes_fanout_concurrency: int = Field(default=4, ge=1)
 
     # Delivery-warning defaults (docs/product/需求及方案整理.md 老板功能表).
     # Threshold = max(1, ceil(total_duration * ratio%)); a missing order start

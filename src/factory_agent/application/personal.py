@@ -57,12 +57,12 @@ class QuickQuestion:
 
 
 #: Reviewed role-aware quick questions (角色化快捷问题，见
-#: ``docs/product/需求及方案整理.md`` 通用功能表). Each role sees 4–6 common
+#: ``docs/product/需求及方案整理.md`` 通用功能表). Each role sees 3–4 common
 #: phrasings drawn from the capabilities its matrix allows; capabilities that
 #: need an extra mandatory slot (e.g. FR-012 employee names) are intentionally
 #: not one-click quick questions.
 _QUICK_QUESTIONS: tuple[tuple[Role, QuickQuestion], ...] = (
-    # 员工（本人维度，四角色通用）
+    # 员工（本人维度）
     (
         Role.EMPLOYEE,
         QuickQuestion(
@@ -81,10 +81,6 @@ _QUICK_QUESTIONS: tuple[tuple[Role, QuickQuestion], ...] = (
             "我这个月的工资明细是怎么算的？",
             {"time_expression": "本月"},
         ),
-    ),
-    (
-        Role.EMPLOYEE,
-        QuickQuestion("qq-own-rank", "FR-004", "我在小组里排第几？", {"time_expression": "本月"}),
     ),
     # 组长（本人 + 管理面）
     (

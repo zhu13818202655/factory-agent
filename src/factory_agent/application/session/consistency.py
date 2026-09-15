@@ -7,7 +7,12 @@ from factory_agent.application.consistency import (
     ValidationLevel,
 )
 from factory_agent.application.permission_matrix import Capability
-from factory_agent.application.scope_guard import ScopeGuard, ScopeVerdict, deny_message
+from factory_agent.application.scope_guard import (
+    ScopeClassification,
+    ScopeGuard,
+    ScopeVerdict,
+    deny_message,
+)
 from factory_agent.application.session.definitions import RunState, session_logger
 from factory_agent.application.session.outcomes import SessionOutcomeMixin
 from factory_agent.application.structured import StructuredOutputError
@@ -122,6 +127,29 @@ class SessionConsistencyMixin(SessionOutcomeMixin):
         if not verdict.beyond:
             return None
         return deny_message(role, verdict.target)
+
+    def _merged_scope_denial(
+        self,
+        state: RunState,
+        classification: ScopeClassification,
+        role: Role,
+    ) -> str | None:
+        """Denial message for a scope the EXTRACT call already classified.
+
+        No model call happens here and therefore no SCOPE_GUARD usage event is
+        emitted: this classification's cost sits on the EXTRACT event, which
+        carries ``includes_scope=true`` plus the verdict. The decision itself is
+        identical to the dedicated carrier's — deny only, never grant.
+        """
+        session_logger.info(
+            "session.scope_guard.verdict merged=true beyond={beyond}",
+            beyond=classification.beyond,
+            interaction_id=str(state.record.interaction_id),
+            session_id=str(state.record.session_id),
+        )
+        if not classification.beyond:
+            return None
+        return deny_message(role, classification.target)
 
     def _scope_verdict(
         self,

@@ -6,14 +6,24 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from usage_admin.auth import AuthService
 from usage_admin.config import UsageAdminSettings
-from usage_admin.exports import ExportFileStore, ExportService
+from usage_admin.export_store import (
+    ExportFileStore,
+    InMemoryExportFileStore,
+    LocalExportFileStore,
+    S3ExportFileStore,
+)
+from usage_admin.exports import ExportService
+from usage_admin.logging import get_logger
 from usage_admin.ops import OpsLimits, OpsService
 from usage_admin.store import InMemoryUsageStore, PostgresUsageStore, UsageStore
 from usage_admin.tenants import TenantRegistryService
+
+_LOGGER = get_logger("usage_admin.container")
 
 
 class SystemClock:
@@ -21,23 +31,26 @@ class SystemClock:
         return datetime.now(timezone.utc)
 
 
-class InMemoryExportFileStore:
-    """Dev/test export file store; production should mount a real object store."""
+def build_export_file_store(settings: UsageAdminSettings) -> ExportFileStore:
+    """Select the export backend from configuration.
 
-    def __init__(self) -> None:
-        self._blobs: dict[str, bytes] = {}
-
-    async def put(self, key: str, data: bytes) -> None:
-        self._blobs[key] = data
-
-    async def get(self, key: str) -> bytes | None:
-        return self._blobs.get(key)
-
-    async def delete(self, key: str) -> None:
-        self._blobs.pop(key, None)
-
-    def blob_keys(self) -> tuple[str, ...]:
-        return tuple(self._blobs)
+    S3 wins when an endpoint is configured, then the local directory, and the
+    in-memory store is the dev/test fallback — it is announced because exports
+    written to it are gone after a restart.
+    """
+    if settings.s3_endpoint_url.strip():
+        return S3ExportFileStore(
+            endpoint_url=settings.s3_endpoint_url,
+            bucket=settings.s3_bucket,
+            access_key=settings.s3_access_key.get_secret_value(),
+            secret_key=settings.s3_secret_key.get_secret_value(),
+            region=settings.s3_region,
+            path_style=settings.s3_path_style,
+        )
+    if settings.export_store_dir.strip():
+        return LocalExportFileStore(Path(settings.export_store_dir))
+    _LOGGER.warning("export.store.in_memory")
+    return InMemoryExportFileStore()
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +84,7 @@ def build_container(
     else:
         active_store = InMemoryUsageStore()
 
-    active_files = files or InMemoryExportFileStore()
+    active_files = files if files is not None else build_export_file_store(settings)
     ops = OpsService(
         active_store,
         clock=active_clock,
@@ -129,4 +142,5 @@ __all__ = [
     "InMemoryExportFileStore",
     "SystemClock",
     "build_container",
+    "build_export_file_store",
 ]

@@ -20,10 +20,6 @@ IdFactory = Callable[[], str]
 
 session_logger = get_logger("session.consistency")
 
-#: Customer-confirmed time-range ceiling: at most the past year. Requests
-#: beyond it are terminated with a friendly notice before any MES call.
-DEFAULT_TIME_RANGE_MAX_DAYS = 366
-
 
 class InteractionNotFoundError(LookupError):
     """Raised for both a missing interaction and one owned by another user."""

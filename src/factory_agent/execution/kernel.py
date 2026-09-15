@@ -12,6 +12,7 @@ constructs customer URLs, auth headers, or unbounded calls; scope identifiers
 reach the executor only through ``NarrowedFilters`` and reviewed recipe params.
 """
 
+import asyncio
 import itertools
 import time
 from dataclasses import dataclass
@@ -123,6 +124,11 @@ class KernelSettings:
     delivery_warning_ratio_percent: int = 10
     #: Fallback fixed window (days) when the order has no usable start date.
     delivery_warning_fallback_days: int = 7
+    #: Fan-out batch size: how many bound-parameter combinations one fan-out
+    #: step issues concurrently. Coverage is decided before any request, so the
+    #: batch size can never widen or narrow what the budget covers; ``1`` walks
+    #: the combinations strictly serially (the pre-concurrency behaviour).
+    fanout_concurrency: int = 4
 
 
 class KernelCapabilityRunner:
@@ -315,7 +321,16 @@ class KernelCapabilityRunner:
         call_count: int,
         role: Any | None = None,
     ) -> ResourceFetchResult:
-        """Fan out over distinct bound-column values with the call budget."""
+        """Fan out over distinct bound-column values with the call budget.
+
+        Coverage is decided once, before any request: the remaining budget
+        fixes how many combinations are covered, and the uncovered remainder is
+        reported as ``call_budget_exhausted`` — it is never merged in and no
+        number is ever invented for it. Covered combinations run in bounded
+        batches of ``fanout_concurrency``, and the outcome is assembled in
+        combination order, so every concurrency level produces the same rows,
+        request count, footer and reason as the serial walk.
+        """
         bindings = cast("dict[str, ParamBinding]", step.param_bindings)
         value_sets: dict[str, tuple[str, ...]] = {}
         for param, binding in bindings.items():
@@ -336,31 +351,47 @@ class KernelCapabilityRunner:
         ]
 
         budget = max(self._settings.max_api_calls - call_count, 0)
+        covered = combos[:budget]
         all_rows: list[dict[str, object]] = []
-        pages_fetched = 0
+        #: One issued request per covered combination, folded by the caller
+        #: into its own call count.
+        fanout_calls = 0
         footer: dict[str, str] | None = None
         complete = True
         reason: str | None = None
-        covered = 0
-        for combo in combos:
-            if covered >= budget:
-                complete = False
-                reason = "call_budget_exhausted"
-                break
-            params = {**static_params, **combo}
-            fetch = await self._fetch_one(step.operation_id, filters, time_range, params, role)
-            pages_fetched += 1
-            if fetch.footer is not None:
-                footer = fetch.footer
-            all_rows.extend(cast("list[dict[str, object]]", fetch.rows))
-            if not fetch.complete:
-                complete = False
-                reason = fetch.reason or reason
-            covered += 1
+        concurrency = max(1, self._settings.fanout_concurrency)
+        for start in range(0, len(covered), concurrency):
+            batch = await asyncio.gather(
+                *(
+                    self._fetch_one(
+                        step.operation_id, filters, time_range, {**static_params, **combo}, role
+                    )
+                    for combo in covered[start : start + concurrency]
+                ),
+                return_exceptions=True,
+            )
+            for outcome in batch:
+                if isinstance(outcome, BaseException):
+                    # The first failure in combination order decides, exactly
+                    # where the serial walk would have stopped. Requests
+                    # already issued in this batch are awaited rather than
+                    # abandoned, so nothing keeps fetching after the step has
+                    # given up.
+                    raise outcome
+                if outcome.footer is not None:
+                    footer = outcome.footer
+                all_rows.extend(cast("list[dict[str, object]]", outcome.rows))
+                if not outcome.complete:
+                    complete = False
+                    reason = outcome.reason or reason
+                fanout_calls += 1
+        if len(covered) < len(combos):
+            complete = False
+            reason = "call_budget_exhausted"
         return ResourceFetchResult(
             rows=tuple(all_rows),
             total=len(all_rows),
-            pages_fetched=pages_fetched,
+            pages_fetched=fanout_calls,
             complete=complete,
             reason=reason,
             footer=footer if len(combos) <= 1 else None,
@@ -806,9 +837,11 @@ def _distinct_values_sql(from_step: str, column: str) -> str:
 
     Both identifiers are whitelisted to plain ``[A-Za-z_][A-Za-z0-9_]*`` names
     by ``_binding_identifiers`` before this is called, so the interpolation can
-    never carry an attacker-controlled fragment.
+    never carry an attacker-controlled fragment. The explicit ordering makes the
+    fan-out walk reproducible: combination order decides result row order, so an
+    unordered set scan would let one query return differently ordered rows.
     """
-    return f'SELECT DISTINCT "{column}" FROM "{from_step}" WHERE "{column}" IS NOT NULL'  # nosec B608 - identifiers whitelisted; read-only DuckDB
+    return f'SELECT DISTINCT "{column}" FROM "{from_step}" WHERE "{column}" IS NOT NULL ORDER BY 1'  # nosec B608 - identifiers whitelisted; read-only DuckDB
 
 
 def _natural_days(start: Any, end: Any) -> int:

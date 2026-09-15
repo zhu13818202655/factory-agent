@@ -2,10 +2,11 @@
 
 This directory has two development entry points:
 
-- `compose.yaml` runs the complete local stack: PostgreSQL, Redis, `agent-api`, and
+- `compose.yaml` runs the complete local stack: PostgreSQL, Redis, SeaweedFS (the
+  S3-compatible object store that holds retained exports), `agent-api`, and
   `usage-admin`.
-- `middleware.yaml` runs PostgreSQL 16 and Redis 7 for host-based debugging or for the application
-  code you start outside Docker.
+- `middleware.yaml` runs PostgreSQL 16, Redis 7, and SeaweedFS for host-based debugging or for the
+  application code you start outside Docker.
 
 Use the helper scripts from this directory:
 
@@ -28,14 +29,31 @@ make middleware-reset   # destructive: wipes every local volume, then restarts
 
 PostgreSQL listens on `127.0.0.1:3432` and initializes the shared `factory_agent` database (used by
 both `agent-api` and `usage-admin`). Redis listens on
-`127.0.0.1:3379`. Override host ports with `POSTGRES_PORT` and `REDIS_PORT`. The checked-in
-usernames and passwords are development-only.
+`127.0.0.1:3379`. SeaweedFS exposes its S3 API on `127.0.0.1:8333` (loopback only; containers reach
+it as `seaweedfs:8333`). Override host ports with `POSTGRES_PORT`, `REDIS_PORT`, and
+`SEAWEEDFS_S3_PORT`. The checked-in usernames and passwords are development-only.
+
+Exports default to this object store: `FACTORY_AGENT_S3_ENDPOINT_URL` points `agent-api` at the
+`seaweedfs` service and the bucket name comes from `FACTORY_AGENT_S3_BUCKET`. Leaving that endpoint
+empty falls back to the local directory backend, which is what unit tests and host-only runs use.
+The S3 credentials in `.env.example` seed the gateway on first start; both must be set, because
+omitting them would leave SeaweedFS in anonymous "Allow All" mode.
+
+`usage-admin` keeps its report exports in the same gateway but its own bucket
+(`USAGE_ADMIN_S3_BUCKET`, default `usage-admin-exports`, ADR-0009 §2.6). The two buckets are
+seeded together from the comma-separated `S3_BUCKET` value on the `seaweedfs` service. Leaving
+`USAGE_ADMIN_S3_ENDPOINT_URL` empty falls back to `USAGE_ADMIN_EXPORT_STORE_DIR`, and if both are
+empty exports live in memory only — they are then lost on restart, so that combination is for
+dev/test runs only. Downloads on both services stay backend-proxied: the service re-checks
+ownership, writes an audit event, and refuses to release bytes when that audit fails.
 ## Wiping local data
 
-`stop.sh` keeps the named volumes, so databases, migration state, and the Redis AOF survive a
-restart. `reset.sh` is the destructive counterpart: it runs `down --volumes`, which deletes the
-volumes so `postgres/init-databases.sql` runs again on the next start and you get a factory-fresh
-database.
+`stop.sh` keeps the named volumes, so databases, migration state, the Redis AOF, and retained export
+objects survive a restart. `reset.sh` is the destructive counterpart: it runs `down --volumes`,
+which deletes the volumes so `postgres/init-databases.sql` runs again on the next start and you get
+a factory-fresh database. Wiping also discards every export object in SeaweedFS (both the
+factory-agent and the usage-admin bucket), so download ids handed out before the reset become 404 —
+exports are regenerated through history/favorite re-ask.
 
 ```bash
 ./reset.sh middleware            # list the volumes, ask for "yes", wipe, restart

@@ -15,6 +15,7 @@ alerted and never blocks the interaction.
 
 import hashlib
 import uuid
+from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,6 +36,9 @@ from factory_agent.ports import MesCallRecord, ModelStage, UsageEvent
 _LOGGER = get_logger("factory_agent.application.usage")
 
 SCHEMA_VERSION = "1.0"
+
+#: Metering event type for one model call, including a failed attempt.
+LLM_CALL_EVENT_TYPE = "llm_call_completed"
 
 Entrypoint = Literal["api", "web", "mobile"]
 CompletionStatus = Literal["completed", "failed", "cancelled", "rejected"]
@@ -239,8 +243,20 @@ def llm_call_event(
     status: Literal["completed", "failed"] = "completed",
     fallback_reason: str | None = None,
     error_category: str | None = None,
+    includes_scope: bool = False,
+    scope_verdict: Mapping[str, object] | None = None,
 ) -> UsageEvent:
-    payload = context.envelope("llm_call_completed", occurred_at)
+    """One model-call event.
+
+    ``includes_scope``/``scope_verdict`` are set only by the merged EXTRACT
+    call, which answers the scope question in the same payload as capability
+    selection. A merged payload that omitted the key still reports
+    ``includes_scope=true`` with a ``null`` verdict: that combination is the
+    signal that the dedicated guard call took over for this interaction.
+    """
+    if includes_scope and stage is not ModelStage.EXTRACT:
+        raise ValueError("includes_scope is only meaningful on the EXTRACT stage")
+    payload = context.envelope(LLM_CALL_EVENT_TYPE, occurred_at)
     payload["logical_call_id"] = logical_call_id
     payload["stage"] = stage.value
     payload["model_alias"] = model_alias
@@ -254,6 +270,9 @@ def llm_call_event(
     payload["status"] = status
     payload["fallback_reason"] = _short(fallback_reason)
     payload["error_category"] = _short(error_category)
+    if includes_scope:
+        payload["includes_scope"] = True
+        payload["scope_verdict"] = dict(scope_verdict) if scope_verdict is not None else None
     return _wrap(context, payload, occurred_at)
 
 
@@ -306,6 +325,7 @@ def _short(value: str | None) -> str | None:
 
 __all__ = [
     "SCHEMA_VERSION",
+    "LLM_CALL_EVENT_TYPE",
     "CompletionStatus",
     "ContextVarMesCallRecorder",
     "Entrypoint",

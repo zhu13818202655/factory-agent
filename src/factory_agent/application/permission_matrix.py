@@ -8,7 +8,11 @@ inside an allowed capability is still enforced by MES-side row filtering
 (``DataScope.mes_filtered``); the agent never re-filters rows.
 
 Matrix (customer-confirmed):
-- FR-001..FR-004 personal capabilities: all four roles (self dimension).
+- FR-001..FR-003 personal capabilities: all four roles (self dimension).
+- FR-004 收入排名（组内名次）: 01 组长 / 02 管理, and 99 老板. Its only data
+  source is the customer's employee wage-ranking query, which the customer MES
+  answers for the 00 员工 role with a business-level ``code=-403``
+  （无权限查看工资排名）, so an employee cannot learn his group rank.
 - FR-005..FR-008 management capabilities: 01 组长 / 02 管理, and 99 老板.
 - FR-009..FR-012 factory-wide capabilities: 99 老板 only.
 
@@ -40,7 +44,8 @@ class Capability(StrEnum):
     ANY_EMPLOYEE_PAYROLL = "FR-012"
 
 
-#: All four roles (personal capabilities operate on the caller's own record).
+#: FR-001..FR-003 personal capabilities: all four roles (they operate on the
+#: caller's own record).
 _ALL_ROLES: frozenset[Role] = frozenset(
     {Role.EMPLOYEE, Role.GROUP_LEADER, Role.MANAGER, Role.OWNER}
 )
@@ -60,7 +65,7 @@ CAPABILITY_ROLES: dict[Capability, frozenset[Role]] = {
     Capability.OWN_OUTPUT: _ALL_ROLES,
     Capability.OWN_PAYROLL_SUMMARY: _ALL_ROLES,
     Capability.OWN_PAYROLL_DETAIL: _ALL_ROLES,
-    Capability.GROUP_INCOME_RANK: _ALL_ROLES,
+    Capability.GROUP_INCOME_RANK: _MANAGEMENT_AND_OWNER_ROLES,
     Capability.ORDER_PROGRESS: _MANAGEMENT_AND_OWNER_ROLES,
     Capability.ORDER_OUTPUT: _MANAGEMENT_AND_OWNER_ROLES,
     Capability.WORKSHOP_COMPARISON: _MANAGEMENT_AND_OWNER_ROLES,

@@ -18,6 +18,17 @@ class UsageAdminSettings(BaseSettings):
     #: Base URL clients use to reach this service's download endpoint.
     download_base_url: str = "http://127.0.0.1:8020"
     export_presign_expires_seconds: int = Field(default=900, ge=60, le=3600)
+    #: Export artifact backend. ``s3_endpoint_url`` non-empty selects the
+    #: S3-compatible object store; otherwise ``export_store_dir`` selects the
+    #: local directory. Both blank keeps the in-memory store (dev/test only) —
+    #: exports then disappear on restart.
+    s3_endpoint_url: str = ""
+    s3_bucket: str = "usage-admin-exports"
+    s3_region: str = "us-east-1"
+    s3_access_key: SecretStr = SecretStr("")
+    s3_secret_key: SecretStr = SecretStr("")
+    s3_path_style: bool = True
+    export_store_dir: str = ""
     timezone_name: str = "Asia/Shanghai"
     #: Secret signing platform-principal login tokens (D15); from env in prod.
     token_signing_secret: SecretStr | None = None

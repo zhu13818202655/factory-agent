@@ -15,8 +15,9 @@ import io
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
+from usage_admin.export_store import ExportFileStore
 from usage_admin.masking import mask_app_key
 from usage_admin.ops import MesCategoriesView, OpsLimits, OpsQueryError, OpsService
 from usage_admin.platform import PlatformScope, PlatformScopeError
@@ -47,14 +48,6 @@ class ExportView:
     download_url: str | None
     expires_at: datetime | None
     created_at: datetime
-
-
-class ExportFileStore(Protocol):
-    async def put(self, key: str, data: bytes) -> None: ...
-
-    async def get(self, key: str) -> bytes | None: ...
-
-    async def delete(self, key: str) -> None: ...
 
 
 class ExportGenerationError(ValueError):

@@ -43,6 +43,35 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # 对象存储：导出产物（XLSX + sidecar 元数据）的后端。单进程 weed mini 内含
+  # Master + Volume + Filer + S3 网关（官方定位：单节点自调优，可用于单节点生产），
+  # 因此这里不写 command，只给数据卷与环境变量。桶与凭据在首次启动时由环境变量
+  # 幂等创建/播种；**凭据必须给**，两个都不给会退化成匿名 "Allow All" 模式。
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.46
+    environment:
+      AWS_ACCESS_KEY_ID: ${FACTORY_AGENT_S3_ACCESS_KEY:-factory_agent}
+      AWS_SECRET_ACCESS_KEY: ${FACTORY_AGENT_S3_SECRET_KEY:-factory_agent_dev}
+      S3_BUCKET: ${FACTORY_AGENT_S3_BUCKET:-factory-agent-exports},${USAGE_ADMIN_S3_BUCKET:-usage-admin-exports}
+    # 只绑回环：宿主机调试与集成测试用；容器间走服务名 seaweedfs:8333
+    ports:
+      - "127.0.0.1:${SEAWEEDFS_S3_PORT:-8333}:8333"
+    volumes:
+      - seaweedfs-data:/data
+    healthcheck:
+      # 探 Master 状态端点而不是 S3 根路径：种子化凭据之后，未签名的请求会被 S3
+      # 网关拒成 403，而 `wget` 把非 2xx 当失败 → 容器永远停在 starting。
+      # Master 返回 200 即代表这个 `weed mini` 单进程（Master+Volume+Filer+S3）在服务。
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:9333/cluster/status || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   redis-data:
+  seaweedfs-data:

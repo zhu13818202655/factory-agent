@@ -1,5 +1,3 @@
-
-
 from datetime import UTC, datetime
 
 import pytest
@@ -46,6 +44,24 @@ def test_canonical_adapter_is_selected_only_when_configured() -> None:
     container = build_container(settings)
 
     assert container.readiness["mes"] == "configured"
+
+
+def test_export_readiness_names_the_active_artifact_backend() -> None:
+    from factory_agent.export_service import ExportService
+
+    local = build_container(FactoryAgentSettings())
+    assert local.readiness["export"] == "local"
+    assert isinstance(local.artifact_exporter, ExportService)
+
+    s3 = build_container(
+        FactoryAgentSettings.model_validate({"s3_endpoint_url": "http://seaweedfs:8333"})
+    )
+    assert s3.readiness["export"] == "s3"
+
+    # An all-whitespace endpoint must not silently enable an unreachable
+    # gateway: it degrades to the local directory backend.
+    blank = build_container(FactoryAgentSettings.model_validate({"s3_endpoint_url": "   "}))
+    assert blank.readiness["export"] == "local"
 
 
 def _bundle() -> MesCredentialBundle:

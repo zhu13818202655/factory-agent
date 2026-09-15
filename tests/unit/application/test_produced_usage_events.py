@@ -14,7 +14,7 @@ that used to be enforced by the contract schemas:
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -28,9 +28,11 @@ from factory_agent.application.intent import (
     CapabilityIntentParser,
     CapabilitySpec,
 )
+from factory_agent.application.scope_guard import ScopeGuard
 from factory_agent.application.session import SessionService, StartRequest
+from factory_agent.application.summary import ResultSummarizer
 from factory_agent.domain import CapabilityId, Role, SessionId, TenantId, UserId
-from factory_agent.ports import ModelErrorCategory, ModelGatewayError, UsageEvent
+from factory_agent.ports import Clock, ModelErrorCategory, ModelGatewayError, UsageEvent
 from factory_agent.ports.contracts import TrustedCredential
 from tests.support.authorization import (
     FakeMembershipSource,
@@ -43,7 +45,11 @@ from tests.support.session import (
     RecordingCapabilityRunner,
     ScriptedModelGateway,
     SequentialIds,
+    TickingClock,
 )
+
+#: Which carrier the scope guard runs under (mirrors ``intent``'s parameter).
+ScopeGuardMode = Literal["merged", "dedicated"]
 
 NOW = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
 SESSION = SessionId("session-1")
@@ -99,6 +105,10 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
         "status",
         "fallback_reason",
         "error_category",
+        # Merged EXTRACT carrier only: whether the call was asked for the scope
+        # verdict, and the verdict it returned (``null`` when it returned none).
+        "includes_scope",
+        "scope_verdict",
     },
     "mes_call_completed": ENVELOPE_FIELDS
     | {"operation_id", "page_count", "row_count_bucket", "duration_ms", "status", "error_category"},
@@ -154,6 +164,7 @@ async def run_pipeline(
     failure: Exception | None = None,
     cancel: bool = False,
     chat_text: str | None = None,
+    clock: Clock | None = None,
 ) -> list[UsageEvent]:
     store = InMemoryInteractionStore()
     gateway = ScriptedModelGateway(contents=[payload], failures=[failure] if failure else [])
@@ -169,7 +180,7 @@ async def run_pipeline(
             gateway, CATALOG, model_alias="factory-fast", timezone_name="Asia/Shanghai"
         ),
         RecordingCapabilityRunner(),
-        FrozenClock(NOW),
+        clock or FrozenClock(NOW),
         new_id=SequentialIds(),
         chat=chat,
     )
@@ -227,3 +238,180 @@ async def test_every_event_id_is_unique_for_idempotent_writes() -> None:
     event_ids = [event.event_id for event in events]
 
     assert len(event_ids) == len(set(event_ids))
+
+
+def completion_payload(events: list[UsageEvent]) -> dict[str, object]:
+    completion = next(event for event in events if event.event_type == "interaction_completed")
+    return completion.payload
+
+
+@pytest.mark.asyncio
+async def test_completion_event_splits_model_and_mes_time_out_of_the_total() -> None:
+    """``local_duration_ms`` is the residual the other two columns do not cover."""
+    payload = completion_payload(await run_pipeline(COMPLETE, clock=TickingClock()))
+
+    llm = payload["llm_duration_ms"]
+    mes = payload["mes_duration_ms"]
+    total = payload["duration_ms"]
+    local = payload["local_duration_ms"]
+    assert isinstance(llm, int)
+    assert isinstance(mes, int)
+    assert isinstance(total, int)
+    assert isinstance(local, int)
+
+    assert llm > 0, "the EXTRACT call must be metered"
+    assert mes == 7, "RecordingCapabilityRunner reports a fixed 7 ms"
+    assert llm + mes <= total
+    assert local == total - llm - mes
+
+
+@pytest.mark.asyncio
+async def test_a_zero_length_run_clamps_the_local_residual() -> None:
+    """A frozen clock makes the total exactly time the parts already cover."""
+    payload = completion_payload(await run_pipeline(COMPLETE))
+
+    llm = payload["llm_duration_ms"]
+    assert isinstance(llm, int)
+
+    assert payload["duration_ms"] == 0
+    assert llm > 0
+    assert payload["local_duration_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_run_still_reports_the_model_time_it_spent() -> None:
+    """A clarification made no MES call but did pay for the EXTRACT round trip."""
+    payload = completion_payload(await run_pipeline(INCOMPLETE, clock=TickingClock()))
+
+    llm = payload["llm_duration_ms"]
+    assert isinstance(llm, int)
+
+    assert payload["status"] == "completed"
+    assert llm > 0
+    assert payload["mes_duration_ms"] == 0
+
+
+#: EXTRACT payload carrying the merged scope verdict.
+COMPLETE_SCOPED = (
+    '{"capability_id": "FR-001", "confidence": 0.95, "slots": {"time_expression": "上个月"},'
+    ' "scope": {"verdict": "within", "target": ""}}'
+)
+COMPLETE_SCOPED_BEYOND = (
+    '{"capability_id": "FR-001", "confidence": 0.95, "slots": {"time_expression": "上个月"},'
+    ' "scope": {"verdict": "beyond", "target": "全组的工资明细"}}'
+)
+GUARD_WITHIN = '{"verdict": "within", "target": ""}'
+GUARD_BEYOND = '{"verdict": "beyond", "target": "全组的工资明细"}'
+
+
+async def run_guarded_pipeline(
+    *,
+    scope_guard_mode: ScopeGuardMode,
+    intent_payload: str,
+    guard_payload: str = GUARD_WITHIN,
+) -> list[UsageEvent]:
+    """A full business query with both the guard and the summarizer wired.
+
+    The parser and the guard get separate scripted gateways so each call's
+    script is independent of how many round trips the carrier needs.
+    """
+    store = InMemoryInteractionStore()
+    service = SessionService(
+        store,
+        authorization(Role.EMPLOYEE),
+        CapabilityIntentParser(
+            ScriptedModelGateway(contents=[intent_payload]),
+            CATALOG,
+            model_alias="factory-fast",
+            timezone_name="Asia/Shanghai",
+            scope_guard_mode=scope_guard_mode,
+        ),
+        RecordingCapabilityRunner(),
+        FrozenClock(NOW),
+        new_id=SequentialIds(),
+        summarizer=ResultSummarizer(
+            ScriptedModelGateway(contents=["上个月合计 12 件。"]), model_alias="factory-summary"
+        ),
+        scope_guard=ScopeGuard(
+            ScriptedModelGateway(contents=[guard_payload]), model_alias="factory-summary"
+        ),
+    )
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+    async for _ in service.stream(credential(), record.interaction_id):
+        pass
+    return store.usage_events
+
+
+def stages_of(events: list[UsageEvent]) -> list[str]:
+    return [
+        str(event.payload["stage"]) for event in events if event.event_type == "llm_call_completed"
+    ]
+
+
+def extract_event(events: list[UsageEvent]) -> UsageEvent:
+    return next(
+        event
+        for event in events
+        if event.event_type == "llm_call_completed" and event.payload["stage"] == "extract"
+    )
+
+
+@pytest.mark.asyncio
+async def test_merged_scope_verdict_costs_one_fewer_model_call() -> None:
+    """The merged carrier returns capability and scope in one round trip."""
+    events = await run_guarded_pipeline(scope_guard_mode="merged", intent_payload=COMPLETE_SCOPED)
+
+    assert stages_of(events) == ["extract", "summarize"]
+
+    extract = next(event for event in events if event.payload.get("includes_scope") is True)
+    assert extract.payload["scope_verdict"] == {"verdict": "within"}
+
+
+@pytest.mark.asyncio
+async def test_dedicated_mode_keeps_the_independent_guard_call() -> None:
+    """``dedicated`` reproduces the pre-merge chain and its event shape."""
+    events = await run_guarded_pipeline(scope_guard_mode="dedicated", intent_payload=COMPLETE)
+
+    assert stages_of(events) == ["extract", "scope_guard", "summarize"]
+
+    extract = extract_event(events)
+    assert "includes_scope" not in extract.payload
+    assert "scope_verdict" not in extract.payload
+
+
+@pytest.mark.asyncio
+async def test_a_merged_payload_without_a_verdict_falls_back_to_the_guard_call() -> None:
+    """No usable scope key means the dedicated call takes over, not a free pass."""
+    events = await run_guarded_pipeline(scope_guard_mode="merged", intent_payload=COMPLETE)
+
+    assert stages_of(events) == ["extract", "scope_guard", "summarize"]
+
+    extract = extract_event(events)
+    assert extract.payload["includes_scope"] is True
+    assert extract.payload["scope_verdict"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_merged_beyond_verdict_still_denies_before_any_business_call() -> None:
+    """The merged carrier can only narrow access; it denies like the guard did."""
+    events = await run_guarded_pipeline(
+        scope_guard_mode="merged", intent_payload=COMPLETE_SCOPED_BEYOND
+    )
+
+    assert stages_of(events) == ["extract"]
+    assert completion_payload(events)["status"] == "failed"
+    assert completion_payload(events)["error_category"] == "scope_forbidden"
+    assert not [event for event in events if event.event_type == "mes_call_completed"]
+
+
+@pytest.mark.asyncio
+async def test_a_dedicated_guard_denial_uses_the_same_outcome_shape() -> None:
+    """Both carriers must deny through one path, so callers see one behaviour."""
+    events = await run_guarded_pipeline(
+        scope_guard_mode="dedicated", intent_payload=COMPLETE, guard_payload=GUARD_BEYOND
+    )
+
+    assert stages_of(events) == ["extract", "scope_guard"]
+    assert completion_payload(events)["status"] == "failed"
+    assert completion_payload(events)["error_category"] == "scope_forbidden"
+    assert not [event for event in events if event.event_type == "mes_call_completed"]

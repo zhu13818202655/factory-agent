@@ -1,9 +1,15 @@
 import pytest
 
+from factory_agent.application.intent import SYSTEM_PROMPT
 from factory_agent.application.scope_guard import (
     SCOPE_GUARD_SYSTEM_PROMPT,
+    SCOPE_JUDGEMENT_RULES,
+    ScopeClassification,
     ScopeGuard,
     deny_message,
+    merged_scope_block,
+    parse_scope_classification,
+    scope_classification_payload,
 )
 from factory_agent.domain import Role
 from factory_agent.ports import ModelErrorCategory, ModelGatewayError
@@ -134,3 +140,75 @@ class TestScopeGuard:
         flag that as a beyond example (role ceiling is the whole tenant)."""
         assert "老板可问全厂" in SCOPE_GUARD_SYSTEM_PROMPT
         assert "或任何人问全厂" not in SCOPE_GUARD_SYSTEM_PROMPT
+
+
+class TestSharedJudgementRules:
+    """One reviewed rule list feeds both carriers, so they cannot drift."""
+
+    def test_the_dedicated_prompt_embeds_the_shared_rules_verbatim(self) -> None:
+        assert SCOPE_JUDGEMENT_RULES in SCOPE_GUARD_SYSTEM_PROMPT
+        assert SCOPE_JUDGEMENT_RULES in merged_scope_block(Role.EMPLOYEE)
+
+    def test_the_merged_block_asks_for_an_added_key_not_a_second_contract(self) -> None:
+        block = merged_scope_block(Role.GROUP_LEADER)
+
+        assert '"scope"' in block
+        assert "01（组长）" in block
+        assert "所绑定小组" in block
+        assert "不改变能力选择与槽位提取的结果" in block
+
+    def test_the_base_intent_prompt_carries_no_scope_section(self) -> None:
+        """``dedicated`` mode must send the prompt that is already in service."""
+        assert "scope" not in SYSTEM_PROMPT
+        assert SCOPE_JUDGEMENT_RULES not in SYSTEM_PROMPT
+
+
+class TestParseScopeClassification:
+    def test_a_valid_within_verdict_is_parsed(self) -> None:
+        classification = parse_scope_classification({"verdict": "within", "target": ""})
+
+        assert classification == ScopeClassification(beyond=False, target="")
+
+    def test_a_within_verdict_ignores_a_stray_target(self) -> None:
+        """Only ``beyond`` reaches the denial text, so noise stays harmless."""
+        classification = parse_scope_classification({"verdict": "within", "target": "张三"})
+
+        assert classification is not None
+        assert classification.beyond is False
+
+    def test_a_valid_beyond_verdict_keeps_a_cleaned_target(self) -> None:
+        classification = parse_scope_classification(
+            {"verdict": "beyond", "target": "  全组的\n工资明细  "}
+        )
+
+        assert classification == ScopeClassification(beyond=True, target="全组的 工资明细")
+
+    def test_an_overlong_target_is_truncated(self) -> None:
+        classification = parse_scope_classification({"verdict": "beyond", "target": "x" * 200})
+
+        assert classification is not None
+        assert len(classification.target) == 40
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            None,
+            "beyond",
+            {},
+            {"verdict": "maybe"},
+            {"verdict": None},
+            {"verdict": "BEYOND"},
+            {"target": "全组的工资明细"},
+        ],
+    )
+    def test_an_unusable_value_is_reported_as_missing(self, raw: object) -> None:
+        assert parse_scope_classification(raw) is None
+
+    def test_the_metered_projection_carries_only_the_verdict(self) -> None:
+        """A target can echo a person or group, so it never enters metering."""
+        payload = scope_classification_payload(
+            ScopeClassification(beyond=True, target="张三的工资明细")
+        )
+
+        assert payload == {"verdict": "beyond"}
+        assert "张三" not in str(payload)

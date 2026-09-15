@@ -168,11 +168,10 @@ class SessionRepository(Protocol):
 
 
 class ArtifactStore(Protocol):
-    """Transient export-content buffer (服务端不留存).
+    """Transient in-memory export-content buffer.
 
-    Content lives only in a bounded in-memory buffer for a short TTL; there is
-    no object store, no presigning, and no long-lived lifecycle. Put/get/delete
-    only.
+    Content lives only in a bounded in-memory buffer for a short TTL; put/get/delete
+    only. Durable export storage is served by ``factory_agent.ports.artifacts.ExportStore``.
     """
 
     async def put(self, artifact_id: str, content: bytes, content_type: str) -> None: ...

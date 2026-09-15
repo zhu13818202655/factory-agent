@@ -1,6 +1,6 @@
 import itertools
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from factory_agent.domain import (
@@ -317,6 +317,22 @@ class FrozenClock:
     current: datetime = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
 
     def now(self) -> datetime:
+        return self.current
+
+
+@dataclass
+class TickingClock:
+    """Clock that advances one millisecond per read, like a real wall clock.
+
+    Needed wherever a duration is asserted: a frozen clock makes every derived
+    total exactly zero, which hides the arithmetic under test.
+    """
+
+    current: datetime = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
+    step: timedelta = timedelta(milliseconds=1)
+
+    def now(self) -> datetime:
+        self.current = self.current + self.step
         return self.current
 
 

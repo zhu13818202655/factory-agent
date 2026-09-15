@@ -41,6 +41,8 @@ from factory_agent.execution.executor import ScopedExecutor
 from factory_agent.execution.kernel import KernelCapabilityRunner, KernelSettings
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import default_metric_registry
+from factory_agent.export.local_store import LocalArtifactStore
+from factory_agent.export.s3_store import S3ArtifactStore
 from factory_agent.export_service import ExportService
 from factory_agent.infrastructure.cache import RedisCacheStore
 from factory_agent.llm.health import EndpointHealthMonitor, HttpModelsProbe
@@ -73,7 +75,7 @@ from factory_agent.ports import (
     SessionRepository,
     TrustedCredential,
 )
-from factory_agent.ports.artifacts import ArtifactExporter
+from factory_agent.ports.artifacts import ArtifactExporter, ExportStore
 from factory_agent.ports.not_configured import (
     DependencyNotConfiguredError,
     NotConfiguredArtifactStore,
@@ -228,7 +230,7 @@ def build_container(
 
     clock = supplied.clock or SystemClock()
     capability_runner = _build_capability_runner(supplied, mes, settings)
-    artifact_store, exporter = _build_export_service(supplied, settings, clock)
+    artifact_store, exporter, export_status = _build_export_service(supplied, settings, clock)
 
     if supplied.interactions is not None:
         interactions: InteractionStore | None = supplied.interactions
@@ -255,7 +257,7 @@ def build_container(
         "postgres": "configured" if settings.postgres_url is not None else "not_configured",
         "litellm": model_status,
         "redis": "configured" if settings.redis_url is not None else "not_configured",
-        "export": "configured" if exporter is not None else "not_configured",
+        "export": export_status,
     }
     directory: MesDirectorySource | CachedDirectorySource | None = (
         MesDirectorySource(mes, load_catalog()) if isinstance(mes, HongzhaoMesAdapter) else None
@@ -445,6 +447,9 @@ def _build_session_service(
         max_repair_attempts=settings.llm_max_repair_attempts,
         max_history_turns=settings.session_history_max_turns,
         max_history_chars=settings.session_history_max_chars,
+        time_range_max_days=settings.time_range_max_days,
+        time_parse_mode=settings.time_parse_mode,
+        scope_guard_mode=settings.scope_guard_mode,
     )
     chat = ChatResponder(
         model,
@@ -520,6 +525,7 @@ def _build_capability_runner(
         settings=KernelSettings(
             delivery_warning_ratio_percent=settings.delivery_warning_ratio_percent,
             delivery_warning_fallback_days=settings.delivery_warning_fallback_days,
+            fanout_concurrency=settings.mes_fanout_concurrency,
         ),
         resource_columns=resource_columns,
         base_data_operations=frozenset(base_data_operations),
@@ -530,24 +536,44 @@ def _build_export_service(
     supplied: DependencyOverrides,
     settings: FactoryAgentSettings,
     clock: Clock,
-) -> tuple[ArtifactStore | None, ArtifactExporter | None]:
-    """Compose the retained local-disk exporter.
+) -> tuple[ArtifactStore | None, ArtifactExporter | None, str]:
+    """Compose the retained exporter over the configured artifact backend.
 
-    XLSX artifacts persist to ``settings.export_store_dir`` and stay
-    downloadable across restarts within ``settings.export_retention_seconds``.
-    It needs no object store and no PostgreSQL. It is built whenever an
-    injected override is absent, so generated exports are always downloadable
-    for any configured deployment.
+    Exports persist to the S3-compatible object store when ``s3_endpoint_url``
+    is set and to a local directory otherwise, and stay downloadable across
+    restarts within ``export_retention_seconds`` either way. The exporter is
+    built whenever an injected override is absent, so every configured
+    deployment can generate downloads; the returned label is what readiness
+    reports as the live backend.
     """
     if supplied.artifact_exporter is not None:
-        return supplied.artifacts, supplied.artifact_exporter
+        return supplied.artifacts, supplied.artifact_exporter, "fake"
+    store, backend = _build_artifact_store(settings)
     exporter = ExportService(
-        store_dir=settings.export_store_dir,
+        store=store,
         clock=clock.now,
         retention_seconds=settings.export_retention_seconds,
         max_entries=settings.export_buffer_max_entries,
     )
-    return supplied.artifacts, exporter
+    return supplied.artifacts, exporter, backend
+
+
+def _build_artifact_store(settings: FactoryAgentSettings) -> tuple[ExportStore, str]:
+    """Select the artifact backend; the label names it in the readiness report."""
+    endpoint = settings.s3_endpoint_url.strip()
+    if endpoint:
+        return (
+            S3ArtifactStore(
+                endpoint_url=endpoint,
+                bucket=settings.s3_bucket,
+                access_key=settings.s3_access_key.get_secret_value(),
+                secret_key=settings.s3_secret_key.get_secret_value(),
+                region=settings.s3_region,
+                path_style=settings.s3_path_style,
+            ),
+            "s3",
+        )
+    return LocalArtifactStore(settings.export_store_dir), "local"
 
 
 def _load_registry(settings: FactoryAgentSettings) -> ModelRegistry | None:

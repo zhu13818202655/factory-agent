@@ -26,6 +26,10 @@ _CN_MONTH_NUMBERS = {
     "七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12,
 }
 
+#: Customer-confirmed time-range ceiling: at most the past year. Requests
+#: beyond it are terminated with a friendly notice before any MES call.
+DEFAULT_TIME_RANGE_MAX_DAYS = 366
+
 
 class TimeExpressionError(ValueError):
     """Raised when a phrase is not in the reviewed relative-time vocabulary."""
@@ -45,6 +49,34 @@ def resolve_time_expression(expression: str, now: datetime, tz_name: str) -> Tim
         raise TimeExpressionError("time expression is not in the reviewed vocabulary")
     start_day, end_day = bounds
     return TimeRange(start=_to_utc(start_day, zone), end=_to_utc(end_day, zone))
+
+
+def time_range_violation(
+    start: datetime,
+    end: datetime,
+    *,
+    max_days: int,
+    now: datetime | None = None,
+    tz_name: str | None = None,
+) -> str | None:
+    """The single redline for a proposed half-open ``[start, end)`` range.
+
+    Returns a stable reason code when the range must not be used, otherwise
+    ``None``. Both the intent parser's handling of a model-proposed ISO range
+    and the session's pre-execution gate call this, so the span rule is written
+    once. ``now`` and ``tz_name`` are required to judge ``future``: a start past
+    tomorrow in the factory timezone means a date the user never asked for.
+    """
+    if start >= end:
+        return "empty"
+    if (end - start) > timedelta(days=max_days):
+        return "too_long"
+    if now is not None and tz_name is not None:
+        zone = ZoneInfo(tz_name)
+        limit = _to_utc(now.astimezone(zone).date() + timedelta(days=2), zone)
+        if start >= limit:
+            return "future"
+    return None
 
 
 def _resolve_named(phrase: str, today: date) -> tuple[date, date] | None:
@@ -154,4 +186,9 @@ def _to_utc(day: date, zone: ZoneInfo) -> datetime:
     return datetime.combine(day, time.min, tzinfo=zone).astimezone(timezone.utc)
 
 
-__all__ = ["TimeExpressionError", "resolve_time_expression"]
+__all__ = [
+    "DEFAULT_TIME_RANGE_MAX_DAYS",
+    "TimeExpressionError",
+    "resolve_time_expression",
+    "time_range_violation",
+]

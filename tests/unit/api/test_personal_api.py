@@ -73,11 +73,11 @@ async def test_employee_quick_questions_are_personal() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert 4 <= len(body) <= 6
+    assert len(body) == 3
     capability_ids = {item["capability_id"] for item in body}
-    # Employees only see personal capabilities (FR-001..FR-004).
-    assert capability_ids <= {"FR-001", "FR-002", "FR-003", "FR-004"}
-    assert "FR-009" not in capability_ids
+    # Employees only see the personal capabilities they may use (FR-001..FR-003);
+    # FR-004 收入排名 is not available to them.
+    assert capability_ids == {"FR-001", "FR-002", "FR-003"}
 
 
 @pytest.mark.asyncio

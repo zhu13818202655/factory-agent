@@ -97,7 +97,14 @@ class SessionOutcomeMixin(SessionCore):
             interaction_id=str(state.record.interaction_id),
             session_id=str(state.record.session_id),
         )
-        usage_events.append(self._completion_event(state.record, result=None, error_category=None))
+        usage_events.append(
+            self._completion_event(
+                state.record,
+                result=None,
+                error_category=None,
+                usage_events=tuple(usage_events),
+            )
+        )
         await self._commit(
             InteractionCommit(
                 interaction=state.record,
@@ -156,7 +163,14 @@ class SessionOutcomeMixin(SessionCore):
             interaction_id=str(state.record.interaction_id),
             session_id=str(state.record.session_id),
         )
-        usage_events.append(self._completion_event(state.record, result=None, error_category=None))
+        usage_events.append(
+            self._completion_event(
+                state.record,
+                result=None,
+                error_category=None,
+                usage_events=tuple(usage_events),
+            )
+        )
         await self._commit(
             InteractionCommit(
                 interaction=state.record,
@@ -177,19 +191,45 @@ class SessionOutcomeMixin(SessionCore):
         yield terminal
 
     async def _phase(self, state: RunState, target: SessionState, reason: str) -> SessionEvent:
-        """Announce and persist a completed stage transition."""
-        advanced = self._advance(state.record, target, reason)
-        return await self._stage_event(
-            state,
-            name=INTERACTION_PHASE,
-            data={
-                "state": target.value,
-                "reason": reason,
-                "stage": STAGE_LABELS.get(target, target.value),
-                "status": "ok",
-            },
-            record=advanced,
+        """Announce and persist one completed stage transition."""
+        (event,) = await self._phases(state, (target, reason))
+        return event
+
+    async def _phases(
+        self, state: RunState, *transitions: tuple[SessionState, str]
+    ) -> tuple[SessionEvent, ...]:
+        """Announce adjacent stage transitions in a single commit.
+
+        Stages with no work between them (``AUTHORIZING`` -> ``EXECUTING``) are
+        persisted together so no follower can observe a half-advanced run. Each
+        transition still emits its own event, in the same order and with the
+        same sequence numbers, so the live, replay, and history readings remain
+        identical.
+        """
+        events: list[SessionEvent] = []
+        for target, reason in transitions:
+            advanced = self._advance(state.record, target, reason)
+            events.append(
+                self._stage_event_uncommitted(
+                    state,
+                    name=INTERACTION_PHASE,
+                    data={
+                        "state": target.value,
+                        "reason": reason,
+                        "stage": STAGE_LABELS.get(target, target.value),
+                        "status": "ok",
+                    },
+                    record=advanced,
+                )
+            )
+        await self._commit(
+            InteractionCommit(
+                interaction=state.record,
+                events=tuple(events),
+                usage_events=drain_mes_events(),
+            )
         )
+        return tuple(events)
 
     async def _progress(self, state: RunState, reason: str) -> SessionEvent:
         """Announce that a long stage is under way, without moving the state.
@@ -220,6 +260,25 @@ class SessionOutcomeMixin(SessionCore):
             lifecycle=False,
         )
 
+    def _stage_event_uncommitted(
+        self,
+        state: RunState,
+        *,
+        name: str,
+        data: dict[str, object],
+        record: InteractionRecord,
+    ) -> SessionEvent:
+        """Allocate the next sequence and advance the in-memory run record."""
+        event = SessionEvent(
+            sequence=state.next_sequence(),
+            name=name,
+            data={**data, "duration_ms": state.duration_ms()},
+        )
+        state.record = replace(
+            record, last_event_sequence=event.sequence, updated_at=self._clock.now()
+        )
+        return event
+
     async def _stage_event(
         self,
         state: RunState,
@@ -230,14 +289,7 @@ class SessionOutcomeMixin(SessionCore):
         lifecycle: bool = True,
     ) -> SessionEvent:
         """Allocate the next sequence, persist the stage event, wake followers."""
-        event = SessionEvent(
-            sequence=state.next_sequence(),
-            name=name,
-            data={**data, "duration_ms": state.duration_ms()},
-        )
-        state.record = replace(
-            record, last_event_sequence=event.sequence, updated_at=self._clock.now()
-        )
+        event = self._stage_event_uncommitted(state, name=name, data=data, record=record)
         await self._commit(
             InteractionCommit(
                 interaction=state.record,
@@ -316,7 +368,12 @@ class SessionOutcomeMixin(SessionCore):
             completed_at=now,
         )
         usage_events.append(
-            self._completion_event(state.record, result=None, error_category=category)
+            self._completion_event(
+                state.record,
+                result=None,
+                error_category=category,
+                usage_events=tuple(usage_events),
+            )
         )
         session_logger.info(
             "session.outcome.terminated state={state} status={status} category={category}",
