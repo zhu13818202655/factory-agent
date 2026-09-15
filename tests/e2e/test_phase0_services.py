@@ -1,9 +1,9 @@
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from usage_admin.api.server import create_app as create_usage_admin_app
 
 from factory_agent.api.server import create_app as create_factory_app
-from usage_admin.api.server import create_app as create_usage_admin_app
 
 
 async def assert_service_liveness(app: FastAPI, service: str) -> None:

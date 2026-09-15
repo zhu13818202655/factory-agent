@@ -6,7 +6,9 @@ distribution, the three-part duration identity for completed interactions, and
 the LLM calls per interaction (the metric that should drop from 3 to 2 once the
 scope guard is merged into EXTRACT, ADR-0008).
 
-Pass two windows to get a before/after comparison side by side.
+Pass two windows to get a before/after comparison side by side. The two windows
+are disjoint: ``before`` covers ``[--before, --after)`` and ``after`` covers
+``[--after, now)``, so a window cannot silently swallow the other one.
 
     python scripts/acceptance_report.py --since 2026-09-01T00:00
     python scripts/acceptance_report.py --before 2026-09-01T00:00 --after 2026-09-08T00:00
@@ -21,11 +23,16 @@ of casting blindly. Everything else matches the delivery document's SQL.
 import argparse
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import psycopg
 
 _DURATION_IS_NUMERIC = "(payload->>'duration_ms') ~ '^[0-9]+$'"
+
+#: Every query carries an upper bound so two windows can be carved out of one
+#: timeline. A single-window report passes this sentinel rather than a real
+#: cutoff, because "everything since X" is still the useful default.
+_NO_UPPER_BOUND = datetime(9999, 12, 31, tzinfo=timezone.utc)
 
 _DISTRIBUTION_SQL = f"""
 SELECT event_type,
@@ -35,6 +42,7 @@ SELECT event_type,
 FROM usage_event
 WHERE event_type IN ('interaction_completed','llm_call_completed','mes_call_completed')
   AND occurred_at >= %s
+  AND occurred_at < %s
   AND {_DURATION_IS_NUMERIC}
 GROUP BY event_type
 ORDER BY event_type
@@ -54,7 +62,7 @@ SELECT count(*) AS rows_total,
            WHERE (payload->>'local_duration_ms') ~ '^[0-9]+$'
        ) AS max_local
 FROM usage_event
-WHERE event_type = 'interaction_completed' AND occurred_at >= %s
+WHERE event_type = 'interaction_completed' AND occurred_at >= %s AND occurred_at < %s
 """
 
 _LLM_CALLS_SQL = """
@@ -62,7 +70,7 @@ SELECT calls, count(*) AS interactions
 FROM (
     SELECT payload->>'interaction_id' AS interaction_id, count(*) AS calls
     FROM usage_event
-    WHERE event_type = 'llm_call_completed' AND occurred_at >= %s
+    WHERE event_type = 'llm_call_completed' AND occurred_at >= %s AND occurred_at < %s
     GROUP BY 1
 ) per_interaction
 WHERE interaction_id IS NOT NULL
@@ -90,18 +98,21 @@ def _print_table(headers: list[str], rows: list[tuple[object, ...]]) -> None:
         print("  " + " | ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
 
 
-def report(dsn: str, label: str, since: datetime) -> None:
-    print(f"\n=== {label} (occurred_at >= {since.isoformat()}) ===")
+def report(dsn: str, label: str, since: datetime, until: datetime = _NO_UPPER_BOUND) -> None:
+    window = f"{since.isoformat()} <= occurred_at"
+    if until != _NO_UPPER_BOUND:
+        window += f" < {until.isoformat()}"
+    print(f"\n=== {label} ({window}) ===")
     with _connect(dsn) as connection:
-        distribution = connection.execute(_DISTRIBUTION_SQL, (since,)).fetchall()
+        distribution = connection.execute(_DISTRIBUTION_SQL, (since, until)).fetchall()
         print("\n[p50/p95 per event type]")
         _print_table(["event_type", "p50", "p95", "samples"], distribution)
 
-        identity = connection.execute(_IDENTITY_SQL, (since,)).fetchall()
+        identity = connection.execute(_IDENTITY_SQL, (since, until)).fetchall()
         print("\n[three-part duration identity — llm + mes <= total]")
         _print_table(["rows", "with_llm", "identity_holds", "max_local"], identity)
 
-        calls = connection.execute(_LLM_CALLS_SQL, (since,)).fetchall()
+        calls = connection.execute(_LLM_CALLS_SQL, (since, until)).fetchall()
         print("\n[LLM calls per interaction — merged guard should move 3 -> 2]")
         _print_table(["calls", "interactions"], calls)
 
@@ -129,8 +140,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.since:
             report(args.dsn, "window", _parse_moment(args.since))
         else:
-            report(args.dsn, "before", _parse_moment(args.before))
-            report(args.dsn, "after", _parse_moment(args.after))
+            after = _parse_moment(args.after)
+            # The comparison only means anything when the two windows are
+            # disjoint, so "before" ends exactly where "after" begins.
+            report(args.dsn, "before", _parse_moment(args.before), until=after)
+            report(args.dsn, "after", after)
     except psycopg.Error as error:
         print(f"database error: {type(error).__name__}", file=sys.stderr)
         return 1

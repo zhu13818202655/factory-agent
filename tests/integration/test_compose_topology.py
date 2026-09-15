@@ -18,8 +18,10 @@ def test_application_compose_contains_all_services() -> None:
 
     assert set(services) == {
         "agent-api",
+        "assistant-web",
         "postgres",
         "redis",
+        "seaweedfs",
         "usage-admin",
     }
     assert services["agent-api"]["depends_on"] == {
@@ -34,8 +36,10 @@ def test_middleware_compose_contains_only_local_dependencies() -> None:
     document = load_compose("middleware.yaml")
     services = cast(dict[str, dict[str, Any]], document["services"])
 
-    assert set(services) == {"postgres", "redis"}
+    assert set(services) == {"postgres", "redis", "seaweedfs"}
     assert services["postgres"]["image"] == "postgres:16-alpine"
     assert services["redis"]["image"] == "redis:7-alpine"
+    assert services["seaweedfs"]["image"] == "chrislusf/seaweedfs:4.46"
     assert services["postgres"]["ports"] == ["127.0.0.1:${POSTGRES_PORT:-3432}:5432"]
     assert services["redis"]["ports"] == ["127.0.0.1:${REDIS_PORT:-3379}:6379"]
+    assert services["seaweedfs"]["ports"] == ["127.0.0.1:${SEAWEEDFS_S3_PORT:-8333}:8333"]
