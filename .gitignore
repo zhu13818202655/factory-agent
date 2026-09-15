@@ -10,6 +10,9 @@ __pycache__/
 htmlcov/
 build/
 dist/
+# macOS Finder metadata (created in every directory the Finder touches, including
+# submodules; unanchored so it matches at any depth).
+.DS_Store
 # Anchored: only the repository-root runtime output directory, never fixtures
 # such as tests/data/.
 /data/
