@@ -35,8 +35,10 @@ CARD_METRIC_TYPES: frozenset[str] = frozenset({"money", "quantity", "percent"})
 #: within the MES-filtered range and can never broaden the active DataScope.
 #: ``requested_dept_ids`` is the user-requested department intersection (None
 #: when the user did not restrict to one), distinct from the full scope depts.
+#: ``material_ids`` is the package material number set that opens the
+#: package-to-worktype drill-down.
 BUSINESS_FILTER_KEYS: frozenset[str] = frozenset(
-    {"order_codes", "style_codes", "plan_codes", "requested_dept_ids"}
+    {"order_codes", "style_codes", "plan_codes", "material_ids", "requested_dept_ids"}
 )
 
 
@@ -125,6 +127,10 @@ class CardSpec(BaseModel):
     group_by: str | None = None
     rank_column: str | None = None
     alert_marker: CardAlertMarker | None = None
+    #: Reviewed static 口径 statements rendered with the card. Mandatory when a
+    #: column's meaning is not self-evident (e.g. a 件·工序 figure that must not
+    #: be read as a piece count).
+    notes: tuple[str, ...] = ()
 
     def to_table_spec(self) -> CardTableSpec:
         """Runtime projection for the ports-layer card builder."""
@@ -141,6 +147,7 @@ class CardSpec(BaseModel):
                 if self.alert_marker is not None
                 else None
             ),
+            notes=self.notes,
         )
 
 

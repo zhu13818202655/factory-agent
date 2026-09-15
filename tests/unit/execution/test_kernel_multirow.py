@@ -1,14 +1,15 @@
-"""Multi-row kernel tests: multi-row computed tables, param-binding fan-out,
-business-filter binding, unavailable columns, and the fan-out call budget.
+"""Multi-row kernel tests: multi-row computed tables, business-filter binding,
+unavailable columns, and the progress/output chains.
 
-Uses a fake step executor returning golden rows per operation so the recipe
-DAG (including the FR-005/FR-009 chained progress chain) is exercised offline.
+Uses a fake step executor returning golden rows per operation so the reviewed
+recipe DAGs (缝制进度族 + 已扫描产量族) are exercised offline.
 """
 
 
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,61 +18,132 @@ from factory_agent.application.filters import NarrowedFilters
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.domain import CapabilityId, DeptId, EmployeeId, TenantId, TimeRange
 from factory_agent.execution.executor import ExecutionRequest
-from factory_agent.execution.kernel import KernelCapabilityRunner, KernelSettings
+from factory_agent.execution.kernel import KernelCapabilityRunner
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import UNAVAILABLE_VALUE, default_metric_registry
 from factory_agent.ports.contracts import ResourceFetchResult
 from factory_agent.ports.session import CapabilityRunRequest
 
-_PLAN_ROWS: tuple[dict[str, Any], ...] = (
+#: 缝制生产进度流程卡行（ScjdQuery）：``bbreed`` 是款号，``wcl`` 是包完工率。
+_SCJD_ROWS: tuple[dict[str, Any], ...] = (
     {
-        "dh": "PLAN-1",
-        "jhdh": "JH-1",
-        "khddh": "KHDD-1",
+        "dh": "DH-1",
+        "chuanghao": "1",
+        "rq": "2026-07-01",
         "huohao": "HH001",
-        "huohaoname": "模拟款A",
-        "khname": "客户甲",
+        "bbreed": "HH001",
+        "description": "模拟款A",
+        "zbs": "4",
         "zsl": "100",
-        "ddsl": "100",
-        "zhdate": "2026-07-01",
-        "finish_date": "2026-07-31",
-        "dept": "dept-a1",
+        "sfwg": "0",
+        "wcl": "50",
+        "wts": "3",
     },
     {
-        "dh": "PLAN-2",
-        "jhdh": "JH-2",
-        "khddh": "KHDD-2",
-        "huohao": "HH001",
-        "huohaoname": "模拟款A",
-        "khname": "客户乙",
-        "zsl": "50",
-        "ddsl": "50",
-        "zhdate": "2026-09-01",
-        "finish_date": "2026-09-30",
-        "dept": "dept-a2",
+        "dh": "DH-2",
+        "chuanghao": "2",
+        "rq": "2026-07-05",
+        "huohao": "HH002",
+        "bbreed": "HH002",
+        "description": "模拟款B",
+        "zbs": "2",
+        "zsl": "40",
+        "sfwg": "1",
+        "wcl": "100",
+        "wts": "5",
     },
 )
 
-_SCLZD_ROWS: tuple[dict[str, Any], ...] = (
-    {"id": "1001", "dh": "ZD-1", "dddh": "JH-1", "huohao": "HH001", "sssl": "13"},
-    {"id": "1002", "dh": "ZD-2", "dddh": "JH-2", "huohao": "HH001", "sssl": "3"},
+#: 缝制生产进度详情（ScjdDetailQuery）：一行一个包，``wcs`` 是「总数/完成数」。
+_SCJD_DETAIL_ROWS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "1001",
+        "baohao": "1",
+        "color": "红",
+        "chima": "S",
+        "ganghao": "G1",
+        "fhsl": "30",
+        "wts": "3",
+        "wcs": "90/45",
+        "wcl": "50",
+    },
+    {
+        "id": "1002",
+        "baohao": "2",
+        "color": "蓝",
+        "chima": "M",
+        "ganghao": "G2",
+        "fhsl": "10",
+        "wts": "3",
+        "wcs": "30/30",
+        "wcl": "100",
+    },
 )
 
-_PROGRESS_ROWS: dict[str, tuple[dict[str, Any], ...]] = {
-    "1001": (
-        {"userid": "1001", "worktype": "WT01", "name": "平车", "uid": "01001", "wsort": 1},
-        {"userid": "1001", "worktype": "WT02", "name": "手工钉扣", "uid": "", "wsort": 2},
-        {"userid": "1001", "worktype": "WT03", "name": "吊挂平车", "uid": "01001", "wsort": 3},
-    ),
-    "1002": (
-        {"userid": "1002", "worktype": "WT01", "name": "平车", "uid": "01002", "wsort": 1},
-        {"userid": "1002", "worktype": "WT02", "name": "手工钉扣", "uid": "", "wsort": 2},
-        {"userid": "1002", "worktype": "WT03", "name": "吊挂平车", "uid": "", "wsort": 3},
-    ),
-}
+#: 缝制工序进度（ScjdGxQuery）：只有已刷卡的工序，``uid`` 非空即视为该道已完成。
+_SCJD_GX_ROWS: tuple[dict[str, Any], ...] = (
+    {
+        "userid": "1001",
+        "worktype": "WT01",
+        "name": "平车",
+        "uid": "01001",
+        "uname": "模拟员工甲",
+        "dept": "dept-a1",
+        "inputtime": "2026-07-02 08:00",
+        "fhsl": "30",
+        "zpsl": "30",
+        "wsort": 1,
+    },
+    {
+        "userid": "1001",
+        "worktype": "WT02",
+        "name": "手工钉扣",
+        "uid": "",
+        "uname": "",
+        "dept": "dept-a1",
+        "inputtime": "",
+        "fhsl": "30",
+        "zpsl": "0",
+        "wsort": 2,
+    },
+)
 
-_WSK_ROWS: tuple[dict[str, Any], ...] = (
-    {"id": "1001", "huohao": "HH001", "worktype": "WT02", "sl": "93"},
+#: 生产查询-已扫描（YskQuery，产量主源）：``huohao`` 是款号，``sl`` 是报工产量。
+_YSK_ROWS: tuple[dict[str, Any], ...] = (
+    {
+        "inputtime": "2026-07-02 08:00",
+        "uname": "模拟员工甲",
+        "uid": "01001",
+        "dept": "dept-a1",
+        "id": "1001",
+        "chuanghao": "1",
+        "baohao": "1",
+        "huohao": "HH001",
+        "worktype": "裁剪",
+        "fhsl": "9",
+        "sl": "9",
+        "je": "9",
+    },
+    {
+        "inputtime": "2026-07-03 08:00",
+        "uname": "模拟员工乙",
+        "uid": "01002",
+        "dept": "dept-a2",
+        "id": "1002",
+        "chuanghao": "2",
+        "baohao": "1",
+        "huohao": "HH002",
+        "worktype": "裁剪",
+        "fhsl": "3",
+        "sl": "3",
+        "je": "3",
+    },
+)
+
+#: 生产制单（SclzdGridPageList）：产量挂订单的唯一桥（``Ysk.id`` → ``dh``）。
+_SCLZD_ROWS: tuple[dict[str, Any], ...] = (
+    {"id": "1001", "dh": "DH-1", "huohao": "HH001", "description": "模拟款A", "fhsl": "30"},
+    {"id": "1002", "dh": "DH-2", "huohao": "HH002", "description": "模拟款B", "fhsl": "10"},
 )
 
 _DEPT_ROWS: tuple[dict[str, Any], ...] = (
@@ -81,12 +153,10 @@ _DEPT_ROWS: tuple[dict[str, Any], ...] = (
 
 
 class FakeMultiRowExecutor:
-    """Serves the golden rows per operation; WorktypeProgressQuery fans out by
-    the bound userid parameter."""
+    """Serves the golden rows per operation for the reviewed progress/output recipes."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, str]]] = []
-        self.max_userid_calls: int | None = None
 
     async def execute_full_step(
         self,
@@ -99,23 +169,16 @@ class FakeMultiRowExecutor:
         self.calls.append((request.operation_id, params))
         operation = request.operation_id
         rows: tuple[dict[str, Any], ...]
-        if operation == "PlanGridPageList":
-            rows = _PLAN_ROWS
+        if operation == "ScjdQuery":
+            rows = _SCJD_ROWS
+        elif operation == "ScjdDetailQuery":
+            rows = _SCJD_DETAIL_ROWS
+        elif operation == "ScjdGxQuery":
+            rows = _SCJD_GX_ROWS
+        elif operation == "YskQuery":
+            rows = _YSK_ROWS
         elif operation == "SclzdGridPageList":
             rows = _SCLZD_ROWS
-        elif operation == "WorktypeProgressQuery":
-            userid = params.get("userid")
-            rows = _PROGRESS_ROWS.get(userid or "", ())
-        elif operation == "WskQuery":
-            rows = _WSK_ROWS
-        elif operation == "BarcodeClQuery":
-            rows = (
-                {"dept": "dept-a1", "uid": "01001", "sssl": "4"},
-                {"dept": "dept-a1", "uid": "01001", "sssl": "5"},
-                {"dept": "dept-a2", "uid": "01002", "sssl": "3"},
-            )
-        elif operation == "HuohaoWtCLQuery":
-            rows = ({"huohao": "HH001", "worktype": "WT01", "sssl": "12"},)
         elif operation == "DeptQuery":
             rows = _DEPT_ROWS
         elif operation == "GongziMxQuery":
@@ -181,7 +244,9 @@ def _runner(executor: FakeMultiRowExecutor) -> KernelCapabilityRunner:
 
 
 @pytest.mark.asyncio
-async def test_fr005_progress_fans_out_over_materials() -> None:
+async def test_fr005_order_progress_reads_the_flowcard_list_in_one_call() -> None:
+    """进度列表 = ScjdQuery 单次分页；不再逐单 fan-out 工序进度."""
+
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
@@ -191,40 +256,72 @@ async def test_fr005_progress_fans_out_over_materials() -> None:
             time_range=_range(),
         )
     )
-    # Fan-out called WorktypeProgressQuery once per material id.
-    progress_calls = [p for op, p in executor.calls if op == "WorktypeProgressQuery"]
-    assert sorted(p["userid"] for p in progress_calls) == ["1001", "1002"]
-    assert result.api_call_count == 5  # plan + sclzd + 2x progress + wsk
+    # One paginated flow-card fetch; no per-order follow-up call.
+    assert [op for op, _ in executor.calls] == ["ScjdQuery"]
 
     rows = {row[0]: row for row in result.rows}
-    assert rows["PLAN-1"][4] == "0.6666666666666666"  # 2/3 done
-    assert rows["PLAN-1"][5] is None  # all done -> no current worktype
-    assert rows["PLAN-2"][4] == "0.3333333333333333"  # 1/3 done
-    assert rows["PLAN-2"][5] == "手工钉扣"
+    # Columns: order_code, style_code, product_name, bed_code, cut_date,
+    # order_count, package_count, cut_qty, finished_packages, progress_ratio,
+    # worktype_count, finish_state.
+    assert rows["DH-1"][1] == "HH001"
+    assert rows["DH-1"][5] == Decimal("1")  # 订单数
+    assert rows["DH-1"][6] == Decimal("4")  # 包数 zbs
+    assert rows["DH-1"][7] == Decimal("100")  # 裁剪数量 zsl
+    assert rows["DH-1"][8] == Decimal("2")  # round(50/100 x 4) 完工包数
+    assert rows["DH-1"][9] == Decimal("50")  # 包完工率 wcl，原值即进度
+    assert rows["DH-1"][10] == Decimal("3")  # 工序数 wts
+    assert rows["DH-1"][11] == "未完工"
+
+    assert rows["DH-2"][9] == Decimal("100")
+    assert rows["DH-2"][11] == "已完工"
     assert result.incomplete is False
 
 
 @pytest.mark.asyncio
-async def test_fr005_binds_order_filter_into_local_compute() -> None:
+async def test_fr005_binds_order_and_style_filters_into_local_compute() -> None:
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
-    result = await runner.run(
+    by_order = await runner.run(
         CapabilityRunRequest(
             capability_id=CapabilityId("fr005_order_progress"),
             filters=NarrowedFilters(
                 tenant_id=TenantId("APPKEY-A"),
                 employee_ids=None,
                 dept_ids=None,
-                order_codes=frozenset({"PLAN-1"}),
+                order_codes=frozenset({"DH-1"}),
             ),
             time_range=_range(),
         )
     )
-    assert [row[0] for row in result.rows] == ["PLAN-1"]
+    assert [row[0] for row in by_order.rows] == ["DH-1"]
+
+    # 只给款号时合并到款号粒度：一行一款号，进度按包数加权。
+    by_style = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr005_order_progress"),
+            filters=NarrowedFilters(
+                tenant_id=TenantId("APPKEY-A"),
+                employee_ids=None,
+                dept_ids=None,
+                style_codes=frozenset({"HH001"}),
+            ),
+            time_range=_range(),
+        )
+    )
+    assert len(by_style.rows) == 1
+    row = by_style.rows[0]
+    assert row[0] is None  # 款号视图没有单一订单号
+    assert row[1] == "HH001"
+    assert row[5] == Decimal("1")  # 该款号下 1 个订单
+    assert row[6] == Decimal("4")  # Σ包数
+    assert row[8] == Decimal("2")  # Σ完工包数
+    assert row[9] == Decimal("50")  # 2/4 加权后的包完工率
 
 
 @pytest.mark.asyncio
-async def test_fr009_delivery_warning_uses_today_and_threshold() -> None:
+async def test_fr009_order_overview_shares_the_progress_column_set() -> None:
+    """全厂总览与订单进度用同一套列定义，且不再有交期族列."""
+
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
@@ -234,30 +331,107 @@ async def test_fr009_delivery_warning_uses_today_and_threshold() -> None:
             time_range=_range(),
         )
     )
-    rows = {row[0]: row for row in result.rows}
-    # Columns: order_code, huohao, customer_name, plan_qty, completed_qty,
-    # progress_ratio, delivery_warning, days_remaining.
-    # PLAN-1: finish 2026-07-31 already passed (today 2026-08-21), unfinished
-    # (13 < 100) -> warning '1', days_remaining negative.
-    assert rows["PLAN-1"][6] == "1"
-    assert int(str(rows["PLAN-1"][7])) < 0
-    # PLAN-2: finish 2026-09-30 is 40 days away, beyond the 3-day threshold
-    # (总工期 29 天 -> max(1, ceil(2.9)) = 3) -> no warning.
-    assert rows["PLAN-2"][6] == "0"
-    assert int(str(rows["PLAN-2"][7])) == 40
+    assert result.column_names == (
+        "order_code",
+        "style_code",
+        "product_name",
+        "bed_code",
+        "cut_date",
+        "order_count",
+        "package_count",
+        "cut_qty",
+        "finished_packages",
+        "progress_ratio",
+        "worktype_count",
+        "finish_state",
+    )
+    assert {row[0] for row in result.rows} == {"DH-1", "DH-2"}
+    assert result.incomplete is False
 
 
 @pytest.mark.asyncio
-async def test_fr009_fanout_call_budget_exhausted_is_structured() -> None:
+async def test_fr005_package_detail_exposes_piece_worktype_units() -> None:
+    """包级「总数/完成数」是件·工序口径，且物料编号可再下钻."""
+
     executor = FakeMultiRowExecutor()
-    runner = KernelCapabilityRunner(
-        executor,
-        load_recipes(load_catalog().operation_ids),
-        default_metric_registry(),
-        settings=KernelSettings(max_api_calls=2),
-        clock=lambda: datetime(2026, 8, 21, 8, tzinfo=UTC),
-        resource_columns=_resource_columns(),
+    runner = _runner(executor)
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr005_order_package_detail"),
+            filters=NarrowedFilters(
+                tenant_id=TenantId("APPKEY-A"),
+                employee_ids=None,
+                dept_ids=None,
+                order_codes=frozenset({"DH-1"}),
+            ),
+            time_range=_range(),
+        )
     )
+    assert [op for op, _ in executor.calls] == ["ScjdDetailQuery"]
+    # Columns: material_id, package_no, color, size, batch_no, cut_qty,
+    # worktype_count, total_units, done_units, progress_ratio.
+    first = result.rows[0]
+    assert first[0] == "1001"
+    assert first[5] == Decimal("30")  # fhsl
+    assert first[7] == Decimal("90")  # wcs 前段 = 30 x 3
+    assert first[8] == Decimal("45")  # wcs 后段
+    assert first[9] == Decimal("50")  # wcl
+
+
+@pytest.mark.asyncio
+async def test_fr005_worktype_detail_lists_scanned_worktypes_only() -> None:
+    """工序明细只列已刷卡工序，部门名由 DeptQuery 关联得到."""
+
+    executor = FakeMultiRowExecutor()
+    runner = _runner(executor)
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr005_order_worktype_detail"),
+            filters=NarrowedFilters(
+                tenant_id=TenantId("APPKEY-A"),
+                employee_ids=None,
+                dept_ids=None,
+                material_ids=frozenset({"1001"}),
+            ),
+            time_range=_range(),
+        )
+    )
+    assert [op for op, _ in executor.calls] == ["ScjdGxQuery", "DeptQuery"]
+    # Columns: worktype, worktype_order, is_done, issued_qty, done_qty,
+    # operator, dept_name, input_time.
+    assert [row[0] for row in result.rows] == ["平车", "手工钉扣"]
+    assert result.rows[0][2] == "是"
+    assert result.rows[1][2] == "否"
+    assert result.rows[0][4] == Decimal("30")  # zpsl
+    assert result.rows[0][6] == "一车间"  # dept dept-a1 -> DeptQuery.name
+    assert result.rows[1][5] is None  # 未刷卡 -> 无操作人
+
+
+@pytest.mark.asyncio
+async def test_fr009_empty_window_yields_no_rows_and_no_fabrication() -> None:
+    """空窗口是正常的空结果：不返回行，也不编造一个 0。
+
+    调用预算（``KernelSettings.max_api_calls``）只约束 fan-out 步；进度族现在是
+    单次列表拉取，因此不再有「预算耗尽」的运行时分支——fan-out 覆盖由
+    ``test_kernel_fanout_concurrency.py`` 的探针 recipe 守护。
+    """
+
+    class VoidFlowcardExecutor(FakeMultiRowExecutor):
+        async def execute_full_step(
+            self,
+            filters: Any,
+            request: ExecutionRequest,
+            active_scope: Any | None = None,
+            extra_params: dict[str, str] | None = None,
+        ) -> ResourceFetchResult:
+            if request.operation_id == "ScjdQuery":
+                return ResourceFetchResult(rows=(), total=0, pages_fetched=1, complete=True)
+            return await super().execute_full_step(
+                filters, request, active_scope=active_scope, extra_params=extra_params
+            )
+
+    executor = VoidFlowcardExecutor()
+    runner = _runner(executor)
     result = await runner.run(
         CapabilityRunRequest(
             capability_id=CapabilityId("fr009_factory_order_overview"),
@@ -265,13 +439,8 @@ async def test_fr009_fanout_call_budget_exhausted_is_structured() -> None:
             time_range=_range(),
         )
     )
-    assert result.incomplete is True
-    assert result.incomplete_reason == "pagination_call_budget_exhausted"
-    # No covered material under a 2-call budget (plan+sclzd already used both):
-    # the compute still runs against an empty progress table and reports
-    # unavailable progress rather than fabricating a number.
-    assert len(result.rows) >= 1
-    assert all(row[5] == UNAVAILABLE_VALUE for row in result.rows)
+    assert result.rows == ()
+    assert result.incomplete is False
 
 
 def _resource_columns() -> dict[str, tuple[str, ...]]:
@@ -286,8 +455,41 @@ def _resource_columns() -> dict[str, tuple[str, ...]]:
     return columns
 
 
+_UNAVAILABLE_METRIC_RECIPE = """
+version: 1
+capabilities:
+  - capability_id: probe_unavailable_metric
+    title: 未确认口径探针
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_depts
+        kind: api
+        operation_id: DeptQuery
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_depts]
+        compute: |
+          SELECT d.name AS dept_name, 'unavailable' AS gap_metric
+          FROM fetch_depts d
+    result_columns:
+      - name: dept_name
+        title: 车间/小组
+        source_step: compute
+      - name: gap_metric
+        title: 未确认口径
+        source_step: compute
+        metric: plan_target_output
+        column_type: percent
+    metric_versions:
+      plan_target_output: unavailable-target-v1
+    degradation: incomplete_marker
+"""
+
+
 @pytest.mark.asyncio
-async def test_unavailable_metric_columns_surface_sentinel_not_number() -> None:
+async def test_fr007_ranks_depts_by_reported_output() -> None:
+    """产量主源换成 YskQuery.sl（Σ 报工产量），且不再有达成率列."""
+
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
     result = await runner.run(
@@ -297,13 +499,143 @@ async def test_unavailable_metric_columns_surface_sentinel_not_number() -> None:
             time_range=_range(),
         )
     )
+    assert result.incomplete is False
+    assert result.column_names == (
+        "rank_position",
+        "dept_name",
+        "output_qty",
+        "participant_count",
+        "per_capita",
+    )
+    # 2 个可见部门 -> 给出名次，按报工产量降序。
+    assert [row[1] for row in result.rows] == ["一车间", "二车间"]
+    assert result.rows[0][0] == "1"
+    assert result.rows[1][0] == "2"
+    assert result.rows[0][2] == Decimal("9")  # Σ Ysk.sl (dept-a1)
+    assert result.rows[1][2] == Decimal("3")  # Σ Ysk.sl (dept-a2)
+    assert result.rows[0][3] == Decimal("1")  # COUNT(DISTINCT uid)
+    assert result.rows[0][4] == Decimal("9")  # 人均产量
+
+
+@pytest.mark.asyncio
+async def test_fr007_single_visible_dept_reports_unavailable_rank() -> None:
+    """可见部门数 = 1 时该列整体不可用，绝不伪造第 1 名."""
+
+    executor = FakeMultiRowExecutor()
+    runner = _runner(executor)
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr007_workshop_output_comparison"),
+            filters=NarrowedFilters(
+                tenant_id=TenantId("APPKEY-A"),
+                employee_ids=None,
+                dept_ids=None,
+                requested_dept_ids=frozenset({DeptId("dept-a1")}),
+            ),
+            time_range=_range(),
+        )
+    )
+    assert len(result.rows) == 1
+    assert result.rows[0][1] == "一车间"
+    assert result.rows[0][0] == UNAVAILABLE_VALUE
+    assert result.rows[0][2] == Decimal("9")
+
+
+@pytest.mark.asyncio
+async def test_fr010_expands_reported_output_by_style() -> None:
+    """单部门/自范围视图：按「车间/小组 × 款号」展开报工产量."""
+
+    executor = FakeMultiRowExecutor()
+    runner = _runner(executor)
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr010_workshop_output_overview"),
+            filters=_filters(),
+            time_range=_range(),
+        )
+    )
+    assert result.column_names == (
+        "dept_name",
+        "style_code",
+        "output_qty",
+        "participant_count",
+        "per_capita",
+    )
+    assert [op for op, _ in executor.calls] == ["YskQuery", "DeptQuery"]
+    assert [(row[0], row[1]) for row in result.rows] == [
+        ("一车间", "HH001"),
+        ("二车间", "HH002"),
+    ]
+    # 车间维度没有裁剪/计划数量来源，列定义里不得出现。
+    assert "plan_qty" not in result.column_names
+    assert "completed_qty" not in result.column_names
+
+
+@pytest.mark.asyncio
+async def test_fr006_output_attaches_orders_through_the_material_bridge() -> None:
+    """产量明细按「订单×款号×工序」展开，订单号经 Sclzd.id -> dh 关联."""
+
+    executor = FakeMultiRowExecutor()
+    runner = _runner(executor)
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr006_order_output"),
+            filters=_filters(),
+            time_range=_range(),
+        )
+    )
+    assert [op for op, _ in executor.calls] == ["YskQuery", "SclzdGridPageList", "ScjdQuery"]
+    assert result.column_names == (
+        "order_code",
+        "style_code",
+        "product_name",
+        "worktype",
+        "output_qty",
+        "participant_count",
+        "output_amount",
+        "output_share",
+    )
+    # 按报工产量降序：DH-1 的 9 件在前。
+    first = result.rows[0]
+    assert first[0] == "DH-1"
+    assert first[1] == "HH001"
+    assert first[2] == "模拟款A"
+    assert first[4] == Decimal("9")
+    assert first[6] == Decimal("9")  # je 合计
+    # 工序占比 = 该工序报工产量 ÷ 该单裁剪数量（ScjdQuery.zsl = 100）。
+    # percent 列一旦带条件 unavailable 分支，整列就是 VARCHAR，数值以字符串返回
+    # （与 fr007 名次列同法），由卡片层归一化展示。
+    assert Decimal(str(first[7])) == Decimal("9")
+    assert Decimal(str(result.rows[1][7])) == Decimal("7.5")
+
+
+@pytest.mark.asyncio
+async def test_unavailable_metric_columns_surface_sentinel_not_number(tmp_path: Path) -> None:
+    """未确认口径的指标列一律渲染 unavailable 哨兵，绝不伪造数字.
+
+    No shipped capability references such a metric any more, so a probe recipe
+    keeps the kernel's fail-closed branch under test.
+    """
+    (tmp_path / "probe.yaml").write_text(_UNAVAILABLE_METRIC_RECIPE, encoding="utf-8")
+    executor = FakeMultiRowExecutor()
+    runner = KernelCapabilityRunner(
+        executor,
+        load_recipes(load_catalog().operation_ids, tmp_path),
+        default_metric_registry(),
+        clock=lambda: datetime(2026, 8, 21, 8, tzinfo=UTC),
+        resource_columns=_resource_columns(),
+    )
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("probe_unavailable_metric"),
+            filters=_filters(),
+            time_range=_range(),
+        )
+    )
     assert result.incomplete is True
-    # achievement_rate (C.9) is the sentinel in every row, never a number.
-    for row in result.rows:
-        assert row[5] == UNAVAILABLE_VALUE
-    # per_capita and rank are real numbers.
-    assert result.rows[0][1] == Decimal("9")  # dept-a1 total
-    assert result.rows[0][4] == Decimal("1")  # rank
+    assert result.incomplete_reason == "metric_unavailable:plan_target_output"
+    assert result.rows
+    assert all(row[1] == UNAVAILABLE_VALUE for row in result.rows)
 
 
 @pytest.mark.asyncio
@@ -396,10 +728,10 @@ async def test_fr012_target_employee_recipe_runs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fr005_zero_total_worktype_degrades_to_unavailable() -> None:
-    """A material with no worktype-progress rows must not fabricate a ratio."""
+async def test_fr005_zero_package_count_reports_zero_not_unavailable() -> None:
+    """包数为 0 的流程卡不得除零，也不得伪造一个完成率."""
 
-    class NoWorktypesExecutor(FakeMultiRowExecutor):
+    class ZeroPackagesExecutor(FakeMultiRowExecutor):
         async def execute_full_step(
             self,
             filters: Any,
@@ -407,55 +739,50 @@ async def test_fr005_zero_total_worktype_degrades_to_unavailable() -> None:
             active_scope: Any | None = None,
             extra_params: dict[str, str] | None = None,
         ) -> ResourceFetchResult:
-            if request.operation_id == "PlanGridPageList":
+            if request.operation_id == "ScjdQuery":
                 return ResourceFetchResult(
                     rows=(
                         {
-                            "dh": "PLAN-3",
-                            "jhdh": "JH-3",
-                            "khddh": "KHDD-3",
-                            "huohao": "HH002",
-                            "huohaoname": "模拟款B",
-                            "zsl": "10",
-                            "finish_date": "2026-09-30",
-                            "dept": "dept-a1",
+                            "dh": "DH-9",
+                            "chuanghao": "9",
+                            "rq": "2026-07-09",
+                            "huohao": "HH009",
+                            "bbreed": "HH009",
+                            "description": "模拟款C",
+                            "zbs": "0",
+                            "zsl": "0",
+                            "sfwg": "0",
+                            "wcl": "",
+                            "wts": "0",
                         },
                     ),
                     total=1,
                     pages_fetched=1,
                     complete=True,
                 )
-            if request.operation_id == "SclzdGridPageList":
-                return ResourceFetchResult(
-                    rows=(
-                        {
-                            "id": "1003",
-                            "dh": "ZD-3",
-                            "dddh": "JH-3",
-                            "huohao": "HH002",
-                            "sssl": "7",
-                        },
-                    ),
-                    total=1,
-                    pages_fetched=1,
-                    complete=True,
-                )
-            if request.operation_id == "WorktypeProgressQuery":
-                return ResourceFetchResult(rows=(), total=0, pages_fetched=1, complete=True)
             return await super().execute_full_step(
                 filters, request, active_scope=active_scope, extra_params=extra_params
             )
 
-    executor = NoWorktypesExecutor()
+    executor = ZeroPackagesExecutor()
     runner = _runner(executor)
     result = await runner.run(
         CapabilityRunRequest(
             capability_id=CapabilityId("fr005_order_progress"),
-            filters=_filters(),
+            filters=NarrowedFilters(
+                tenant_id=TenantId("APPKEY-A"),
+                employee_ids=None,
+                dept_ids=None,
+                style_codes=frozenset({"HH009"}),
+            ),
             time_range=_range(),
         )
     )
-    # No scanned worktype -> progress_ratio is unavailable, current worktype None.
+    # 款号粒度合并的分母是 Σ包数；Σ包数 = 0 时进度回落 0，既不除零也不报 unavailable。
     assert len(result.rows) == 1
-    assert result.rows[0][4] == UNAVAILABLE_VALUE
-    assert result.rows[0][5] is None
+    row = result.rows[0]
+    assert row[1] == "HH009"
+    assert row[6] == Decimal("0")  # 包数
+    assert row[8] == Decimal("0")  # 完工包数
+    assert row[9] == Decimal("0")  # 进度
+    assert row[11] == "未完工"

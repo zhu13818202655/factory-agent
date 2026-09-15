@@ -57,8 +57,9 @@ class RowSemantic(StrEnum):
     dept dimension of that fetch is judged."""
 
     MANAGEMENT_OVERVIEW = "management_overview"
-    """Dept/order/workshop aggregates for 01/02 (FR-005/006/007). No employee
-    dimension is judged; dept values must stay inside the bound dept set."""
+    """Dept/order/workshop aggregates for a bound department or group
+    (FR-005/006/007/010). No employee dimension is judged; when the rule asks
+    for it, the returned dept values must stay inside the bound dept set."""
 
     TEAM_LIST = "team_list"
     """Rows are employees with uid+dept inside the bound group/dept (FR-008).
@@ -66,7 +67,7 @@ class RowSemantic(StrEnum):
     be proven locally and is never judged."""
 
     OWNER_OVERVIEW = "owner_overview"
-    """Whole-factory aggregates for the 99 老板 role (FR-009/010/011/012).
+    """Whole-factory aggregates for the 99 老板 role (FR-009/011/012).
     No range ceiling applies; a single total row is a business fact."""
 
 
@@ -110,7 +111,7 @@ ROW_SEMANTICS: dict[Capability, SemanticRule] = {
         output_dept_column="dept",
     ),
     Capability.FACTORY_ORDER_OVERVIEW: SemanticRule(RowSemantic.OWNER_OVERVIEW),
-    Capability.WORKSHOP_OUTPUT_OVERVIEW: SemanticRule(RowSemantic.OWNER_OVERVIEW),
+    Capability.WORKSHOP_OUTPUT_OVERVIEW: SemanticRule(RowSemantic.MANAGEMENT_OVERVIEW),
     Capability.FACTORY_PAYROLL_STATS: SemanticRule(RowSemantic.OWNER_OVERVIEW),
     Capability.ANY_EMPLOYEE_PAYROLL: SemanticRule(RowSemantic.OWNER_OVERVIEW, single_subject=True),
 }

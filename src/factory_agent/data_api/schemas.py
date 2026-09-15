@@ -376,6 +376,66 @@ class SclzdWorktypeRow(_CustomerRow):
     sctypename: str
 
 
+class ScjdRow(_CustomerRow):
+    """缝制生产进度 ``ScjdQuery``：一行一个流程卡 ``dh``。
+
+    实测响应外壳是 ``result.main[]`` + ``result.detail``（另有 ``total``），
+    与通用 ``result.list`` 外壳不同，因此 ``apis.yaml`` 用 ``list_key: main``。
+    字段陷阱：本接口的 ``huohao`` 是**货号**，款号在 ``bbreed``；``wcl`` 是
+    **包完工率**（= 完工包数 ÷ ``zbs``），即进度主列口径。
+    """
+
+    dh: str
+    chuanghao: str
+    rq: str
+    huohao: str
+    bbreed: str
+    description: str
+    zbs: str
+    zsl: str
+    sfwg: str
+    wcl: str
+    wts: str
+    # 未消费字段：声明默认值使其缺省只记一次 warning 而不阻塞交互（上游可随时增删）。
+    zdr: str = ""
+    dddh: str = ""
+    img: str = ""
+    colors: str = ""
+    ganghaos: str = ""
+    chimas: str = ""
+
+
+class ScjdDetailRow(_CustomerRow):
+    """缝制生产进度详情 ``ScjdDetailQuery``：一行一个包（物料编号 ``id``）。"""
+
+    id: str
+    baohao: str
+    color: str
+    chima: str
+    ganghao: str
+    fhsl: str
+    wts: str
+    #: 字符串 ``"总数/完成数"``；总数是**件·工序**口径（实测 = ``fhsl × wts``），
+    #: 不是件数，展示时必须带口径注记。
+    wcs: str
+    wcl: str
+
+
+class ScjdFzHzRow(_CustomerRow):
+    """缝制总进度 ``ScjdFzHzQuery``：一行一个「计划号+货号+床号+日期」。"""
+
+    dddh: str
+    huohao: str
+    huohaoname: str
+    description: str
+    chuanghao: str
+    rq: str
+    fzzsl: str
+    wgzsl: str
+    #: 数量口径完工率 = ``floor(wgzsl / fzzsl × 100)``（整数截断）。
+    wgl: str
+
+
 class BarcodeClRow(_CustomerRow):
     inputtime: str
     uid: str
@@ -609,6 +669,12 @@ ROW_MODEL_BY_RESOURCE: dict[str, type[_CustomerRow]] = {
     "huohao_wt_cl": HuohaoWtCLRow,
     "pin_feng": PinFengRow,
     "worktype_progress": WorktypeProgressRow,
+    # 「缝制工序进度」与「工序进度查询」逐字段一致（同一契约的两种入口，差别只是
+    # ScjdGxQuery 不带 page/size），共用行模型。
+    "scjd_gx": WorktypeProgressRow,
+    "scjd": ScjdRow,
+    "scjd_detail": ScjdDetailRow,
+    "scjd_fz_hz": ScjdFzHzRow,
     "ysk": YskRow,
     "wsk": WskRow,
     "gongzi_mx": GongziMxRow,

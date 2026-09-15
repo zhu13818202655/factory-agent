@@ -50,13 +50,13 @@ class FactoryAgentSettings(BaseSettings):
     mes_token_refresh_threshold_seconds: int = Field(default=300, ge=60)
 
     # MES resource pagination (BoundedPager). The first page probes with
-    # ``mes_page_size``; when total would need more than 5 pages the pager
-    # resizes once toward ``mes_page_size_max`` and re-walks, so a month of
-    # barcode rows (~3e4) completes in a handful of pages. The real upper
-    # bound the customer interface honors is unverified: if it caps ``size``
-    # below the escalated value, pages come back short and the run surfaces
-    # as incomplete instead of silently truncating.
-    mes_page_size: int = Field(default=2000, ge=1)
+    # ``mes_page_size``; if that probe shows the window needs more than one
+    # page the pager resizes once to ``mes_page_size_max`` and re-walks, so a
+    # month of scan rows (~3e4) completes in one or two requests. The real
+    # upper bound the customer interface honors is unverified: if it caps
+    # ``size`` below the escalated value, pages come back short and the run
+    # surfaces as incomplete instead of silently truncating.
+    mes_page_size: int = Field(default=20000, ge=1)
     mes_page_size_max: int = Field(default=50000, ge=1)
     mes_max_pages: int = Field(default=20, ge=1)
     mes_max_rows: int = Field(default=250000, ge=1)

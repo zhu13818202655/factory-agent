@@ -14,7 +14,11 @@ Matrix (customer-confirmed):
   answers for the 00 员工 role with a business-level ``code=-403``
   （无权限查看工资排名）, so an employee cannot learn his group rank.
 - FR-005..FR-008 management capabilities: 01 组长 / 02 管理, and 99 老板.
-- FR-009..FR-012 factory-wide capabilities: 99 老板 only.
+- FR-009 factory-wide order progress: 99 老板 only.
+- FR-010 车间产量总览: 01 组长 / 02 管理, and 99 老板. The customer MES narrows the
+  returned rows to the caller's own or managed departments, so one capability
+  serves the whole factory for the owner and the bound department for 01/02.
+- FR-011..FR-012 factory-wide payroll capabilities: 99 老板 only.
 
 The owner holds every capability a narrower role holds: his data range is a
 superset, so a wider role must never lose a narrower role's capability.
@@ -71,7 +75,7 @@ CAPABILITY_ROLES: dict[Capability, frozenset[Role]] = {
     Capability.WORKSHOP_COMPARISON: _MANAGEMENT_AND_OWNER_ROLES,
     Capability.TEAM_PAYROLL_LIST: _MANAGEMENT_AND_OWNER_ROLES,
     Capability.FACTORY_ORDER_OVERVIEW: _OWNER_ROLES,
-    Capability.WORKSHOP_OUTPUT_OVERVIEW: _OWNER_ROLES,
+    Capability.WORKSHOP_OUTPUT_OVERVIEW: _MANAGEMENT_AND_OWNER_ROLES,
     Capability.FACTORY_PAYROLL_STATS: _OWNER_ROLES,
     Capability.ANY_EMPLOYEE_PAYROLL: _OWNER_ROLES,
 }

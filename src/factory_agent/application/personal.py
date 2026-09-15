@@ -165,7 +165,7 @@ _QUICK_QUESTIONS: tuple[tuple[Role, QuickQuestion], ...] = (
         QuickQuestion(
             "qq-owner-workshop-output",
             "FR-010",
-            "整个车间这个月产量情况",
+            "全厂各车间这个月产量情况",
             {"time_expression": "本月"},
         ),
     ),

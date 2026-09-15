@@ -181,6 +181,7 @@ def build_container(
             refresher=GatewayTokenRefresher(credential_exchange),
             settings=AdapterSettings(
                 refresh_threshold_seconds=settings.mes_token_refresh_threshold_seconds,
+                factory_timezone=settings.factory_timezone,
             ),
             pager_budget=PagerBudget(
                 page_size=settings.mes_page_size,
@@ -481,6 +482,7 @@ def _build_session_service(
         personalization=personalization,
         credential_binder=credential_exchange,
         time_range_max_days=settings.time_range_max_days,
+        factory_timezone=settings.factory_timezone,
         validator=ConsistencyValidator(),
         violations=_build_scope_violation_store(settings),
         audit=audit,

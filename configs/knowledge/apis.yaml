@@ -179,10 +179,16 @@ operations:
     related_keys: [dept]
 
   # ------------------------------------------------------ 生产计划与制单 (4)
+  # 已弃用（2026-09-15 口径重梳，见 docs/design/进度与产量功能重梳方案.md）：
+  # 订单数量改取「缝制生产进度」ScjdQuery.zsl，进度改取 ScjdQuery.wcl。
+  # 保留登记条目并置 enabled: false（加载器允许存在、运行时拒绝调用）：条目仍在
+  # mes_operation_category 种子与 usage-admin 分类映射里，删条目会牵动两处计数。
+  # Plan 的 khname / khid / dddh / finish_date 实测全空，客户/交期族列已整族删除。
   - operation_id: PlanGridPageList
     path: /api/NetYf/Plan/GridPageList
     kind: resource
     resource: plan
+    enabled: false
     required_params: [dates, datee]
     parameter_sources:
       app_key: credential
@@ -249,6 +255,95 @@ operations:
     timeout_seconds: 10.0
     sensitive_fields: []
     related_keys: [dh, id, uid]
+
+  # ------------------------------------------------------------ 缝制进度 (4)
+  # 进度能力的唯一取数族（口径见 docs/design/进度与产量功能重梳方案.md §1.1/§3）。
+  # 登记范围 = 该节的「3 必需 + 1 可选」；「缝制详细进度」ScjdFzMxQuery 与
+  # 「缝制工序总体进度」ScjdFzHzWorktypeQuery 暂不登记：本厂无实测响应样本，且客户
+  # 示例自相矛盾（sksl+wsksl 恒为 220 而 sssl 为 214/214/220），抽样确认后再登记。
+  # 进度族统一 usage_category: order（进度 = 订单维度；产量族才是 output）。
+  - operation_id: ScjdQuery
+    path: /api/NetYf/Sclzd/ScjdQuery
+    kind: resource
+    resource: scjd
+    required_params: [dates, datee]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      page: filter
+      size: filter
+      dates: filter
+      datee: filter
+    pagination: list_total
+    # 实测响应是 result.main[]（流程卡行）+ result.detail（当页汇总）+ result.total，
+    # 不是通用 result.list 外壳；list_key 因此指 main。
+    list_key: main
+    usage_category: order
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [dh, huohao]
+
+  - operation_id: ScjdDetailQuery
+    path: /api/NetYf/Sclzd/ScjdDetailQuery
+    kind: resource
+    resource: scjd_detail
+    # dh 来自 NarrowedFilters.order_codes（单订单场景），由适配层下推；与
+    # HuohaoWtCLQuery.huohao 的服务端下推同法，业务值绝不来自模型文本。
+    required_params: [dates, datee, dh]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      page: filter
+      size: filter
+      dates: filter
+      datee: filter
+      dh: filter
+    pagination: list_total
+    usage_category: order
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [dh, id]
+
+  - operation_id: ScjdGxQuery
+    path: /api/NetYf/Sclzd/ScjdGxQuery
+    kind: resource
+    resource: scjd_gx
+    # 客户契约无 page/size（一次返回该包全部已刷卡工序），也无 dates/datee；
+    # 这两个参数未登记即被 _build_body 丢弃，不会误发。userid = 物料编号，
+    # 来自 NarrowedFilters.material_ids（包级下钻到工序级）。
+    required_params: [userid]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      userid: filter
+      uid: scope
+    pagination: none
+    usage_category: order
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [userid, uid, worktype]
+
+  - operation_id: ScjdFzHzQuery
+    path: /api/NetYf/Sclzd/ScjdFzHzQuery
+    kind: resource
+    resource: scjd_fz_hz
+    required_params: [dates, datee]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      page: filter
+      size: filter
+      dates: filter
+      datee: filter
+    pagination: list_total
+    usage_category: order
+    timeout_seconds: 10.0
+    sensitive_fields: []
+    related_keys: [huohao, chuanghao]
 
   # -------------------------------------------------------- 产量与进度 (6)
   - operation_id: BarcodeClQuery

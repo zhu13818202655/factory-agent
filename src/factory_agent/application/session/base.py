@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
+from zoneinfo import ZoneInfo
 
 from factory_agent.application.authorization import AuthorizationService
 from factory_agent.application.business_filters import BusinessFilterResolver
@@ -81,6 +82,7 @@ class SessionCore:
         personalization: PersonalizationService | None = None,
         credential_binder: CredentialBinder | None = None,
         time_range_max_days: int = DEFAULT_TIME_RANGE_MAX_DAYS,
+        factory_timezone: str = "Asia/Shanghai",
         validator: ConsistencyValidator | None = None,
         violations: ScopeViolationStore | None = None,
         audit: AuditSink | None = None,
@@ -107,6 +109,9 @@ class SessionCore:
         self._scope_guard = scope_guard
         self._credential_binder = credential_binder
         self._time_range_max_days = time_range_max_days
+        #: Factory-local zone for time-window labels; canonical windows are
+        #: stored in UTC and must not be shown with UTC ``.date()`` values.
+        self._factory_zone = ZoneInfo(factory_timezone)
         #: Role-consistency safety net: runs post-fetch, pre-compose.
         self._validator = validator
         self._violations = violations

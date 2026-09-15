@@ -8,22 +8,27 @@
 #                          unavailable 列状态，禁止渲染为数字。
 # 2026-09-02 客户答复后完成口径关闭：角色枚举、在册人数、Flag 默认、
 # GongziMxQuery Uid 规则、基础数据接口不过滤、交期预警规则均已确认并登记。
-version: 2
+# 2026-09-15 进度与产量重梳（拍板）：产量主源 = YskQuery；进度主列 = ScjdQuery.wcl（包完工率）；
+# 生产计划接口（PlanGridPageList）整族弃用 ⇒ 计划数量 / 客户名称 / 交期 / 交期预警退出能力。
+# 交期预警随之从 confirmed_metrics 移入 unconfirmed_metrics。详见
+# docs/design/进度与产量功能重梳方案.md（本文是该口径的唯一现行依据）。
+version: 3
 
 common_fields:
   uid: 员工工号
   uname: 姓名
   dept: 部门（车间）编号
-  deptname: 部门（车间）名称
-  huohao: 货号编号
-  bbreed: 货号名称
+  deptname: 部门（车间）名称（仅部分接口返回；`YskQuery` 只有 `dept`，名称需关联 `DeptQuery`）
+  huohao: "货号编号 —— 同形不同义，见 field_contexts（Ysk/Wsk/HuohaoWtCL/ScjdGx 里是款号）"
+  bbreed: "款号（制单与缝制生产进度里的款号字段）"
   description: 品名
   spname: 品名（计划）
   name_pk: 简拼
   sctype: 生产类型编码
   sctypename: 生产类型名称
-  worktype: 工序编号
+  worktype: "工序编号 —— 同形不同义，见 field_contexts（Ysk/HuohaoWtCL 里是工序名称）"
   wtname: 工序名称
+  name: 工序名称（缝制工序进度）
   color: 颜色
   chima: 尺码
   chuanghao: 床号
@@ -37,7 +42,7 @@ common_fields:
   price: 工价/单价
   je: 金额（je = sl × price）
   cp: 次品数（仅手工账接口提供，无统一数据源）
-  dh: 单号（计划）
+  dh: 单号（制单/缝制流程卡；制单语境下同号因「床号×包号」展开而多行）
   jhdh: 计划单号（计划）
   dddh: 计划单号（制单/吊挂/手工账）
   ddh: 计划单号（手工账）
@@ -46,15 +51,26 @@ common_fields:
   khid: 客户编号
   khname: 客户
   ddsl: 订单数量（计划）
-  zsl: 总数量（计划）
+  zsl: "同形不同义：计划语境 = 总数量；缝制生产进度语境 = 该单裁剪数量，见 field_contexts"
   paol: 抛量（计划）
-  finish_date: 交货日期（交期）
+  finish_date: 交货日期（交期）—— 生产计划接口弃用后无数据源
   zhdate: 下单/制单日期（订单开始日期，交期预警总工期起点）
   state: 单据状态（1=审核）
   cid: 条码 ID
   sffb: 是否分包
   fbid: 分包 ID
-  zpsl: 正品数量（进度）
+  zpsl: 正品数量（缝制工序进度）
+  fhsl: "同形不同义（预发数量 / 发卡数量），见 quantity_contexts"
+  sl: "同形不同义（产量 / 预发数量），见 quantity_contexts"
+  sssl: "同形不同义（产量），见 quantity_contexts"
+  zbs: 包数（缝制生产进度）
+  wcl: 包完工率（缝制生产进度/详情，0~100 整数）
+  wcs: 总数与完成数的组合字符串（缝制生产进度详情；件·工序口径）
+  wts: 工序道数（缝制生产进度/详情，0 表示未开工）
+  sfwg: 是否完工（缝制生产进度，1=已完工）
+  wsort: 工序排序号（缝制工序进度）
+  userid: 物料编号（缝制工序进度入参，即 `Sclzd.id`）
+  id: 物料编号（制单/已扫描/缝制详情；产量挂订单的唯一可靠键）
   drdg_status: 导入吊挂（制单）
   sfjz: 是否结账（吊挂）
   gxtype: 流转类型（0工序/1仓库/2验布工资专用）
@@ -97,21 +113,52 @@ roles:
   note: 业务接口按角色返回已过滤数据；基础数据接口中「部门字典」/「货号字典」等清单类不按权限过滤（返回全量），但「员工清单」按角色范围过滤（实测 2026-09-13：00 员工 1 人 / 02 管理 2303 人 / 99 老板 2600 人）。
 
 # 同一字段在不同接口语境下的含义；能力实现按此取数，禁止跨语境混用。
+# 三个最容易出错的字段（实测口径见 docs/design/进度与产量功能重梳方案.md §1.3）：
+field_contexts:
+  huohao:
+    ScjdQuery: 货号
+    SclzdGridPageList: 货号
+    BarcodeClQuery: 货号
+    YskQuery: 款号
+    WskQuery: 款号
+    HuohaoWtCLQuery: 款号
+    ScjdGxQuery: 款号
+  worktype:
+    BarcodeClQuery: 工序编号
+    YskQuery: 工序名称
+    HuohaoWtCLQuery: 工序名称
+    ScjdGxQuery: 工序编号（名称在 name）
+  zsl:
+    PlanGridPageList: 总数量（表头恒定，同 jhdh 内不随行变化）
+    ScjdQuery: 该单裁剪数量（实测 = Σ制单 fhsl）
+
 quantity_contexts:
   SclzdGridPageList:
     fhsl: 预发数量
     sssl: 产量
   BarcodeClQuery:
     fhsl: 预发数量
-    sssl: 产量（扫码）
+    sssl: 产量（扫码；实测是 YskQuery 的真子集，只作对账/回退，不并入主源）
     sl: 预发数量
   YskQuery:
     fhsl: 发卡数量
-    sl: 产量（工资口径，je=sl×price）
+    sl: 产量（**产量类主源口径**；件·工序累计，je=sl×price）
   WskQuery:
     sl: 预发数量（待扫数量）
   WorktypeProgressQuery:
     fhsl: 预发数量
+  ScjdGxQuery:
+    fhsl: 预发数量（该道工序）
+    zpsl: 正品数量（该道工序）
+  ScjdQuery:
+    zsl: 裁剪数量
+    zbs: 包数
+    wcl: 包完工率
+    wts: 工序道数
+  ScjdDetailQuery:
+    fhsl: 裁剪数量（该包）
+    wcs: "总数/完成数（件·工序口径，不是件数）"
+    wcl: 完成率
   PinFengGridPageList:
     sl: 数量
     js: 件数
@@ -134,33 +181,60 @@ confirmed_metrics:
   output.personal:
     formula: sum(sl)（实收/合格数，次品不计）
     source: 需求及方案整理「客户确认结论」（个人产量即最终实收数）
-  output.order_completed:
-    formula: sum(sssl)
-    source: AI问答对外接口 §6.1（制单产量 sssl）
-  progress.ratio:
-    formula: 已扫码工序数（uid 非空）/ 总工序数
-    source: 需求及方案整理·管理取数方式（工序进度）
-  output.order_plan_qty:
-    formula: Plan.zsl / ddsl
-    source: AI问答对外接口 §5.1（计划数量）
-  output.order_in_progress:
-    formula: WskQuery.sl 合计（待扫数量）
-    source: AI问答对外接口 §9.2（未扫描接口）
+  output.reported_qty:
+    formula: sum(YskQuery.sl)
+    source: AI问答对外接口 §9.1（生产查询-已扫描 = 产量类主源）；件·工序口径，不得当作完工件数
+  output.reported_amount:
+    formula: sum(YskQuery.je)
+    source: AI问答对外接口 §9.1
+  output.worktype_share:
+    formula: 该工序报工产量 ÷ 该单裁剪数量
+    source: 我方计算（用于识别瓶颈工序）；分母取 ScjdQuery.zsl
+  progress.package_ratio:
+    formula: ScjdQuery.wcl（包完工率 = 完工包数 ÷ zbs，直接取接口值）
+    source: AI问答对外接口 §12.1；2026-09-15 拍板为进度主列唯一口径
+  progress.finished_packages:
+    formula: round(wcl / 100 × zbs)（列表层）或 COUNT(wcl == 100)（包级层）
+    source: 我方计算；两条路逐单相等（实测 527/527）
+  progress.cut_qty:
+    formula: ScjdQuery.zsl（= 该单裁剪数量，实测 = Σ制单 fhsl）
+    source: AI问答对外接口 §12.1
+  progress.order_count:
+    formula: COUNT(DISTINCT dh)
+    source: 我方计算（款号视图的订单数）
+  progress.worktype_count:
+    formula: ScjdQuery.wts / ScjdDetailQuery.wts
+    source: AI问答对外接口 §12.1/§12.2
+  progress.done_worktype_count:
+    formula: ScjdGxQuery 中 DISTINCT worktype 计数（uid 非空即视为已完成）
+    source: 我方计算
+  progress.worktype_order:
+    formula: ScjdGxQuery.wsort
+    source: AI问答对外接口 §12.3
+  progress.issued_qty:
+    formula: ScjdGxQuery.fhsl
+    source: AI问答对外接口 §12.3
+  progress.good_qty:
+    formula: ScjdGxQuery.zpsl
+    source: AI问答对外接口 §12.3
+  progress.unit_total:
+    formula: ScjdDetailQuery.wcs 前段（= fhsl × wts）
+    source: AI问答对外接口 §12.2；件·工序口径，展示必须带口径注记
+  progress.unit_done:
+    formula: ScjdDetailQuery.wcs 后段
+    source: AI问答对外接口 §12.2；件·工序口径
   output.participant_count:
     formula: 窗口内有产出的去重 uid 数
     source: 我方定义（口径登记）
-  workshop.output_total:
-    formula: 按 dept 分组汇总产量
-    source: 需求及方案整理·管理功能表（车间与部门平级，客户确认结论 1）
   workshop.effective_headcount:
     formula: 各车间有产出去重 uid 数
     source: 我方定义（报工人数口径）
   workshop.output_per_capita:
-    formula: 车间产量合计 ÷ 有效人数
+    formula: 车间报工产量合计 ÷ 参与人数；0 人输出 unavailable，不伪造 0
     source: 我方定义（分母为我方口径）
   workshop.rank:
-    formula: 按车间产量倒序编号（1 起）
-    source: 我方定义（名次按总产量排序，需求及方案整理·管理功能表）
+    formula: 按车间报工产量倒序编号（1 起）；可见部门数 = 1 时输出 unavailable（无横向可比对象）
+    source: 我方定义（需求及方案整理·管理功能表）
   payroll.rank_position:
     formula: 按 GongziJeOrderQuery 返回顺序编号位次（接口已按金额倒序）
     source: AI问答对外接口 §8.2；客户确认结论·接口与字段口径 3
@@ -186,15 +260,6 @@ confirmed_metrics:
   time.flag_default:
     formula: GongziMxQuery Flag 默认 0（按扫描日期），1 为按审核日期
     source: 需求及方案整理·公共参数约定（工资接口 Flag 口径）
-  worktype.current:
-    formula: 最大已完成 wsort 的下一道工序
-    source: 需求及方案整理·管理取数方式（当前工序）
-  delivery.warning:
-    formula: 订单未完工 且 距交期剩余天数 ≤ 预警阈值
-    threshold: max(1, ⌈总工期 × 10%⌉)；总工期 = finish_date − zhdate（订单开始日期）；无可用开始日期时回退固定窗口 7 天（可配置）
-    examples: 总工期 10 天 → 剩余 ≤1 天预警；总工期 30 天 → 剩余 ≤3 天预警
-    source: 需求及方案整理·老板功能表（交期预警）与通用功能（异常数据自动高亮）；阈值默认值经真实数据双跑复核
-    note: fr009 输出 delivery_warning（布尔）与 days_remaining（剩余天数）两列；视觉标红由前端消费，后端不输出 UI 样式。
 
 # 已确认的业务规则（非数值口径）。
 confirmed_rules:
@@ -212,5 +277,14 @@ confirmed_rules:
 # 未确认口径：被能力引用时必须产生显式 unavailable 列状态，禁止渲染为数字。
 unconfirmed_metrics:
   plan.target_output:
-    gap: 目标产量/达成率无数据源（功能表未给出取数口径）
-    source: 需求及方案整理 功能表未确认
+    gap: 目标产量/达成率无法取数（客户明确现有接口不提供）；能力不输出达成率列
+    source: 需求及方案整理「追加确认 2026-09-15」3
+  delivery.warning:
+    gap: 生产计划接口（Plan）弃用后交期/交期预警无任何数据源（缝制族与制单均无交期字段）；fr009 不再输出 delivery_warning / days_remaining，也不再有 alert_marker
+    source: 2026-09-15 拍板 3（生产计划接口整族删除）；等客户给出制单侧或其它来源的交期字段后再议
+  workshop.plan_qty:
+    gap: 车间维度拿不到计划/裁剪数量——ScjdQuery / ScjdFzHzQuery 都没有 dept 字段；车间视图只给报工产量 / 参与人数 / 人均产量
+    source: 2026-09-15 拍板（§5.1）；裁剪数量与进度只在款号级 / 全厂视图给出
+  order.in_progress_qty:
+    gap: 「在制数量」列未实现——WskQuery（未扫描）已不在任何取数链里，待客户确认口径后再启用
+    source: docs/design/进度与产量功能重梳方案.md §9

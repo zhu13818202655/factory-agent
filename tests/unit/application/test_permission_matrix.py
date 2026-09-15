@@ -6,9 +6,11 @@ FR-001..FR-003 are available to all four roles, FR-004 收入排名（组内名�
 group leaders, managers and the owner (its only data source is the customer's
 wage-ranking query, which the customer MES refuses for the 00 员工 role with
 ``code=-403``), management capabilities FR-005..FR-008 to group leaders,
-managers and the owner, and factory-wide capabilities FR-009..FR-012 to the
-owner. The owner holds every capability a narrower role holds (his data range is
-a superset). Data visibility inside an allowed capability is still enforced by
+managers and the owner, the workshop output overview FR-010 to group leaders,
+managers and the owner (the customer MES narrows its rows to the caller's own or
+managed departments), and the factory-wide capabilities FR-009/FR-011/FR-012 to
+the owner. The owner holds every capability a narrower role holds (his data range
+is a superset). Data visibility inside an allowed capability is still enforced by
 MES-side row filtering (``DataScope.mes_filtered``).
 """
 
@@ -53,7 +55,7 @@ EXPECTED_MATRIX: dict[Capability, frozenset[Role]] = {
     Capability.WORKSHOP_COMPARISON: MANAGEMENT_AND_OWNER_ROLES,
     Capability.TEAM_PAYROLL_LIST: MANAGEMENT_AND_OWNER_ROLES,
     Capability.FACTORY_ORDER_OVERVIEW: OWNER_ROLES,
-    Capability.WORKSHOP_OUTPUT_OVERVIEW: OWNER_ROLES,
+    Capability.WORKSHOP_OUTPUT_OVERVIEW: MANAGEMENT_AND_OWNER_ROLES,
     Capability.FACTORY_PAYROLL_STATS: OWNER_ROLES,
     Capability.ANY_EMPLOYEE_PAYROLL: OWNER_ROLES,
 }
@@ -140,11 +142,31 @@ def test_denied_decision_lists_the_role_available_capabilities() -> None:
         (Role.EMPLOYEE, {"FR-001", "FR-002", "FR-003"}),
         (
             Role.GROUP_LEADER,
-            {"FR-001", "FR-002", "FR-003", "FR-004", "FR-005", "FR-006", "FR-007", "FR-008"},
+            {
+                "FR-001",
+                "FR-002",
+                "FR-003",
+                "FR-004",
+                "FR-005",
+                "FR-006",
+                "FR-007",
+                "FR-008",
+                "FR-010",
+            },
         ),
         (
             Role.MANAGER,
-            {"FR-001", "FR-002", "FR-003", "FR-004", "FR-005", "FR-006", "FR-007", "FR-008"},
+            {
+                "FR-001",
+                "FR-002",
+                "FR-003",
+                "FR-004",
+                "FR-005",
+                "FR-006",
+                "FR-007",
+                "FR-008",
+                "FR-010",
+            },
         ),
         (
             Role.OWNER,

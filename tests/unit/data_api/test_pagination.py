@@ -175,23 +175,23 @@ class _SizedAdapter(FakeMesAdapter):
 
 
 @pytest.mark.asyncio
-async def test_large_total_escalates_page_size_once_and_completes() -> None:
-    """total=80 at size=10 needs 8 pages; the pager resizes once to 16 (5 pages)."""
+async def test_total_over_one_probe_page_escalates_to_the_ceiling() -> None:
+    """total=80 at probe size=10 re-walks once at the ceiling (100) and finishes."""
     adapter = _SizedAdapter(total=80)
     pager = BoundedPager(
         adapter,  # type: ignore[arg-type]
-        budget=PagerBudget(page_size=10, page_size_ceiling=100, target_pages=5),
+        budget=PagerBudget(page_size=10, page_size_ceiling=100),
     )
 
     result = await pager.fetch_all("YskQuery", {}, item_model=_Item)
 
     assert result.complete is True
     assert result.total == 80
-    assert result.pages_fetched == 5
+    assert result.pages_fetched == 1
     sizes = [int(request.params["size"]) for request in adapter.requests]
     assert sizes[0] == 10
-    assert set(sizes[1:]) == {16}
-    assert [int(request.params["page"]) for request in adapter.requests] == [1, 1, 2, 3, 4, 5]
+    assert set(sizes[1:]) == {100}
+    assert [int(request.params["page"]) for request in adapter.requests] == [1, 1]
 
 
 @pytest.mark.asyncio
@@ -199,7 +199,7 @@ async def test_escalation_never_exceeds_the_page_size_ceiling() -> None:
     adapter = _SizedAdapter(total=1000)
     pager = BoundedPager(
         adapter,  # type: ignore[arg-type]
-        budget=PagerBudget(page_size=10, page_size_ceiling=100, target_pages=5),
+        budget=PagerBudget(page_size=10, page_size_ceiling=100),
     )
 
     result = await pager.fetch_all("YskQuery", {}, item_model=_Item)
@@ -207,18 +207,20 @@ async def test_escalation_never_exceeds_the_page_size_ceiling() -> None:
     assert result.complete is True
     assert result.pages_fetched == 10
     assert max(int(request.params["size"]) for request in adapter.requests) == 100
+    # One extra request: the discarded probe that revealed ``total``.
+    assert len(adapter.requests) == 11
 
 
 @pytest.mark.asyncio
-async def test_small_total_fetches_without_resize() -> None:
-    adapter = _SizedAdapter(total=30)
+async def test_window_that_fits_the_probe_page_is_fetched_once() -> None:
+    adapter = _SizedAdapter(total=8)
     pager = BoundedPager(
         adapter,  # type: ignore[arg-type]
-        budget=PagerBudget(page_size=10, page_size_ceiling=100, target_pages=5),
+        budget=PagerBudget(page_size=10, page_size_ceiling=100),
     )
 
     result = await pager.fetch_all("YskQuery", {}, item_model=_Item)
 
     assert result.complete is True
-    assert result.pages_fetched == 3
+    assert result.pages_fetched == 1
     assert {int(request.params["size"]) for request in adapter.requests} == {10}

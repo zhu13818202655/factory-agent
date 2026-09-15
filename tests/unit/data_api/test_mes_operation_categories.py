@@ -20,7 +20,7 @@ APIS_YAML = REPOSITORY_ROOT / "configs" / "knowledge" / "apis.yaml"
 MIGRATION = REPOSITORY_ROOT / "migrations" / "versions" / "20260824_0001_session.py"
 
 VALID_CATEGORIES = frozenset({"output", "payroll", "order", "other"})
-EXPECTED_DISTRIBUTION = {"output": 6, "payroll": 2, "order": 4, "other": 14}
+EXPECTED_DISTRIBUTION = {"output": 6, "payroll": 2, "order": 8, "other": 14}
 
 
 def load_catalog() -> dict[str, str]:
@@ -42,7 +42,7 @@ def load_migration_seed() -> dict[str, str]:
 def test_every_operation_has_a_legal_category_and_none_is_missing() -> None:
     categories = load_catalog()
 
-    assert len(categories) == 26
+    assert len(categories) == 30
     assert set(categories) == {
         "SystemToken",
         "TestPermissions",
@@ -59,6 +59,10 @@ def test_every_operation_has_a_legal_category_and_none_is_missing() -> None:
         "SclzdGridPageList",
         "SclzdWorktypeQuery",
         "SclzdBarcodeQuery",
+        "ScjdQuery",
+        "ScjdDetailQuery",
+        "ScjdGxQuery",
+        "ScjdFzHzQuery",
         "BarcodeClQuery",
         "HuohaoWtCLQuery",
         "PinFengGridPageList",

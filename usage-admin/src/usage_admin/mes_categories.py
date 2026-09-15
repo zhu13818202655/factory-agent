@@ -32,8 +32,8 @@ CATEGORY_ORDERING: tuple[str, ...] = (
 )
 
 #: Reviewed default mapping (from configs/knowledge/apis.yaml).
-#: 产量与进度 (6) -> output; 工资与排名 (2) -> payroll; 生产计划与制单 (4) -> order;
-#: 认证与凭证 (2) + 基础数据 (9) + 吊挂 (3) -> other.
+#: 产量与进度 (6) -> output; 工资与排名 (2) -> payroll; 生产计划与制单 (4) +
+#: 缝制进度 (4) -> order; 认证与凭证 (2) + 基础数据 (9) + 吊挂 (3) -> other.
 DEFAULT_OPERATION_CATEGORIES: dict[str, str] = {
     # 产量查询（产量与进度 6）
     "BarcodeClQuery": CATEGORY_OUTPUT,
@@ -50,6 +50,11 @@ DEFAULT_OPERATION_CATEGORIES: dict[str, str] = {
     "SclzdGridPageList": CATEGORY_ORDER,
     "SclzdWorktypeQuery": CATEGORY_ORDER,
     "SclzdBarcodeQuery": CATEGORY_ORDER,
+    # 订单进度（缝制进度 4）：进度是订单维度，产量族才计 output
+    "ScjdQuery": CATEGORY_ORDER,
+    "ScjdDetailQuery": CATEGORY_ORDER,
+    "ScjdGxQuery": CATEGORY_ORDER,
+    "ScjdFzHzQuery": CATEGORY_ORDER,
     # 其他：认证与凭证 (2)
     "SystemToken": CATEGORY_OTHER,
     "TestPermissions": CATEGORY_OTHER,

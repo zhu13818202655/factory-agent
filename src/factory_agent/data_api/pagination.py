@@ -25,19 +25,17 @@ class PagerBudget:
 
     The customer declares no pagination upper bound; the sizes below are our
     own fetch shape. ``page_size`` is the first-page probe size, and the pager
-    escalates once toward ``page_size_ceiling`` when ``total`` would need more
-    than ``target_pages`` pages at that size — fewest pages without hammering
-    the interface with an oversized request before its total is known.
+    escalates once to ``page_size_ceiling`` as soon as that probe shows the
+    window needs more than one page — a full-window fetch is the normal case
+    here (a month of scan rows is tens of thousands), so the second tier is the
+    size every remaining page uses rather than a size computed from ``total``.
     """
 
     max_pages: int = 20
     max_rows: int = 250000
-    page_size: int = 2000
-    #: Hard ceiling for the escalated page size (never exceeded).
+    page_size: int = 20000
+    #: Page size for every page after the first probe (never exceeded).
     page_size_ceiling: int = 50000
-    #: After the first page reveals ``total``, resize so the rest fits in this
-    #: many pages whenever possible.
-    target_pages: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,8 +84,9 @@ class BoundedPager:
         page_number = 1
         size = self.budget.page_size
         # One restart is budgeted: after page 1 reveals ``total``, the pager
-        # may resize once (upward, toward ``target_pages``) and re-walk from
-        # page 1 so every page is fetched with one consistent size.
+        # resizes once (upward, to the ceiling) and re-walks from page 1 so
+        # every page is fetched with one consistent size. The API only takes
+        # ``page``/``size``, so pages cannot be mixed at two sizes.
         resized = False
 
         while True:
@@ -135,10 +134,8 @@ class BoundedPager:
 
             if expected_total is None:
                 expected_total = total
-                if not resized and total > size * self.budget.target_pages:
-                    escalated = min(
-                        -(-total // self.budget.target_pages), self.budget.page_size_ceiling
-                    )
+                if not resized and total > size:
+                    escalated = self.budget.page_size_ceiling
                     if escalated > size:
                         size = escalated
                         resized = True

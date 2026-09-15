@@ -25,8 +25,9 @@ Adapter semantics (contract: ``docs/product/AI问答对外接口-整理.md``):
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Protocol, cast
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -108,6 +109,10 @@ class AdapterSettings:
     default_retry_after_seconds: int = 1
     #: Proactive accessToken refresh threshold (seconds before expiry).
     refresh_threshold_seconds: int = 300
+    #: IANA zone of the factory. Canonical time windows are stored in UTC;
+    #  the customer MES takes inclusive local calendar dates, so the window
+    #  bounds must be converted before ``.date()`` (config.factory_timezone).
+    factory_timezone: str = "Asia/Shanghai"
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,19 +232,19 @@ class HongzhaoMesAdapter:
             await self._refresh_bundle()
 
         try:
-            _LOGGER.debug(
+            _LOGGER.info(
                 "mes.execute.request",
                 operation_id=operation.operation_id,
                 request_params=repr(request.params),
             )
             envelope = await self._send(operation, request.params)
-            _LOGGER.debug(
-                "mes.execute.success",
-                operation_id=operation.operation_id,
-                envelope_code=envelope.code,
-                envelope_message=envelope.message,
-                envelope_result=repr(envelope.result),
-            )
+            # _LOGGER.debug(
+            #     "mes.execute.success",
+            #     operation_id=operation.operation_id,
+            #     envelope_code=envelope.code,
+            #     envelope_message=envelope.message,
+            #     envelope_result=repr(envelope.result),
+            # )
         except UnauthenticatedError:
             # One refresh + one retry on expiry/signature failures.
             await self._refresh_bundle()
@@ -349,9 +354,16 @@ class HongzhaoMesAdapter:
     ) -> dict[str, Any]:
         """Build reviewed request parameters; scope IDs come only from filters."""
         start, end = time_range
+        # Canonical windows are stored in UTC; the customer MES takes inclusive
+        # local calendar dates. Taking ``.date()`` straight off the UTC value
+        # shifted the window one day earlier (2026-08-01T00:00+08:00 became
+        # 07-31), so convert to the factory timezone first. ``datee`` is the
+        # inclusive last day of the half-open [start, end) window, i.e. one
+        # microsecond before ``end`` in local time.
+        zone = ZoneInfo(self._settings.factory_timezone)
         params: dict[str, Any] = {
-            "dates": start.date().isoformat(),
-            "datee": end.date().isoformat(),
+            "dates": start.astimezone(zone).date().isoformat(),
+            "datee": (end.astimezone(zone) - timedelta(microseconds=1)).date().isoformat(),
         }
         if extra_params:
             params.update(extra_params)
@@ -378,6 +390,17 @@ class HongzhaoMesAdapter:
             # server-side (§7.1) and is intentionally not pushed down.
             if filters.style_codes is not None and len(filters.style_codes) == 1:
                 params["huohao"] = next(iter(filters.style_codes))
+        if operation_id == "ScjdDetailQuery":
+            # 包级下钻按单订单：dh 是必填入参，只能在恰好一个订单号时下推，
+            # 多个订单号时保持全量拉取并由本地 compute 过滤（与 HuohaoWtCL 同法）。
+            if filters.order_codes is not None and len(filters.order_codes) == 1:
+                params["dh"] = next(iter(filters.order_codes))
+        if operation_id == "ScjdGxQuery":
+            # 工序级下钻的 userid = 物料编号（客户契约 §12.3：userid 即物料编号）。
+            # 服务端一次只接受一个值，故只在恰好一个物料编号时下推；缺失时
+            # ``_build_body`` 会因 required_params 直接拒绝，不会退化成全表扫描。
+            if filters.material_ids is not None and len(filters.material_ids) == 1:
+                params["userid"] = next(iter(filters.material_ids))
         return params
 
     def _unwrap(self, envelope: Any) -> MesResponse:

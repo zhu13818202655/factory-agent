@@ -1,8 +1,8 @@
 """Resolve user business filters against the directory.
 
 ``dept_names`` / ``employee_names`` / ``order_codes`` / ``style_codes`` /
-``plan_codes`` are user *business* filters: they only narrow the requested
-range and are enforced by MES-side row-level filtering plus the
+``plan_codes`` / ``material_ids`` are user *business* filters: they only narrow
+the requested range and are enforced by MES-side row-level filtering plus the
 "returned range smaller than requested" judgement. They can never broaden the
 active ``DataScope``.
 
@@ -38,6 +38,7 @@ class ResolvedBusinessFilters:
     order_codes: frozenset[str] | None
     style_codes: frozenset[str] | None
     plan_codes: frozenset[str] | None
+    material_ids: frozenset[str] | None
 
     def is_empty(self) -> bool:
         return not any(
@@ -47,6 +48,7 @@ class ResolvedBusinessFilters:
                 self.order_codes,
                 self.style_codes,
                 self.plan_codes,
+                self.material_ids,
             )
         )
 
@@ -66,6 +68,7 @@ class BusinessFilterResolver:
             order_codes=_as_frozenset(slots.order_codes),
             style_codes=_as_frozenset(slots.style_codes),
             plan_codes=_as_frozenset(slots.plan_codes),
+            material_ids=_as_frozenset(slots.material_ids),
         )
 
     async def _resolve_dept_names(

@@ -5,6 +5,8 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from factory_agent.application.authorization import ResolvedAuthorization
 from factory_agent.application.business_filters import DirectoryError
@@ -76,8 +78,22 @@ def time_range_from_intent(intent: CapabilityIntent) -> TimeRange | None:
     return TimeRange(start=start, end=end)
 
 
-def time_range_label(time_range: TimeRange) -> str:
-    return f"{time_range.start.date().isoformat()}_{time_range.end.date().isoformat()}"
+def inclusive_end_day(end: datetime, zone: ZoneInfo) -> date:
+    """The inclusive last local calendar day of a half-open [.., end) window.
+
+    Windows are stored in UTC; display and MES ``datee`` share the same
+    inclusive-end semantics, so ``end`` is converted to the factory timezone
+    and pulled back one microsecond before taking ``.date()`` (taking the
+    UTC ``.date()`` shifted labels one day earlier, 2026-09-16 实测).
+    """
+    return (end.astimezone(zone) - timedelta(microseconds=1)).date()
+
+
+def time_range_label(time_range: TimeRange, zone: ZoneInfo) -> str:
+    """Export filename label: inclusive factory-local ``from_to`` dates."""
+    start_day = time_range.start.astimezone(zone).date()
+    end_day = inclusive_end_day(time_range.end, zone)
+    return f"{start_day.isoformat()}_{end_day.isoformat()}"
 
 
 def result_aggregates(result: CapabilityRunResult) -> list[tuple[str, str]]:
@@ -351,6 +367,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                     order_ids=resolved.order_codes,
                     style_ids=resolved.style_codes,
                     plan_ids=resolved.plan_codes,
+                    material_ids=resolved.material_ids,
                     tenant_resolved_employee_ids=resolved.employee_ids,
                 )
             elif is_personal:
@@ -361,6 +378,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                     order_ids=resolved.order_codes,
                     style_ids=resolved.style_codes,
                     plan_ids=resolved.plan_codes,
+                    material_ids=resolved.material_ids,
                 )
             else:
                 filters = self._narrower.narrow(
@@ -369,6 +387,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                     order_ids=resolved.order_codes,
                     style_ids=resolved.style_codes,
                     plan_ids=resolved.plan_codes,
+                    material_ids=resolved.material_ids,
                     restrict_to_scope_employees=False,
                 )
         except FilterRejectionError as exc:
@@ -626,7 +645,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                     capability_id=capability_id,
                     role=role.value,
                     function=str(capability_id),
-                    time_range_label=time_range_label(time_range),
+                    time_range_label=time_range_label(time_range, self._factory_zone),
                     result=result,
                 )
                 artifact_id = outcome.artifact_id
@@ -893,7 +912,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         deterministic fallback keeps the outcome intact: a failed answer
         never fails the interaction.
         """
-        time_label = self._result_time_label(state, time_range)
+        time_label = self._result_time_label(state, time_range, self._factory_zone)
         aggregates = result_aggregates(result)
         fallback = fallback_result_answer(
             row_count=len(result.rows),
@@ -972,12 +991,14 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         return reply.text
 
     @staticmethod
-    def _result_time_label(state: RunState, time_range: TimeRange) -> str:
+    def _result_time_label(state: RunState, time_range: TimeRange, zone: ZoneInfo) -> str:
         """Human time label for the answer: the caller's own words when present."""
         expression = state.last_intent.slots.time_expression if state.last_intent else None
         if expression:
             return expression
-        return f"{time_range.start.date().isoformat()} 至 {time_range.end.date().isoformat()}"
+        start_day = time_range.start.astimezone(zone).date()
+        end_day = inclusive_end_day(time_range.end, zone)
+        return f"{start_day.isoformat()} 至 {end_day.isoformat()}"
 
     async def _record_history(self, owner: InteractionOwner, state: RunState) -> None:
         """Persist a normalized, non-sensitive history entry at terminal state.

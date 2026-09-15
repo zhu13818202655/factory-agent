@@ -108,30 +108,141 @@ def default_metric_registry() -> MetricRegistry:
             MetricDefinition(
                 name="output_personal",
                 version="customer-output-v1",
-                description="Personal output: sum of sl in Ysk/BarcodeCl context",
+                description="Personal output: sum of sl over the caller's own scanned rows",
                 status="confirmed",
                 assumption_status="客户已确认：个人产量即实收数（合格数），次品不计（客户确认结论）",
             ),
+            # 报工产量的组织口径：与 ``output_personal`` 是同一个 ``sl`` 字段的两种
+            # 观察面（个人 / 订单·款号·部门），口径一致但产品含义不同，故分别登记。
             MetricDefinition(
-                name="output_order_completed",
-                version="customer-completed-v1",
-                description="Order completed quantity: sum of sssl (Sclzd context)",
+                name="output_reported_qty",
+                version="customer-ysk-v1",
+                description="Reported output: sum of sl over YskQuery detail rows",
                 status="confirmed",
-                assumption_status="客户接口字段 sssl 完工量（AI问答对外接口 §6.1）",
+                assumption_status=(
+                    "客户接口字段：生产查询-已扫描 sl（AI问答对外接口 §9.1，产量主数据源）；"
+                    "件·工序口径，同一件衣服多道工序各计一条，不得当作完工件数"
+                ),
             ),
             MetricDefinition(
-                name="output_order_plan_qty",
-                version="customer-plan-v1",
-                description="Order planned quantity: zsl/ddsl from Plan",
+                name="output_reported_amount",
+                version="customer-ysk-v1",
+                description="Reported output amount: sum of je over YskQuery detail rows",
                 status="confirmed",
-                assumption_status="客户接口字段：订单数量（AI问答对外接口 §5.1）",
+                assumption_status="客户接口字段：生产查询-已扫描 je（AI问答对外接口 §9.1）",
             ),
             MetricDefinition(
-                name="output_order_in_progress",
-                version="customer-wsk-v1",
-                description="In-process quantity: WskQuery sl (待扫数量)",
+                name="output_worktype_share",
+                version="factory-output-share-v1",
+                description="One worktype's reported output over the order cut quantity",
                 status="confirmed",
-                assumption_status="客户接口字段：未扫描预发数量（AI问答对外接口 §9.2）",
+                assumption_status=(
+                    "我方计算：工序占比 = 该工序报工产量 ÷ 裁剪数量（需求及方案整理·管理功能表）"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_package_ratio",
+                version="customer-progress-v1",
+                description="Package completion ratio (wcl): finished packages over total packages",
+                status="confirmed",
+                assumption_status=(
+                    "客户接口字段：缝制生产进度 wcl（= 完工包数 ÷ zbs，"
+                    "实测 527/527 行反推为整数）；进度主列唯一口径，2026-09-15 拍板，"
+                    "不使用数量口径完工率"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_package_count",
+                version="customer-progress-v1",
+                description="Package count of one flowcard: ScjdQuery.zbs",
+                status="confirmed",
+                assumption_status=(
+                    "客户接口字段：缝制生产进度 zbs（= 该单包数，实测 527/527 与包级行数一致）"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_cut_qty",
+                version="customer-progress-v1",
+                description="Cut quantity: ScjdQuery.zsl / sum of package fhsl",
+                status="confirmed",
+                assumption_status=(
+                    "客户接口字段：缝制生产进度 zsl（= 裁床数，实测 527/527 等于 Σ制单 fhsl）；"
+                    "生产计划接口弃用后，原「计划数量」列改此口径并更名「裁剪数量」"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_finished_packages",
+                version="factory-progress-v1",
+                description="Finished packages: round(wcl / 100 x zbs), or packages at wcl = 100",
+                status="confirmed",
+                assumption_status=(
+                    "我方计算：完工包数由包完工率反推（列表层）或按包级 wcl == 100 计数（详情层）；"
+                    "实测两条路逐单相等"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_order_count",
+                version="factory-progress-v1",
+                description="Distinct flowcard count aggregated for one style",
+                status="confirmed",
+                assumption_status=(
+                    "我方计算：款号视图的订单数 = COUNT(DISTINCT dh)（实测平均 7.03 单/款号）"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_worktype_count",
+                version="customer-progress-v1",
+                description="Worktype count of one flowcard or package: wts",
+                status="confirmed",
+                assumption_status="客户接口字段：缝制生产进度/详情的 wts（工序道数，0 表示未开工）",
+            ),
+            MetricDefinition(
+                name="progress_done_worktype_count",
+                version="factory-progress-v1",
+                description="Scanned worktype count of one package (distinct worktype rows)",
+                status="confirmed",
+                assumption_status=(
+                    "我方计算：已完成工序数 = 缝制工序进度里 DISTINCT worktype 计数"
+                    "（uid 非空即视为该道工序已完成）"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_worktype_order",
+                version="customer-progress-v1",
+                description="Worktype sequence number inside the flowcard: wsort",
+                status="confirmed",
+                assumption_status="客户接口字段：缝制工序进度 wsort（工艺排序号）",
+            ),
+            MetricDefinition(
+                name="progress_issued_qty",
+                version="customer-progress-v1",
+                description="Issued quantity of one worktype: fhsl",
+                status="confirmed",
+                assumption_status="客户接口字段：缝制工序进度 fhsl（该道工序预发数量）",
+            ),
+            MetricDefinition(
+                name="progress_good_qty",
+                version="customer-progress-v1",
+                description="Good-piece quantity of one scanned worktype: zpsl",
+                status="confirmed",
+                assumption_status="客户接口字段：缝制工序进度 zpsl（正品数量）",
+            ),
+            MetricDefinition(
+                name="progress_unit_total",
+                version="customer-progress-v1",
+                description="Package total units: wcs numerator, a piece-times-worktype figure",
+                status="confirmed",
+                assumption_status=(
+                    "客户接口字段：缝制生产进度详情 wcs 前段；实测 = fhsl × wts，是件·工序口径，"
+                    "不是件数，展示必须带口径注记"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_unit_done",
+                version="customer-progress-v1",
+                description="Package finished units: wcs denominator",
+                status="confirmed",
+                assumption_status="客户接口字段：缝制生产进度详情 wcs 后段（完成数，件·工序口径）",
             ),
             MetricDefinition(
                 name="output_participant_count",
@@ -140,13 +251,9 @@ def default_metric_registry() -> MetricRegistry:
                 status="confirmed",
                 assumption_status="我方定义：报工人数=uid 去重（需求及方案整理·管理功能表）",
             ),
-            MetricDefinition(
-                name="workshop_output_total",
-                version="customer-workshop-v1",
-                description="Workshop output total: sum of output grouped by dept",
-                status="confirmed",
-                assumption_status="客户口径：产量按 dept 汇总；车间与部门平级（客户确认结论 1）",
-            ),
+            # 车间产量的口径已并入「报工产量」``output_reported_qty``（Σ Ysk.sl）：
+            # 原 ``workshop_output_total``（BarcodeCl 语境的 sssl）实测是 Ysk 的**子集**、
+            # 偏低约 51%，2026-09-15 随产量主源换源一并作废。
             MetricDefinition(
                 name="workshop_effective_headcount",
                 version="factory-effective-headcount-v1",
@@ -220,43 +327,38 @@ def default_metric_registry() -> MetricRegistry:
                     "客户口径：人均工资=应发合计÷在册人数（需求及方案整理·老板全厂工资取数）"
                 ),
             ),
+            # 交期族：生产计划接口弃用后（2026-09-15 拍板 3）再无数据源——制单的
+            # khname / khid / dddh 与 ScjdQuery.dddh 实测全空。保留登记并把状态明确标为
+            # ``unavailable``（与 ``plan_target_output`` 同法）：任何引用它的能力必须渲染
+            # 不可用，不得输出数字；客户补新字段后再改回 confirmed。
             MetricDefinition(
                 name="delivery_warning",
                 version="factory-warning-v1",
-                description="Delivery warning: unfinished and days-to-delivery within threshold",
-                status="confirmed",
+                description="Delivery warning: no data source after the plan interface was dropped",
+                status="unavailable",
                 assumption_status=(
-                    "预警=未完工且距交期剩余天数≤阈值；阈值默认 max(1,⌈总工期×10%⌉)，回退固定 7 天"
+                    "客户现有接口不提供交期字段"
+                    "（实测制单 khname/khid/dddh 与 ScjdQuery.dddh 全空）；等客户给出新字段再启用"
                 ),
             ),
             MetricDefinition(
                 name="delivery_days_remaining",
                 version="factory-warning-v1",
-                description="Days remaining until finish_date (negative when overdue)",
-                status="confirmed",
-                assumption_status="剩余天数=交期−今日（需求及方案整理·老板功能表 交期预警）",
+                description="Days remaining until finish_date: no data source",
+                status="unavailable",
+                assumption_status="客户现有接口不提供交期字段；等客户给出新字段再启用",
             ),
-            MetricDefinition(
-                name="worktype_current",
-                version="customer-progress-v1",
-                description="Current worktype: next after max completed wsort",
-                status="confirmed",
-                assumption_status="客户口径：当前工序=最大已完成工序的下一道（需求及方案整理·管理取数方式）",
-            ),
-            MetricDefinition(
-                name="progress_ratio",
-                version="customer-progress-v1",
-                description="Scanned worktype count over total worktype count",
-                status="confirmed",
-                assumption_status="客户口径：工序进度按已完成工序数占比（需求及方案整理·管理取数方式）",
-            ),
+            # 「当前工序 / 工序进度百分比」两个口径已从进度能力移除（2026-09-15 拍板 2：
+            # 进度主列 = 包完工率）。工序层现在用 ``progress_done_worktype_count``（已完成
+            # 工序数）与 ``progress_worktype_order``（工序顺序）表达，未做的工序只报「待做 N 道」。
             MetricDefinition(
                 name="plan_target_output",
                 version="unavailable-target-v1",
                 description="Target output / achievement rate has no data source",
                 status="unavailable",
                 assumption_status=(
-                    "无数据源：计划达成率口径未确认（需求及方案整理 功能表未给出取数）"
+                    "客户明确现有接口不提供目标产量/达成率（需求及方案整理·追加确认 2026-09-15）；"
+                    "任何引用该指标的能力必须渲染 unavailable，不得输出数字"
                 ),
             ),
             MetricDefinition(

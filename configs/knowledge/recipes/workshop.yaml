@@ -1,76 +1,98 @@
 # Reviewed L1 workshop recipes. File changes are semantics changes
 # and require human review.
 #
-# 口径来源：``docs/product/需求及方案整理.md`` 功能表与「客户确认结论」、
-# ``docs/product/AI问答对外接口-整理.md``。
+# 口径来源：``docs/design/进度与产量功能重梳方案.md``（唯一现行依据，2026-09-15 拍板）、
+# ``docs/product/需求及方案整理.md``、``docs/product/AI问答对外接口-整理.md`` §9.1。
 #
-# FR-007 车间产量对比 and FR-010 车间产量总览 aggregate over the MES-filtered
-# visible range (业务接口按角色过滤，客户确认 3)。车间与部门平级（客户确认 1），
-# 车间清单/名称来自 DeptQuery。产量口径：BarcodeCl 语境 sssl = 产量（扫码）；
-# 制单语境完成量 = sssl；计划量 = Plan.zsl。
+# 产量主源 = ``YskQuery``（生产查询-已扫描，拍板 1）：它是唯一同时带 ``dept``（切部门）、
+# ``uid``（算人数）、``huohao``（款号）、``sl``（产量）的接口。``BarcodeClQuery`` 实测是
+# ``YskQuery`` 的子集（Σ 1,034,082 < 2,126,116，偏低约 51%），**不在任何链路里与主源相加**。
 #
-# 无数据源口径一律列级 unavailable：达成率无数据源（未确认口径）；
-# 车间产量总览按客户口径不含量产状态字段。零人数车间的人均输出
-# unavailable（我方定义规则，不伪造 0）。可选 requested_dept_ids 业务过滤
-# 只收窄（与 DataScope 求交由 FilterNarrower 完成，空交集零业务调用）。
-version: 1
+# 部门名必须由 ``DeptQuery`` 关联得到：``YskQuery`` 只返回 ``dept``（部门编号），
+# 响应里**没有** ``deptname``。``COALESCE`` 回落到编号，避免名称缺失时整列变空。
+#
+# 车间维度拿不到「裁剪/计划数量」：``ScjdQuery`` / ``ScjdFzHzQuery`` 都没有 ``dept`` 字段，
+# 因此本文件只给报工人数可切的口径（报工产量 / 参与人数 / 人均产量）；裁剪数量与包完工率
+# 在款号级 / 全厂视图（进度族）里给。
+#
+# 可见部门数 N 由后端按聚合结果行数判定，前端只消费：
+#   N == 0  → 空结果，不下发 card，按「该时间范围内没有产量记录」处理
+#   N == 1  → 单部门形态：名次列输出 unavailable（无横向可比对象），走 FR-010 表格视图
+#   N >= 2  → 对比形态：名次 + 人均，按产量降序，走 FR-007 排名视图
+# 数据范围恒由 MES 按角色行级过滤（组长=本组、管理=绑定部门、老板=全厂，mes_filtered），
+# 我方 ``requested_dept_ids`` 只做可选收窄，永不放大。
+version: 2
 capabilities:
   - capability_id: fr007_workshop_output_comparison
-    title: 车间产量对比
+    title: 小组/车间产量对比
     required_slots: [time_range]
     steps:
-      - step_id: fetch_barcode
+      - step_id: fetch_ysk
         kind: api
-        operation_id: BarcodeClQuery
+        operation_id: YskQuery
       - step_id: fetch_dept
         kind: api
         operation_id: DeptQuery
-        depends_on: [fetch_barcode]
+        depends_on: [fetch_ysk]
       - step_id: compute
         kind: local
-        depends_on: [fetch_barcode, fetch_dept]
+        depends_on: [fetch_ysk, fetch_dept]
         filter_bindings:
           requested_dept_ids: requested_dept_ids
+          style_codes: style_codes
         compute: |
           WITH requested_depts AS (
             SELECT unnest($requested_dept_ids) AS c
           ),
+          style_codes AS (
+            SELECT unnest($style_codes) AS c
+          ),
           agg AS (
             SELECT
-              d.id AS dept_id,
-              d.name AS dept_name,
-              SUM(CAST(b.sssl AS DECIMAL)) AS total,
-              COUNT(DISTINCT b.uid) AS headcount
-            FROM fetch_barcode b
-            LEFT JOIN fetch_dept d ON d.id = b.dept
-            WHERE b.dept IS NOT NULL AND b.dept <> ''
+              y.dept AS dept_id,
+              COALESCE(NULLIF(d.name, ''), y.dept) AS dept_name,
+              SUM(CAST(COALESCE(TRY_CAST(y.sl AS DECIMAL), 0) AS DECIMAL)) AS output_qty,
+              COUNT(DISTINCT y.uid) AS participant_count
+            FROM fetch_ysk y
+            LEFT JOIN fetch_dept d ON d.id = y.dept
+            WHERE COALESCE(y.dept, '') <> ''
               AND ((SELECT COUNT(*) FROM requested_depts) = 0
-                   OR b.dept IN (SELECT c FROM requested_depts))
-            GROUP BY d.id, d.name
+                   OR y.dept IN (SELECT c FROM requested_depts))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0
+                   OR y.huohao IN (SELECT c FROM style_codes))
+            GROUP BY y.dept, COALESCE(NULLIF(d.name, ''), y.dept)
+          ),
+          counted AS (
+            SELECT *, COUNT(*) OVER () AS dept_total FROM agg
           )
           SELECT
+            CASE WHEN dept_total > 1
+                 THEN CAST(RANK() OVER (ORDER BY output_qty DESC) AS VARCHAR)
+                 ELSE 'unavailable' END AS rank_position,
             dept_name,
-            CAST(total AS VARCHAR) AS output_total,
-            CAST(headcount AS VARCHAR) AS effective_headcount,
-            CASE WHEN headcount > 0
-                 THEN CAST(CAST(total AS DECIMAL) / CAST(headcount AS DECIMAL) AS VARCHAR)
-                 ELSE 'unavailable' END AS per_capita,
-            CAST(RANK() OVER (ORDER BY total DESC) AS VARCHAR) AS rank_position,
-            'unavailable' AS achievement_rate
-          FROM agg
-          ORDER BY total DESC
+            CAST(output_qty AS VARCHAR) AS output_qty,
+            CAST(participant_count AS VARCHAR) AS participant_count,
+            CASE WHEN participant_count > 0
+                 THEN CAST(output_qty / CAST(participant_count AS DECIMAL) AS VARCHAR)
+                 ELSE 'unavailable' END AS per_capita
+          FROM counted
+          ORDER BY output_qty DESC
     result_columns:
+      - name: rank_position
+        title: 名次
+        source_step: compute
+        metric: workshop_rank
       - name: dept_name
         title: 车间/小组
         source_step: compute
-      - name: output_total
-        title: 产量
+      - name: output_qty
+        title: 报工产量
         source_step: compute
-        metric: workshop_output_total
+        metric: output_reported_qty
         column_type: quantity
         unit: 件
-      - name: effective_headcount
-        title: 有产出人数
+      - name: participant_count
+        title: 参与人数
         source_step: compute
         metric: workshop_effective_headcount
         column_type: quantity
@@ -81,95 +103,100 @@ capabilities:
         metric: workshop_output_per_capita
         column_type: quantity
         unit: 件/人
-      - name: rank_position
-        title: 名次
-        source_step: compute
-        metric: workshop_rank
-        column_type: quantity
-      - name: achievement_rate
-        title: 达成率
-        source_step: compute
-        metric: plan_target_output
-        column_type: percent
     metric_versions:
-      workshop_output_total: customer-workshop-v1
+      workshop_rank: factory-rank-v1
+      output_reported_qty: customer-ysk-v1
       workshop_effective_headcount: factory-effective-headcount-v1
       workshop_output_per_capita: factory-per-capita-v1
-      workshop_rank: factory-rank-v1
-      plan_target_output: unavailable-target-v1
     degradation: incomplete_marker
     card:
       kind: ranking
-      metrics: [output_total]
+      metrics: [output_qty]
       preview_max_rows: 10
       rank_column: rank_position
+      notes:
+        - "「名次」只在可见范围内有 2 个及以上部门时给出；范围内只有 1 个部门（如组长看本组）时该列为空——没有可比对象，此时看「小组/车间产量」视图更合适。"
+        - "「报工产量」是 Σ 已扫描记录数量，按工序累计：同一件衣服做 3 道工序就有 3 条记录，因此它是工序口径工作量，不是完工件数。"
+        - "「参与人数」是该范围内有报工记录的去重人数；「人均产量」= 报工产量 ÷ 参与人数，0 人时输出「暂无数据源」，不伪造 0。"
 
   - capability_id: fr010_workshop_output_overview
-    title: 车间产量总览
+    title: 小组/车间产量
     required_slots: [time_range]
     steps:
-      - step_id: fetch_plan
+      - step_id: fetch_ysk
         kind: api
-        operation_id: PlanGridPageList
-      - step_id: fetch_sclzd
-        kind: api
-        operation_id: SclzdGridPageList
-        depends_on: [fetch_plan]
+        operation_id: YskQuery
       - step_id: fetch_dept
         kind: api
         operation_id: DeptQuery
-        depends_on: [fetch_plan]
+        depends_on: [fetch_ysk]
       - step_id: compute
         kind: local
-        depends_on: [fetch_plan, fetch_sclzd, fetch_dept]
+        depends_on: [fetch_ysk, fetch_dept]
         filter_bindings:
           requested_dept_ids: requested_dept_ids
+          style_codes: style_codes
         compute: |
           WITH requested_depts AS (
             SELECT unnest($requested_dept_ids) AS c
+          ),
+          style_codes AS (
+            SELECT unnest($style_codes) AS c
           )
           SELECT
-            d.name AS dept_name,
-            p.huohao,
-            CAST(SUM(CAST(p.zsl AS DECIMAL)) AS VARCHAR) AS plan_qty,
-            CAST(COALESCE(SUM(CAST(s.sssl AS DECIMAL)), 0) AS VARCHAR) AS completed_qty,
-            'unavailable' AS achievement_rate
-          FROM fetch_plan p
-          LEFT JOIN fetch_sclzd s ON s.dddh = p.jhdh
-          LEFT JOIN fetch_dept d ON d.id = p.dept
-          WHERE ((SELECT COUNT(*) FROM requested_depts) = 0
-                 OR p.dept IN (SELECT c FROM requested_depts))
-          GROUP BY d.name, p.huohao
-          ORDER BY d.name, p.huohao
+            COALESCE(NULLIF(d.name, ''), y.dept) AS dept_name,
+            y.huohao AS style_code,
+            CAST(SUM(CAST(COALESCE(TRY_CAST(y.sl AS DECIMAL), 0) AS DECIMAL)) AS VARCHAR)
+              AS output_qty,
+            CAST(COUNT(DISTINCT y.uid) AS VARCHAR) AS participant_count,
+            CASE WHEN COUNT(DISTINCT y.uid) > 0
+                 THEN CAST(SUM(CAST(COALESCE(TRY_CAST(y.sl AS DECIMAL), 0) AS DECIMAL))
+                           / CAST(COUNT(DISTINCT y.uid) AS DECIMAL) AS VARCHAR)
+                 ELSE 'unavailable' END AS per_capita
+          FROM fetch_ysk y
+          LEFT JOIN fetch_dept d ON d.id = y.dept
+          WHERE COALESCE(y.dept, '') <> ''
+            AND ((SELECT COUNT(*) FROM requested_depts) = 0
+                 OR y.dept IN (SELECT c FROM requested_depts))
+            AND ((SELECT COUNT(*) FROM style_codes) = 0
+                 OR y.huohao IN (SELECT c FROM style_codes))
+          GROUP BY COALESCE(NULLIF(d.name, ''), y.dept), y.huohao
+          ORDER BY output_qty DESC
     result_columns:
       - name: dept_name
         title: 车间/小组
         source_step: compute
-      - name: huohao
+      - name: style_code
         title: 款号
         source_step: compute
-      - name: plan_qty
-        title: 计划数量
+      - name: output_qty
+        title: 报工产量
         source_step: compute
-        metric: output_order_plan_qty
+        metric: output_reported_qty
         column_type: quantity
         unit: 件
-      - name: completed_qty
-        title: 完工数量
+      - name: participant_count
+        title: 参与人数
         source_step: compute
-        metric: output_order_completed
+        metric: workshop_effective_headcount
         column_type: quantity
-        unit: 件
-      - name: achievement_rate
-        title: 达成率
+        unit: 人
+      - name: per_capita
+        title: 人均产量
         source_step: compute
-        metric: plan_target_output
-        column_type: percent
+        metric: workshop_output_per_capita
+        column_type: quantity
+        unit: 件/人
     metric_versions:
-      output_order_plan_qty: customer-plan-v1
-      output_order_completed: customer-completed-v1
-      plan_target_output: unavailable-target-v1
+      output_reported_qty: customer-ysk-v1
+      workshop_effective_headcount: factory-effective-headcount-v1
+      workshop_output_per_capita: factory-per-capita-v1
     degradation: incomplete_marker
     card:
       kind: table
+      metrics: [output_qty]
       preview_max_rows: 10
+      notes:
+        - "按「车间/小组 × 款号」展开，按报工产量降序；表内「参与人数 / 人均产量」是这一行（该款号在该部门）的口径，不是整个部门的汇总。"
+        - "「报工产量」是 Σ 已扫描记录数量，按工序累计，不是完工件数；要按工序拆开看请直接问「哪个工序做得多」（走订单/款号产量）。"
+        - "车间维度没有裁剪数量 / 计划数量 / 完工数量来源（按部门切分的接口不带这些字段），要看进度请按款号或全厂问。"

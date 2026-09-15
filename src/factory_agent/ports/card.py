@@ -64,6 +64,10 @@ class CardTableSpec:
     group_by: str | None = None
     rank_column: str | None = None
     alert_marker: CardAlertSpec | None = None
+    #: Reviewed, static 口径 statements for this capability. They lead the card
+    #: notes so a reader always sees the measurement basis before runtime
+    #: warnings; they carry no data values.
+    notes: tuple[str, ...] = ()
 
     def has_table(self) -> bool:
         return self.kind in ("table", "ranking")
@@ -95,7 +99,7 @@ def build_card(
     unavailable = _unavailable_titles(spec.metrics, by_name, rows, totals)
     if unavailable:
         payload["unavailable_columns"] = unavailable
-    notes = list(warnings)
+    notes = [*spec.notes, *warnings]
     if incomplete and incomplete_reason:
         notes.append(f"本次结果不完整（{incomplete_reason}），以导出文件为准。")
     if notes:

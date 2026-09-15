@@ -7,9 +7,11 @@ import pytest
 
 from factory_agent.application.intent import (
     REJECTED_SLOT_NAMES,
+    WORKSHOP_OUTPUT_ROUTING_RULE,
     CapabilityCatalog,
     CapabilityIntentParser,
     CapabilitySpec,
+    build_intent_messages,
     clarification_for,
 )
 from factory_agent.domain import CapabilityId, Role
@@ -584,3 +586,140 @@ async def test_dedicated_mode_ignores_the_scope_key_entirely() -> None:
     assert "权限范围判定" not in gateway.requests[0].messages[0].content
     assert outcome.includes_scope is False
     assert outcome.scope_verdict is None
+
+
+_ROLE_SCOPED_CATALOG = CapabilityCatalog(
+    specs=(
+        CapabilitySpec(
+            capability_id=CapabilityId("fr007_workshop_output_comparison"),
+            title="小组/车间产量对比",
+            description="查看管辖范围内各小组/车间之间的产量对比与名次排名（含报工人数、人均产量）。",
+            required_slots=("time_range",),
+            roles=frozenset({Role.GROUP_LEADER, Role.MANAGER, Role.OWNER}),
+        ),
+        CapabilitySpec(
+            capability_id=CapabilityId("fr010_workshop_output_overview"),
+            title="车间产量总览",
+            description="查看各车间的产量汇总，按款号列出计划数量与完工数量。",
+            required_slots=("time_range",),
+            roles=frozenset({Role.GROUP_LEADER, Role.MANAGER, Role.OWNER}),
+        ),
+        CapabilitySpec(
+            capability_id=CapabilityId("fr012_employee_payroll"),
+            title="员工工资查询（任一员工）",
+            description="查询某位员工选定时间段的工资合计、计件件数或工资明细。",
+            required_slots=("time_range", "employee_names"),
+            roles=frozenset({Role.OWNER}),
+        ),
+    )
+)
+
+
+def role_scoped_parser(gateway: ScriptedModelGateway) -> CapabilityIntentParser:
+    return CapabilityIntentParser(
+        gateway, _ROLE_SCOPED_CATALOG, model_alias="factory-fast", timezone_name=TZ
+    )
+
+
+def test_selector_prompt_hides_capabilities_the_role_cannot_select() -> None:
+    """The model is never offered a capability the role matrix would deny."""
+
+    employee_system = build_intent_messages(
+        "本月我管理的车间的产量",
+        _ROLE_SCOPED_CATALOG,
+        max_turns=8,
+        max_chars=4096,
+        role=Role.EMPLOYEE,
+    )[0].content
+
+    assert "fr007_workshop_output_comparison" not in employee_system
+    assert "fr010_workshop_output_overview" not in employee_system
+
+    manager_system = build_intent_messages(
+        "本月我管理的车间的产量",
+        _ROLE_SCOPED_CATALOG,
+        max_turns=8,
+        max_chars=4096,
+        role=Role.MANAGER,
+    )[0].content
+
+    assert "fr007_workshop_output_comparison" in manager_system
+    assert "fr010_workshop_output_overview" in manager_system
+    assert "fr012_employee_payroll" not in manager_system
+
+    owner_system = build_intent_messages(
+        "本月我管理的车间的产量",
+        _ROLE_SCOPED_CATALOG,
+        max_turns=8,
+        max_chars=4096,
+        role=Role.OWNER,
+    )[0].content
+
+    assert "fr007_workshop_output_comparison" in owner_system
+    assert "fr010_workshop_output_overview" in owner_system
+    assert "fr012_employee_payroll" in owner_system
+
+
+def test_workshop_output_routing_rule_reaches_only_the_roles_it_applies_to() -> None:
+    """只问产量走 FR-010、要对比才走 FR-007 的归属规则按角色下发.
+
+    A role that may select neither capability is never told about them.
+    """
+
+    def system_for(role: Role) -> str:
+        return build_intent_messages(
+            "本月我管理的车间的产量",
+            _ROLE_SCOPED_CATALOG,
+            max_turns=8,
+            max_chars=4096,
+            role=role,
+        )[0].content
+
+    for role in (Role.GROUP_LEADER, Role.MANAGER, Role.OWNER):
+        assert WORKSHOP_OUTPUT_ROUTING_RULE in system_for(role)
+
+    employee_system = system_for(Role.EMPLOYEE)
+    assert WORKSHOP_OUTPUT_ROUTING_RULE not in employee_system
+    assert "fr010_workshop_output_overview" not in employee_system
+    assert "fr007_workshop_output_comparison" not in employee_system
+
+
+def test_owner_only_capability_echoed_for_a_manager_never_resolves() -> None:
+    """A capability absent from the caller's prompt must not resolve at all.
+
+    The model can still produce one by echoing it from conversation history, so
+    resolution — not just the prompt — is scoped to the caller's role.
+    """
+
+    scoped = role_scoped_parser(ScriptedModelGateway(contents=[]))
+    echoed: dict[str, object] = {
+        "capability_id": "fr012_employee_payroll",
+        "confidence": 0.9,
+        "slots": {"time_expression": "本月", "employee_names": ["张三"]},
+    }
+
+    denied = scoped.interpret(echoed, now=NOW, role=Role.MANAGER)
+    assert denied.intent.capability_id is None
+    assert "capability" in denied.intent.ambiguous
+
+    allowed = scoped.interpret(echoed, now=NOW, role=Role.OWNER)
+    assert allowed.intent.capability_id == CapabilityId("fr012_employee_payroll")
+
+
+def test_workshop_output_overview_resolves_for_management_but_not_for_employees() -> None:
+    """FR-010 对 01/02 开放后，管理的产量问法不再被路由到无权能力."""
+
+    scoped = role_scoped_parser(ScriptedModelGateway(contents=[]))
+    echoed: dict[str, object] = {
+        "capability_id": "fr010_workshop_output_overview",
+        "confidence": 0.9,
+        "slots": {"time_expression": "本月"},
+    }
+
+    for role in (Role.GROUP_LEADER, Role.MANAGER, Role.OWNER):
+        resolved = scoped.interpret(echoed, now=NOW, role=role)
+        assert resolved.intent.capability_id == CapabilityId("fr010_workshop_output_overview")
+
+    denied = scoped.interpret(echoed, now=NOW, role=Role.EMPLOYEE)
+    assert denied.intent.capability_id is None
+    assert "capability" in denied.intent.ambiguous

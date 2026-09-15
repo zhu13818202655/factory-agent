@@ -54,6 +54,7 @@ ALLOWED_SLOT_NAMES: frozenset[str] = frozenset(
         "order_codes",
         "plan_codes",
         "style_codes",
+        "material_ids",
         "dept_names",
         "employee_names",
     }
@@ -72,6 +73,7 @@ _SLOT_LABELS_CN: dict[str, str] = {
     "order_codes": "订单号",
     "plan_codes": "计划单号",
     "style_codes": "款号",
+    "material_ids": "物料编号",
     "dept_names": "车间或组别",
     "employee_names": "员工姓名",
 }
@@ -81,6 +83,7 @@ _CLARIFICATION_PROMPTS: dict[str, str] = {
     "order_codes": "请提供具体的订单号。",
     "plan_codes": "请提供具体的计划单号。",
     "style_codes": "请提供具体的款号。",
+    "material_ids": "请提供具体的物料编号（缝制生产进度详情里的物料编号）。",
     "dept_names": "请说明要看哪个车间或组别。",
     "employee_names": "请说明要看哪位员工。",
 }
@@ -104,6 +107,19 @@ class CapabilitySpec:
     title: str
     description: str = ""
     required_slots: tuple[str, ...] = ()
+    #: Roles allowed to select this capability; empty means every role, which
+    #: covers chit-chat and catalogs assembled directly in tests.
+    roles: frozenset[Role] = frozenset()
+
+    def selectable_by(self, role: Role | None) -> bool:
+        """Whether one caller role may select this capability.
+
+        ``None`` means the caller role is unknown (tests, offline evaluation),
+        and the spec stays selectable so those callers are unaffected.
+        """
+        if role is None or not self.roles:
+            return True
+        return role in self.roles
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +134,18 @@ class CapabilityCatalog:
                 return spec
         return None
 
-    def describe(self) -> str:
+    def describe(self, role: Role | None = None) -> str:
+        """The capability list handed to the selector model.
+
+        ``role`` restricts the list to the capabilities that caller may
+        actually select, so the model cannot route a request to a capability
+        the role matrix would deny. ``None`` keeps the full list, which is what
+        tests and the offline evaluation use.
+        """
         lines: list[str] = []
         for spec in self.specs:
+            if not spec.selectable_by(role):
+                continue
             line = f"- {spec.capability_id}（{spec.title}）"
             if spec.description:
                 line = f"{line}：{spec.description}"
@@ -169,7 +194,7 @@ SYSTEM_PROMPT = (
     '"capability_id": "<列表中的 id 或 null>", "confidence": 0.0-1.0, '
     '"slots": {"time_expression": "...", "time_range_start": null, '
     '"time_range_end": null, "order_codes": [], "plan_codes": [], "style_codes": [], '
-    '"dept_names": [], "employee_names": []}, "ambiguous": []}\n'
+    '"material_ids": [], "dept_names": [], "employee_names": []}, "ambiguous": []}\n'
     "不要输出解释或代码块。"
 )
 
@@ -178,6 +203,99 @@ def _today_line(now: datetime, tz_name: str) -> str:
     """Clock anchor for relative time expressions, in the factory timezone."""
     local = now.astimezone(ZoneInfo(tz_name))
     return f"今天是 {local.date().isoformat()}（{tz_name}）。"
+
+
+#: 「产量」类问法在两个能力之间的归属规则。Both capabilities answer a bare
+#: "车间产量" question, so without this rule the selector model can only go by
+#: wording similarity and picks the comparison one.
+WORKSHOP_OUTPUT_ROUTING_RULE = (
+    "产量类问法的能力归属（硬规则）：\n"
+    "- 用户只问产量多少、做了多少件，而没有提到对比、排名、名次、谁高谁低、人均时，"
+    "选 fr010_workshop_output_overview（车间产量总览），它只给出产量本身；\n"
+    "- 只有当用户明确要求对比、排名、名次、人均产量或各组之间比高低时，"
+    "才选 fr007_workshop_output_comparison（小组/车间产量对比）。"
+)
+
+#: The two capabilities the routing rule disambiguates, in the rule's own order.
+_ROUTED_CAPABILITY_IDS = (
+    "fr010_workshop_output_overview",
+    "fr007_workshop_output_comparison",
+)
+
+
+def workshop_output_routing_block(catalog: CapabilityCatalog, role: Role | None) -> str | None:
+    """The routing rule, only for a caller that may select both capabilities.
+
+    Withholding it elsewhere keeps the promise that the selector prompt never
+    describes a capability its caller's role could not select.
+    """
+    for capability_id in _ROUTED_CAPABILITY_IDS:
+        spec = catalog.get(capability_id)
+        if spec is None or not spec.selectable_by(role):
+            return None
+    return WORKSHOP_OUTPUT_ROUTING_RULE
+
+
+#: 进度 / 产量 / 下钻三层之间的归属规则。These five capabilities answer adjacent
+#: questions about the same orders, so wording similarity alone cannot separate
+#: them: "这个单做到哪了" is progress while "这个单做了多少" is output, and the
+#: two drill-downs must only be chosen when the user asked for that grain *and*
+#: supplied the key it needs (订单号 / 物料编号).
+PROGRESS_FLOW_RULE_HEADER = (
+    "进度与产量类问法的能力归属（硬规则）：\n"
+    "- 先分辨用户问的是「进度」（做到哪了）还是「产量」（做了多少件）：进度选进度能力，"
+    "产量选产量能力；两者都问时以进度能力为主。\n"
+    "- 三层下钻（订单/款号列表 → 包级明细 → 工序明细）是**三次不同的提问**，"
+    "只有用户明确要求下一层、且给出了该层需要的编号时才选更细一层的能力。"
+)
+
+#: One line per routed capability, filtered to what the role may actually
+#: select. Each line names only its own capability (id + title), so no line can
+#: leak a capability the caller would be denied.
+_PROGRESS_FLOW_RULES: tuple[tuple[str, str], ...] = (
+    (
+        "fr005_order_progress",
+        "- 问「做到哪了 / 什么进度 / 还差多少 / 完工了吗」，按订单号或款号看进度列表 → "
+        "选 fr005_order_progress（订单/款号进度查询）。",
+    ),
+    (
+        "fr009_factory_order_overview",
+        "- 老板要看全厂所有订单的进度 → "
+        "选 fr009_factory_order_overview（各订单进度（全厂总览））。",
+    ),
+    (
+        "fr006_order_output",
+        "- 问「做了多少件 / 产量多少 / 哪道工序做得多」→ "
+        "选 fr006_order_output（订单/款号产量查询）。",
+    ),
+    (
+        "fr005_order_package_detail",
+        "- 用户点名某个订单「每个包 / 包级明细 / 各包完成情况」→ "
+        "选 fr005_order_package_detail（订单进度-包级明细）。",
+    ),
+    (
+        "fr005_order_worktype_detail",
+        "- 用户点名某个包（给出物料编号）的「工序明细 / 这道包做到哪道工序」→ "
+        "选 fr005_order_worktype_detail（订单进度-工序明细）；给不出物料编号就不要选它。",
+    ),
+)
+
+
+def progress_flow_routing_block(catalog: CapabilityCatalog, role: Role | None) -> str | None:
+    """The progress/output/drill-down routing rule for the capabilities in scope.
+
+    Only the lines whose capability the caller may select are emitted, so a role
+    is never told about a capability it would be denied, and the rule stays
+    useful for partial catalogs (tests, offline evaluation).
+    """
+    lines = [
+        line
+        for capability_id, line in _PROGRESS_FLOW_RULES
+        if (spec := catalog.get(capability_id)) is not None and spec.selectable_by(role)
+    ]
+    if not lines:
+        return None
+    return "\n".join((PROGRESS_FLOW_RULE_HEADER, *lines))
 
 
 def build_intent_messages(
@@ -189,14 +307,27 @@ def build_intent_messages(
     max_chars: int,
     today_line: str | None = None,
     scope_block: str | None = None,
+    role: Role | None = None,
 ) -> tuple[ModelMessage, ...]:
     """Compose the EXTRACT request.
 
     ``scope_block`` adds the merged scope-judgement section for the caller's
     role. It is omitted entirely when the deployment runs the dedicated guard,
     so that mode sends a byte-identical prompt to the one already in service.
+
+    ``role`` narrows the capability list to what the caller may select, and adds
+    the workshop-output routing rule when that role may select both capabilities
+    the rule chooses between, plus the progress/output/drill-down rule for the
+    progress capabilities it may select. The scope section judges only the
+    requested data range and never changes that selection.
     """
-    system_content = f"{SYSTEM_PROMPT}\n\n可用能力:\n{catalog.describe()}"
+    system_content = f"{SYSTEM_PROMPT}\n\n可用能力:\n{catalog.describe(role)}"
+    for block in (
+        workshop_output_routing_block(catalog, role),
+        progress_flow_routing_block(catalog, role),
+    ):
+        if block:
+            system_content = f"{system_content}\n\n{block}"
     if today_line:
         system_content = f"{system_content}\n\n{today_line}"
     if scope_block:
@@ -319,6 +450,7 @@ class CapabilityIntentParser:
                 max_chars=self._max_history_chars,
                 today_line=_today_line(now, self._timezone_name),
                 scope_block=merged_scope_block(role) if includes_scope and role else None,
+                role=role,
             ),
             stage=ModelStage.EXTRACT,
             logical_call_id=logical_call_id,
@@ -327,7 +459,7 @@ class CapabilityIntentParser:
         result = await request_structured_object(
             self._gateway, request, max_repair_attempts=self._max_repair_attempts
         )
-        parsed = self.interpret(result.payload, now=now, with_scope=includes_scope)
+        parsed = self.interpret(result.payload, now=now, with_scope=includes_scope, role=role)
         return IntentParseOutcome(
             intent=parsed.intent,
             clarification=clarification_for(parsed.intent),
@@ -342,7 +474,12 @@ class CapabilityIntentParser:
         )
 
     def interpret(
-        self, payload: dict[str, object], *, now: datetime, with_scope: bool = False
+        self,
+        payload: dict[str, object],
+        *,
+        now: datetime,
+        with_scope: bool = False,
+        role: Role | None = None,
     ) -> ParsedIntent:
         """Validate a raw model payload into a typed intent.
 
@@ -353,6 +490,8 @@ class CapabilityIntentParser:
         content is only ever accepted when the payload is a chit-chat. A
         ``scope`` value is read only when ``with_scope`` says this call was
         asked for it; otherwise it is ignored like any other unknown key.
+        ``role`` restricts capability resolution to what that caller may
+        select; without it every registered capability resolves.
         """
         ambiguous = list(_string_list(payload.get("ambiguous")))
         confidence = _confidence(payload.get("confidence"))
@@ -378,7 +517,7 @@ class CapabilityIntentParser:
                         ambiguous=tuple(dict.fromkeys(ambiguous)),
                     ),
                     rejected_slots=rejected,
-                scope_verdict=scope_verdict,
+                    scope_verdict=scope_verdict,
                     rewrite_query=rewrite_query,
                 )
             if confidence < self._min_confidence:
@@ -395,7 +534,7 @@ class CapabilityIntentParser:
                 rewrite_query=rewrite_query,
             )
 
-        spec = self._resolve_capability(payload.get("capability_id"))
+        spec = self._resolve_capability(payload.get("capability_id"), role)
         if spec is None:
             ambiguous.append("capability")
             return ParsedIntent(
@@ -427,10 +566,20 @@ class CapabilityIntentParser:
             rewrite_query=rewrite_query,
         )
 
-    def _resolve_capability(self, raw: object) -> CapabilitySpec | None:
+    def _resolve_capability(self, raw: object, role: Role | None) -> CapabilitySpec | None:
+        """Resolve one model-selected id against the caller's own catalog.
+
+        A capability the caller's role cannot select never appears in that
+        role's prompt, so the model can only produce one by echoing it from
+        history. Treating it as unresolvable turns that into a clarification
+        instead of a denial decided after the fact.
+        """
         if not isinstance(raw, str) or not raw.strip():
             return None
-        return self._catalog.get(raw.strip())
+        spec = self._catalog.get(raw.strip())
+        if spec is None or not spec.selectable_by(role):
+            return None
+        return spec
 
     def _build_slots(
         self, raw: dict[str, Any], *, now: datetime
@@ -478,6 +627,7 @@ class CapabilityIntentParser:
                 order_codes=_code_list(raw.get("order_codes")),
                 plan_codes=_code_list(raw.get("plan_codes")),
                 style_codes=_code_list(raw.get("style_codes")),
+                material_ids=_code_list(raw.get("material_ids")),
                 dept_names=_code_list(raw.get("dept_names")),
                 employee_names=_code_list(raw.get("employee_names")),
             ),
@@ -615,6 +765,7 @@ __all__ = [
     "MIN_CAPABILITY_CONFIDENCE",
     "REJECTED_SLOT_NAMES",
     "SYSTEM_PROMPT",
+    "WORKSHOP_OUTPUT_ROUTING_RULE",
     "CapabilityCatalog",
     "CapabilityIntentParser",
     "CapabilitySpec",
@@ -624,4 +775,6 @@ __all__ = [
     "build_intent_messages",
     "clarification_for",
     "dump_intent",
+    "progress_flow_routing_block",
+    "workshop_output_routing_block",
 ]

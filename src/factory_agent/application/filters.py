@@ -30,7 +30,8 @@ class FilterNarrower:
     empty intersection is rejected before any business-data call.
 
     Business filters (``order_codes`` / ``style_codes`` /
-    ``plan_codes`` and a user-requested department) are narrow-only: they are
+    ``plan_codes`` / ``material_ids`` and a user-requested department) are
+    narrow-only: they are
     passed to MES which enforces row-level filtering, and a too-small
     return is surfaced via the MES judgement. They are never treated as scope
     identifiers and can never broaden the scope.
@@ -50,6 +51,7 @@ class FilterNarrower:
         order_ids: frozenset[str] | None = None,
         style_ids: frozenset[str] | None = None,
         plan_ids: frozenset[str] | None = None,
+        material_ids: frozenset[str] | None = None,
         tenant_resolved_employee_ids: frozenset[EmployeeId] | None = None,
         *,
         restrict_to_scope_employees: bool = True,
@@ -98,6 +100,7 @@ class FilterNarrower:
             order_codes=_as_set(order_ids),
             style_codes=_as_set(style_ids),
             plan_codes=_as_set(plan_ids),
+            material_ids=_as_set(material_ids),
             requested_dept_ids=requested_depts,
         )
 

@@ -94,7 +94,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 }
 ```
 
-**用户唯一标识**：系统通过 `app_key` + `uid` 唯一标识一个用户，其中 `app_key` 标识应用（访问权限），`uid` 为员工工号（即认证接口返回的 `user` 字段）。需要按指定用户查询数据的接口（如员工信息接口的 `uid`、工资明细接口的 `Uid`），均以此工号传参。
+**用户唯一标识**：系统通过 `app_key` + `uid` 唯一标识一个用户，其中 `app_key` 标识应用（访问权限），`uid` 为员工工号（即认证接口返回的 `user` 字段）。需要按指定用户查询数据的接口（如员工信息接口的 `uid`、工资明细接口的 `Uid`），均以此工号传参；这些 `uid` / `Uid` 入参均为**选填**——省略时不发送该参数，由 MES 按调用者数据范围返回。
 
 ### 2.1 获取认证信息
 
@@ -191,21 +191,27 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | 基础数据 | 货号工序接口 | /api/NetYf/Baseinfo/HuohaoWorktypeQuery | 按货号查询工序 |
 | 基础数据 | 员工信息接口 | /api/NetYf/Baseinfo/EmployeeQuery | 查询员工信息 |
 | 基础数据 | 部门信息接口 | /api/NetYf/Baseinfo/DeptQuery | 查询部门信息 |
-| 生产计划 | 生产计划接口 | /api/NetYf/Plan/GridPageList | 按日期范围分页查询生产计划 |
-| 生产制单 | 生产制单接口 | /api/NetYf/Sclzd/GridPageList | 按日期范围分页查询生产制单 |
+| 生产计划 | 生产计划接口 | /api/NetYf/Plan/GridPageList | **已弃用（2026-09-15）**；按日期范围分页查询生产计划，见 §5 顶部说明 |
+| 生产制单 | 生产制单接口 | /api/NetYf/Sclzd/GridPageList | 按日期范围分页查询生产制单（`id → dh` 映射的唯一来源） |
 | 生产制单 | 生产制单工序接口 | /api/NetYf/Sclzd/SclzdWorktypeQuery | 按单号查询制单工序 |
 | 生产制单 | 生产制单工序扫描接口 | /api/NetYf/Sclzd/SclzdBarcodeQuery | 按单号和物料编号查询扫描记录 |
-| 产量与产能 | 线下工序产量产能 | /api/NetYf/Sclzd/BarcodeClQuery | 分页查询线下扫码产量明细 |
-| 产量与产能 | 工序产量查询接口 | /api/NetYf/Sclzd/HuohaoWtCLQuery | 按货号工序/工序汇总查询产量 |
-| 产量与产能 | 工序进度查询接口 | /api/NetYf/Sclzd/WorktypeProgressQuery | 按物料编号查询各工序进度 |
+| 产量与产能 | 线下工序产量产能 | /api/NetYf/Sclzd/BarcodeClQuery | 分页查询线下扫码产量明细（实测为 §9.1 已扫描的**子集**，作对账/回退） |
+| 产量与产能 | 工序产量查询接口 | /api/NetYf/Sclzd/HuohaoWtCLQuery | 按货号工序/工序汇总查询产量（实测 = §9.1 已扫描的**聚合视图**） |
+| 产量与产能 | 工序进度查询接口 | /api/NetYf/Sclzd/WorktypeProgressQuery | 按物料编号查询各工序进度（与 §12.3 `ScjdGxQuery` 字段一致，二者择一） |
 | 工资 | 工资明细/汇总查询接口 | /api/NetYf/Sclzd/GongziMxQuery | 查询工资明细或汇总（线下+吊挂+手工账） |
 | 工资 | 员工工资排名查询接口 | /api/NetYf/Sclzd/GongziJeOrderQuery | 按日期范围查询员工工资排名 |
-| 生产查询 | 生产查询-已扫描接口 | /api/NetYf/Sclzd/YskQuery | 分页查询已扫描产量记录 |
-| 生产查询 | 生产查询-未扫描接口 | /api/NetYf/Sclzd/WskQuery | 分页查询未扫描产量记录 |
+| 生产查询 | 生产查询-已扫描接口 | /api/NetYf/Sclzd/YskQuery | 分页查询已扫描产量记录 —— **产量类需求的主数据源**（见 §9.1 实测口径） |
+| 生产查询 | 生产查询-未扫描接口 | /api/NetYf/Sclzd/WskQuery | 分页查询未扫描产量记录（在制数量来源，**无 `dept` 字段**） |
 | 手工账 | 手工账接口 | /api/NetYf/PinFeng/GridPageList | 分页查询手工账单据 |
 | 吊挂对接 | 吊挂对接中间库接口 | /api/NetYf/Dg/GridPageList | 查询吊挂中间库连接配置 |
 | 吊挂对接 | 吊挂组别接口 | /api/NetYf/Dg/DgZuGridPageList | 查询吊挂线别与组别 |
 | 吊挂对接 | 吊挂工序产能 | /api/NetYf/Dg/DgClQuery | 分页查询吊挂产量明细 |
+| 缝制生产进度 | 缝制生产进度接口 | /api/NetYf/Sclzd/ScjdQuery | 按日期范围分页查询流程卡层进度 |
+| 缝制生产进度 | 缝制生产进度详情接口 | /api/NetYf/Sclzd/ScjdDetailQuery | 按流程卡单号查询包级进度 |
+| 缝制生产进度 | 工序进度接口 | /api/NetYf/Sclzd/ScjdGxQuery | 按物料编号查询工序刷卡进度 |
+| 缝制生产进度 | 缝制总进度接口 | /api/NetYf/Sclzd/ScjdFzHzQuery | 按日期范围查询床号层缝制完工率 |
+| 缝制生产进度 | 缝制详细进度接口 | /api/NetYf/Sclzd/ScjdFzMxQuery | 按计划号/货号/床号/日期查询颜色尺码层完工率 |
+| 缝制生产进度 | 工序总体进度接口 | /api/NetYf/Sclzd/ScjdFzHzWorktypeQuery | 按计划号/货号/床号/日期查询工序层完成汇总 |
 
 ## 4. 基础数据
 
@@ -858,6 +864,21 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 
 ## 5. 生产计划
 
+> ## ⚠ 本章接口已弃用（2026-09-15）
+>
+> `/api/NetYf/Plan/GridPageList` **不再用于任何功能**。原因与后果：
+>
+> - 「订单数量 / 计划量」改用 §12.1 缝制生产进度的 `zsl`（裁床数，= 该单裁剪数量合计），列名定为「裁剪数量」；
+> - 「达成率 / 计划达成率」客户已明确无数据源，不再统计；
+> - 「客户名称」「交期 `finish_date`」「交期预警」「客户订单号 `khddh`」「计划号 `jhdh`」**整族取消** ——
+>   实测 §6.1 生产制单的 `khname` / `khid` / `dddh` 与 §12.1 的 `dddh` **全为空**（0/16,076、0/527），
+>   无替代来源；等客户给出新字段后再议；
+> - 正面效果：同时消除「生产制单与计划表没有订单级关联键」与「本接口缺 `dept` 字段」两个历史阻塞项
+>   （车间维度改由 §9.1 已扫描接口的 `dept` 提供；该接口响应**没有** `deptname`，部门名称需关联
+>   §4.2 `DeptQuery` 的 `id → name` 得到）。
+>
+> 本章以下内容保留作**契约存档**，便于日后客户回复字段时回查。
+
 ### 5.1 生产计划接口
 
 **接口地址**：`/api/NetYf/Plan/GridPageList`
@@ -1055,6 +1076,17 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.list.sssl | integer | 产量 |
 | result.list.remark | string | 备注 |
 | result.total | integer | 数据总数量 |
+
+**实测口径（2026-09-15）**
+
+- **`sssl`（实收）不是完工量，而是投产量**：16,076 行中 `sssl == fhsl` 的有 **15,888 行（98.8%）**，
+  合计 `Σfhsl = 531,308` vs `Σsssl = 531,006`（差 0.06%）。→ **不能用 `sssl` 当「完工数量」**；
+  完工数量应取 §12.4 缝制总进度的 `wgzsl` 或 §12.2 进度详情的完成数。
+- **行粒度 = 单号 × 床号 × 包号，`id` 唯一**：一行 = 一个包，同 `dh` 下 `baohao` 递增。
+- **一个 `dh` 唯一对应一个货号 / 款号 / 床号**（多值行数 0/527）。
+- `huohao` = 货号 `bh`，`huohaoname` = 款号（与 §12.1 的 `huohao`/`bbreed` 同义；与 §9.1 的 `huohao` 语义相反）。
+- `khname` / `khid` / `dddh` 实测**全为空**（0/16,076）→ 本接口提供不了客户、客户订单号与计划号。
+- `id` 是产量明细（§9.1）挂回订单的**唯一可靠键**（`YskQuery.id ⊆ 本接口.id`，11554/11554 命中）。
 
 ### 6.2 生产制单工序接口
 
@@ -1316,6 +1348,16 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 
 - **不支持 `huohao` / `worktype` 服务端过滤**：基准 `total=60240`；追加 `huohao`（分别传货号流水号 `00063`、款号 `G2601`）、`worktype`（传工序名）、以及两者组合后，`total` 均保持 `60240` 不变 —— 参数被静默忽略，不报错、不生效。→ 按款号/工序过滤只能拉全量后本地过滤；已向客户提出在服务端支持过滤参数的请求（跟进中，确认后更新本节）。
 
+**实测口径（2026-09-15）**
+
+- **本接口与 §9.1「生产查询-已扫描」同源，且是其子集**：7 月窗口内本接口 29,696 个 `(id, wtname, uid)` 键
+  **全部落在** `YskQuery` 内，其中 29,496（99.3%）数量逐条相等；合计 `Σsssl` **1,034,082 < 2,126,116**。
+  → **产量口径应以 §9.1 已扫描为主源**；本接口保留作线下口径的对账/回退，**两者不得相加**。
+- **本接口 `worktype` 是工序编号**（如 `0796`），而 §9.1 / §9.2 / §7.2 的同名字段是**工序名称**
+  （如 `贴侧骨`）。两接口按 `(id, worktype)` 直接比对**交集为 0**，必须用本接口的 `wtname`（或过 §4.6
+  生产工序字典）转换后才能对齐。
+- `huohao` = 货号 `bh`，`bbreed` = 款号（与 §6.1 一致；与 §9.1 的同名字段语义相反）。
+
 ### 7.2 工序产量查询接口
 
 **接口地址**：`/api/NetYf/Sclzd/HuohaoWtCLQuery`
@@ -1394,6 +1436,14 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 - **`huohao` 的取值是款号 `bbreed`，不是货号流水号 `bh`**：取该区间 360 行的 72 个非空 `huohao` 唯一值，**72/72 全部命中 `HuohaoQuery.bbreed`**；传 `bh`（如 `00004`、`00001`）返回 0 行。**同一字段名在不同接口语义不同**（`HuohaoFormQuery` / `HuohaoWorktypeQuery` 的 `huohao` 才是 `bh`），传值前先确认接口。
 - **`scheme` 决定分组与输出**：`货号工序` → 按「款号 + 工序」分组，`huohao` 有值；`工序` → 只按工序分组，`huohao` 恒为 `null`（此时仅 `worktype` 过滤有意义）。
 - **`footer.sl_total` 不是过滤后的合计**：无过滤时为全区间合计（2,489,812）；叠加 `worktype` 过滤后 `total` 收窄到 4，但 `sl_total` **仍为 2,489,812**；一旦指定 `huohao` 则返回 `null`。→ 需要「过滤后的合计」必须自行对 `list.sssl` 求和，**不要用 `footer.sl_total`**。
+
+**实测口径（2026-09-15）**
+
+- **本接口 = §9.1「生产查询-已扫描」按「款号 × 工序」的服务端聚合视图**：将 `YskQuery` 明细按
+  `(huohao, worktype)` 汇总后与本接口比对，**279/279 组数值完全相等**，合计均为 **2,126,116**（含 `footer.sl_total`）。
+  → 需要「款号 × 工序」汇总时用本接口（快，且支持服务端过滤）；需要按订单 / 部门 / 员工拆分时用 §9.1 明细。
+  两者**同源，不要相加**。
+- `huohao` 取值是**款号 `bbreed`**（与 §9.1 一致；与 §6.1 / §7.1 的同名字段语义相反）。
 
 ### 7.3 工序进度查询接口
 
@@ -1735,7 +1785,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | size | integer | 是 | 每页大小 |
 | dates | string | 是 | 开始日期 |
 | datee | string | 是 | 结束日期 |
-| Uid | string | 是 | 员工工号 |
+| Uid | string | 否 | 员工工号（选填）：省略时不发送该参数，由 MES 按调用者数据范围返回（取值规则参见 §8.1「Uid 取值说明」；本厂尚未单独实测） |
 
 **请求示例**
 
@@ -1819,6 +1869,20 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.footer.bs_total | integer | 包数 |
 | result.footer.sl_total | integer | 产量总数 |
 | result.footer.je_total | number | 金额总数 |
+
+**实测口径（2026-09-15）：本接口是「产量类」需求的主数据源**
+
+- **它同时具备切订单、切部门、切工序、算人数与金额所需的全部字段**：`id`（物料编号 → 经 §6.1 挂回订单 `dh`）、
+  `dept`（部门）、`worktype`（工序**名称**）、`sl`（产量）、`uid`/`uname`（人员）、`je`/`price`（金额/工价）。
+  其它产量接口都缺其中若干项，详见下表。
+- **与 §7.2 工序产量查询同源**：本接口按 `(huohao, worktype)` 汇总后与 §7.2 **279/279 组数值完全相等**，
+  合计均为 **2,126,116**（与本接口 `footer.sl_total` 一致）→ §7.2 是本接口的服务端聚合视图。
+- **与 §7.1 线下工序产量产能同源且为其超集**：7 月窗口内 §7.1 的 29,696 个 `(id, wtname, uid)` 键**全部包含于**本接口，
+  其中 99.3% 数量逐条相等；合计本接口 **2,126,116** vs §7.1 **1,034,082**。→ **产量口径以本接口为准，
+  两个接口的数据不得相加**。
+- `huohao` 在本接口是**款号**（如 `87B`；命中 §6.1 `huohaoname` 43 个、命中货号 `bh` **0** 个），
+  与 §6.1 / §7.1 的同名字段语义相反。
+- `sl` = 产量（本接口口径），`fhsl` = 预发数量；`footer.sl_total` 与 `footer.je_total` 为该接口的合计（实测可用）。
 
 ### 9.2 生产查询-未扫描接口
 
@@ -2193,11 +2257,563 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiMDEwMDEi.
 | result.list.sfjz | integer | 是否结账 |
 | result.total | integer | 数据总数量 |
 
-## 12. 业务口径
+## 12. 缝制生产进度
 
-本章是跨接口的业务白话说明，配合前 11 章的契约字段阅读。所有结论基于本厂（雨泽服饰，2026-09-13）实测，可能与客户其他工厂不同。
+本章 6 个接口由客户于 2026-09-02 提供（当时客户侧门户标注接口状态为「开发中」），本厂已在真实 MES 上走通调用；下文的参数、示例与字段说明取自客户接口文档。其中三个是明细视角的入口：`ScjdQuery`（日期 → 流程卡）、`ScjdDetailQuery`（流程卡 → 包）、`ScjdGxQuery`（物料编号 → 工序刷卡记录）；另外三个是汇总视角：`ScjdFzHzQuery`（床号层）、`ScjdFzMxQuery`（颜色/尺码层）、`ScjdFzHzWorktypeQuery`（工序层）。
 
-### 12.1 货号 / 款号 / 货号类型
+### 12.0 实测口径（2026-09-15，**客户文档未写、本节为实测补充**）
+
+本章是「进度」类需求的**唯一主线**（订单进度 / 款号进度 / 工序进度），实测已跑通，关键语义如下
+（数据来源：本厂真实 MES 响应缓存，窗口 2026-07-01 ~ 07-31，527 张流程卡 / 16,076 个包）：
+
+| # | 语义 | 实测结论与证据 |
+|---|---|---|
+| 1 | `ScjdQuery.zsl` 是什么 | **裁床数 = 该单裁剪数量合计**。527/527 张流程卡 `zsl == Σ生产制单.fhsl`，且 `zbs == 包数`（527/527）。**注意与 §5.1 生产计划接口的 `zsl`（总数量）语义完全不同** |
+| 2 | `ScjdQuery.wcl` 是什么 | **包完工率 = 完工包数 ÷ `zbs`**，保留 2 位小数。527/527 行按 `wcl/100 × zbs` 反推均为整数（如 `55/56 = 98.21`）。`sfwg=1` 的行 `wcl` 恒为 100 |
+| 3 | `ScjdDetailQuery.wcs` 是什么 | 字符串 `"总数/完成数"`。**总数 ≡ `fhsl × wts`**（50/50 行验证，即 `件·工序` 口径），完成数 = 该包各工序 `zpsl` 之和；`wcl = 完成数 ÷ 总数 × 100` |
+| 4 | `ScjdDetailQuery` 与 §6.1 生产制单的关系 | **同一 `dh` 下 `id` 集合完全一致** → 本接口 = 制单包级明细 + 进度字段，做进度不需要再调生产制单 |
+| 5 | `ScjdFzHzQuery.wgl` 是什么 | **`floor(wgzsl ÷ fzzsl × 100)`**，整数向下截断（83/527 行与直算差 <1；`1021/1024=99.7→99`）。`wgzsl` 可能大于 `fzzsl`（实测出现 107） |
+| 6 | `ScjdQuery` 与 `ScjdFzHzQuery` 的关系 | 按 `(huohao, chuanghao, rq)` **一一对应**（两集合均为 527 行、完全相同，无一对多）；`Σzsl == Σfzzsl == 531,308`。前者给 `dh` + 包维度完工率，后者给数量维度完工数量/完工率 |
+| 7 | `ScjdGxQuery.huohao` 是货号还是款号 | **款号**（如 `G2601`，而该包在制单里 `huohao='00063'` 是货号）。与 §12.1/§12.4/§6.1 的 `huohao`（= 货号 `bh`）**同形不同义** |
+| 8 | `ScjdGxQuery` 返回哪些工序 | **只有已刷卡的工序**，未做的工序不返回；工序总数需取 `wts`（`ScjdQuery` / `ScjdDetailQuery` 都提供），或另调 §6.2 `SclzdWorktypeQuery` 取工序全集 |
+| 9 | `ScjdGxQuery` 与 §7.3 `WorktypeProgressQuery` | 字段**逐字段一致**（`userid` 同为物料编号），差异仅本接口入参不带 `page`/`size`。**两者择一使用** |
+| 10 | `dddh`（计划号）可用性 | `ScjdQuery` 与 `ScjdFzHzQuery` 实测 `dddh` **全为空**（527/527），不能作为关联键；`ScjdFzMxQuery`/`ScjdFzHzWorktypeQuery` 的 `dddh` 入参建议传空串 |
+| 11 | 流程卡 ↔ 订单 ↔ 款号 | **一个 `dh` 唯一对应一个款号（`bbreed`）与一个床号**（多值行数 0/527）。款号 → 单号平均 7.03 张、最多 35 张 |
+
+上述结论已并入需求口径，见 `需求及方案整理.md` 的「追加确认（2026-09-15 · 进度与产量口径重梳）」
+与 `docs/design/进度与产量功能重梳方案.md`。
+
+### 12.1 缝制生产进度接口
+
+**接口地址**：`/api/NetYf/Sclzd/ScjdQuery`
+
+**业务请求参数**
+
+| 参数名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| dates | string | 是 | 开始日期 |
+| datee | string | 是 | 结束日期 |
+| sfwg | string | 是 | 是否完工：`""`=全部 / `0`=未完工 / `1`=已完工 |
+| searchKeyword | string | 是 | 关键词过滤（床号 / 货号简称 / 计划号） |
+| page | integer | 是 | 当前页 |
+| size | integer | 是 | 每页大小 |
+
+**请求示例**
+
+```json
+{
+    "dates": "2026-09-01",
+    "datee": "2026-09-02",
+    "sfwg": "",
+    "searchKeyword": "",
+    "page": 1,
+    "size": 50
+}
+```
+
+**响应示例**（客户示例共 6 行，此处保留 2 行）
+
+```json
+{
+    "code": 1,
+    "message": "成功",
+    "result": {
+        "main": [
+            {
+                "dh": "202609010001",
+                "zdr": "管理员",
+                "chuanghao": "1",
+                "rq": "2026-09-01",
+                "huohao": "00319",
+                "bbreed": "T-1632",
+                "description": "",
+                "dddh": "HJ205623230",
+                "zbs": 5,
+                "zsl": 275,
+                "sfwg": 1,
+                "wcl": 100,
+                "wts": 7,
+                "img": "http://lijingpic.ywhzsoft.com:8888/files/eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJJZCI6IjNBRkQ2QThDLTU1MzgtNDZCNi1BRTI3LTQ2REQwOTNFQjlGOSIsIkV4cGlyZVRpbWUiOiIyMTI2LTA4LTA4VDA5OjMyOjU4LjI2Nzg0NjMrMDg6MDAifQ.f0gAWaG30X0ROCvd7r9LIIPqbGsG1y7YVwbgTt9dUvk",
+                "colors": "黑色",
+                "ganghaos": "",
+                "chimas": "S/M/L/2X/XL"
+            },
+            {
+                "dh": "202609010005",
+                "zdr": "admin",
+                "chuanghao": "384",
+                "rq": "2026-09-01",
+                "huohao": "00318",
+                "bbreed": "K08",
+                "description": "",
+                "dddh": "",
+                "zbs": 15,
+                "zsl": 1500,
+                "sfwg": 0,
+                "wcl": 0,
+                "wts": 0,
+                "img": "",
+                "colors": "黑色",
+                "ganghaos": "",
+                "chimas": "M/L/XL"
+            }
+        ],
+        "detail": {
+            "hhs": 5,
+            "zcs": 6,
+            "zbs": 27,
+            "zsl": 2374
+        },
+        "total": 6
+    },
+    "timestamp": 1788347839
+}
+```
+
+**响应字段说明**
+
+| 参数名 | 类型 | 说明 |
+| --- | --- | --- |
+| result.main | array | 流程卡列表（一行 = 一张流程卡 `dh`） |
+| result.main.dh | string | 流程卡单号 |
+| result.main.zdr | string | 制单人 |
+| result.main.chuanghao | string | 床号 |
+| result.main.rq | string | 日期 |
+| result.main.huohao | string | 货号编码（`bh`） |
+| result.main.bbreed | string | 货号名称（客户字段名；本厂口径即款号 `bbreed`，见 §13.1） |
+| result.main.description | string | 品名 |
+| result.main.dddh | string | 计划号（本厂多为空串） |
+| result.main.zbs | integer | 包数 |
+| result.main.zsl | integer | 裁床数（**注意与 §5.1 生产计划接口的 `zsl`＝总数量语义不同**） |
+| result.main.sfwg | integer | 是否完工（`0` 未完工 / `1` 已完工） |
+| result.main.wcl | number | 完成率 |
+| result.main.wts | integer | 工序数量 |
+| result.main.img | string | 图片地址（带签名，可为空串） |
+| result.main.colors | string | 该订单货号所有颜色，示例以 `/` 分隔 |
+| result.main.ganghaos | string | 该订单货号所有缸号，示例以 `/` 分隔 |
+| result.main.chimas | string | 该订单货号所有尺码，示例以 `/` 分隔 |
+| result.detail | object | 当页汇总 |
+| result.detail.hhs | integer | 货号数 |
+| result.detail.zcs | integer | 床数 |
+| result.detail.zbs | integer | 包数 |
+| result.detail.zsl | integer | 裁床数量 |
+| result.total | integer | 数据总数量 |
+
+### 12.2 缝制生产进度详情接口
+
+**接口地址**：`/api/NetYf/Sclzd/ScjdDetailQuery`
+
+**业务请求参数**
+
+| 参数名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| dates | string | 是 | 开始日期 |
+| datee | string | 是 | 结束日期 |
+| dh | string | 是 | 流程卡单号（取自 §12.1 `result.main.dh`） |
+
+**请求示例**
+
+```json
+{
+    "dates": "2026-09-01",
+    "datee": "2026-09-02",
+    "dh": "202609010001"
+}
+```
+
+**响应示例**（客户示例共 5 行，此处保留 2 行）
+
+```json
+{
+    "code": 1,
+    "message": "成功",
+    "result": {
+        "list": [
+            {
+                "id": 45139,
+                "baohao": "1",
+                "color": "黑色",
+                "chima": "S",
+                "ganghao": "",
+                "fhsl": 55,
+                "wts": 8,
+                "wcs": "440/55",
+                "wcl": 12.5
+            },
+            {
+                "id": 45142,
+                "baohao": "4",
+                "color": "黑色",
+                "chima": "2X",
+                "ganghao": "",
+                "fhsl": 55,
+                "wts": 8,
+                "wcs": "440/55",
+                "wcl": 12.5
+            }
+        ],
+        "total": 5
+    },
+    "timestamp": 1788348618
+}
+```
+
+**响应字段说明**
+
+| 参数名 | 类型 | 说明 |
+| --- | --- | --- |
+| result.list | array | 包级明细列表（一行 = 一个包） |
+| result.list.id | integer | 物料编号（这个是生产制单的id, 客户示例中该值即 §12.3 `ScjdGxQuery` 的 `userid` 入参） |
+| result.list.baohao | string | 包号 |
+| result.list.color | string | 颜色 |
+| result.list.chima | string | 尺码 |
+| result.list.ganghao | string | 缸号 |
+| result.list.fhsl | integer | 裁剪数量（客户字段口径；同名字段在 §6.1 / §7.1 为「预发数量」，勿混用） |
+| result.list.wts | integer | 工序数量 |
+| result.list.wcs | string | 总数/完成数（斜杠拼接串，如 `440/55`，不是数值） |
+| result.list.wcl | number | 完成率 |
+| result.total | integer | 数据总数量 |
+
+### 12.3 工序进度接口
+
+**接口地址**：`/api/NetYf/Sclzd/ScjdGxQuery`
+
+**业务请求参数**
+
+| 参数名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| userid | string | 是 | 物料编号（客户示例传数值，如 `45139`） |
+| uid | string | 否 | 员工工号（选填）：省略即不发送该参数，不加工号过滤（客户示例传空串 `""`） |
+
+**请求示例**
+
+```json
+{
+    "userid": 45139,
+    "uid": ""
+}
+```
+
+**响应示例**（客户示例共 4 行，此处保留 1 行）
+
+```json
+{
+    "code": 1,
+    "message": "成功",
+    "result": {
+        "list": [
+            {
+                "userid": 4496,
+                "huohao": "25-CY22050MI第9-1单",
+                "color": "深紫风暴印花",
+                "chima": "S",
+                "baohao": "1",
+                "chuanghao": "11",
+                "fhsl": 11,
+                "worktype": "0036",
+                "name": "烫里腰标",
+                "uid": "14007",
+                "uname": "杨再军",
+                "dept": "008",
+                "inputtime": "2025-10-17T08:36:49.267",
+                "cid": 11860,
+                "zpsl": 11,
+                "wsort": 5
+            }
+        ],
+        "total": 4
+    },
+    "timestamp": 1787539860
+}
+```
+
+**响应字段说明**
+
+| 参数名 | 类型 | 说明 |
+| --- | --- | --- |
+| result.list | array | 工序刷卡记录列表 |
+| result.list.userid | integer | 物料编号 |
+| result.list.huohao | string | 货号 |
+| result.list.color | string | 颜色 |
+| result.list.chima | string | 尺码 |
+| result.list.baohao | string | 包号 |
+| result.list.chuanghao | string | 床号 |
+| result.list.fhsl | integer | 预发数量 |
+| result.list.worktype | string | 工序编号 |
+| result.list.name | string | 工序名称 |
+| result.list.uid | string | 员工工号 |
+| result.list.uname | string | 员工姓名 |
+| result.list.dept | string | 部门编码 |
+| result.list.inputtime | string | 刷卡时间 |
+| result.list.cid | integer | ID |
+| result.list.zpsl | integer | 正品数量 |
+| result.list.wsort | integer | 排序 |
+| result.total | integer | 数据总数量 |
+
+**与 §7.3 的关系（据客户文档比对）**
+
+- 本接口返回字段与 §7.3 工序进度查询接口（`WorktypeProgressQuery`）**逐字段一致**（`userid` 同为物料编号），差异是本接口入参不带 `page` / `size`。
+- 客户文档的响应示例（`userid=4496`）与其请求示例（`userid=45139`）不自洽，且示例数据与 §7.3 完全相同——按 §7.3 的口径理解，实际行为需在真实环境实测。
+
+### 12.4 缝制总进度接口
+
+**接口地址**：`/api/NetYf/Sclzd/ScjdFzHzQuery`
+
+**业务请求参数**
+
+| 参数名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| dates | string | 是 | 开始日期 |
+| datee | string | 是 | 结束日期 |
+| searchKeyword | string | 是 | 搜索关键词（计划号 / 货号 / 床号 / 品名，模糊查询） |
+| page | integer | 是 | 当前页 |
+| size | integer | 是 | 每页大小 |
+
+**请求示例**
+
+```json
+{
+    "dates": "2026-09-01",
+    "datee": "2026-09-02",
+    "searchKeyword": "",
+    "page": 1,
+    "size": 50
+}
+```
+
+**响应示例**（客户示例共 8 行，此处保留 2 行）
+
+```json
+{
+    "code": 1,
+    "message": "成功",
+    "result": {
+        "list": [
+            {
+                "dddh": "",
+                "huohao": "00001",
+                "huohaoname": "25-MMT40218F第8-1单",
+                "description": "男士卫裤",
+                "chuanghao": "1104",
+                "rq": "2026-09-02",
+                "fzzsl": 100,
+                "wgzsl": 0,
+                "wgl": 0
+            },
+            {
+                "dddh": "",
+                "huohao": "00322",
+                "huohaoname": "TQ-635",
+                "description": "瑜伽服",
+                "chuanghao": "1",
+                "rq": "2026-09-02",
+                "fzzsl": 330,
+                "wgzsl": 214,
+                "wgl": 64
+            }
+        ],
+        "total": 8
+    },
+    "timestamp": 1788352630
+}
+```
+
+**响应字段说明**
+
+| 参数名 | 类型 | 说明 |
+| --- | --- | --- |
+| result.list | array | 缝制进度汇总列表（一行 = 一个「计划号 + 货号 + 床号 + 日期」） |
+| result.list.dddh | string | 计划号 |
+| result.list.huohao | string | 货号 |
+| result.list.huohaoname | string | 货号名称（款号） |
+| result.list.description | string | 品名 |
+| result.list.chuanghao | string | 床号 |
+| result.list.rq | string | 日期 |
+| result.list.fzzsl | integer | 缝制总数量 |
+| result.list.wgzsl | integer | 完工总数量 |
+| result.list.wgl | number | 完工率 |
+| result.total | integer | 数据总数量 |
+
+### 12.5 缝制详细进度接口
+
+**接口地址**：`/api/NetYf/Sclzd/ScjdFzMxQuery`
+
+**业务请求参数**
+
+| 参数名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| dddh | string | 是 | 计划号 |
+| huohao | string | 是 | 货号 |
+| chuanghao | string | 是 | 床号 |
+| rq | string | 是 | 日期 |
+
+**请求示例**
+
+```json
+{
+    "dddh": "",
+    "huohao": "00322",
+    "chuanghao": "1",
+    "rq": "2026-09-02"
+}
+```
+
+**响应示例**
+
+```json
+{
+    "code": 1,
+    "message": "成功",
+    "result": {
+        "list": [
+            {
+                "dddh": "",
+                "huohao": "00322",
+                "huohaoname": "TQ-635",
+                "description": "瑜伽服",
+                "chuanghao": "1",
+                "rq": "2026-09-02",
+                "color": "黑色",
+                "chima": "L",
+                "sssl": 110,
+                "wgsl": 0,
+                "wgl": 0
+            },
+            {
+                "dddh": "",
+                "huohao": "00322",
+                "huohaoname": "TQ-635",
+                "description": "瑜伽服",
+                "chuanghao": "1",
+                "rq": "2026-09-02",
+                "color": "黑色",
+                "chima": "M",
+                "sssl": 110,
+                "wgsl": 110,
+                "wgl": 100
+            }
+        ],
+        "total": 3
+    },
+    "timestamp": 1788353754
+}
+```
+
+**响应字段说明**
+
+| 参数名 | 类型 | 说明 |
+| --- | --- | --- |
+| result.list | array | 缝制明细进度列表（一行 = 一个「颜色 + 尺码」） |
+| result.list.dddh | string | 计划号 |
+| result.list.huohao | string | 货号 |
+| result.list.huohaoname | string | 货号名称（款号） |
+| result.list.description | string | 品名 |
+| result.list.chuanghao | string | 床号 |
+| result.list.rq | string | 日期 |
+| result.list.color | string | 颜色 |
+| result.list.chima | string | 尺码 |
+| result.list.sssl | integer | 数量（客户字段口径；同名字段在 §6.1 / §7.1 为「实收产量」，勿混用） |
+| result.list.wgsl | integer | 完工 |
+| result.list.wgl | number | 完工率 |
+| result.total | integer | 数据总数量 |
+
+### 12.6 工序总体进度接口
+
+**接口地址**：`/api/NetYf/Sclzd/ScjdFzHzWorktypeQuery`
+
+**业务请求参数**
+
+| 参数名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| dddh | string | 是 | 计划号 |
+| huohao | string | 是 | 货号 |
+| chuanghao | string | 是 | 床号 |
+| rq | string | 是 | 日期 |
+
+**请求示例**
+
+```json
+{
+    "dddh": "",
+    "huohao": "00322",
+    "chuanghao": "1",
+    "rq": "2026-09-02"
+}
+```
+
+**响应示例**
+
+```json
+{
+    "code": 1,
+    "message": "成功",
+    "result": {
+        "list": [
+            {
+                "dddh": "",
+                "huohao": "00322",
+                "chuanghao": "1",
+                "rq": "2026-09-02",
+                "worktype": "0662",
+                "wtname": "充绒A",
+                "sort": 2,
+                "sssl": 214,
+                "sksl": 214,
+                "wsksl": 6
+            },
+            {
+                "dddh": "",
+                "huohao": "00322",
+                "chuanghao": "1",
+                "rq": "2026-09-02",
+                "worktype": "0664",
+                "wtname": "充绒C",
+                "sort": 5,
+                "sssl": 220,
+                "sksl": 220,
+                "wsksl": 0
+            }
+        ],
+        "total": 3,
+        "wtname": ["充绒A", "充绒B", "充绒C"],
+        "sssl": [214, 214, 220],
+        "sksl": [214, 214, 220],
+        "wsksl": [6, 6, 0]
+    },
+    "timestamp": 1788354145
+}
+```
+
+**响应字段说明**
+
+| 参数名 | 类型 | 说明 |
+| --- | --- | --- |
+| result.list | array | 工序层进度列表（一行 = 一道工序） |
+| result.list.dddh | string | 计划号 |
+| result.list.huohao | string | 货号 |
+| result.list.chuanghao | string | 床号 |
+| result.list.rq | string | 日期 |
+| result.list.worktype | string | 工序编码 |
+| result.list.wtname | string | 工序名称 |
+| result.list.sort | integer | 工序排序 |
+| result.list.sssl | integer | 总数量 |
+| result.list.sksl | integer | 完成 |
+| result.list.wsksl | integer | 未完成 |
+| result.wtname | array | 与 `list` 平行的工序名称数组（供图表直接使用，顺序与 `list` 一致） |
+| result.sssl | array | 与 `list` 平行的总数量数组 |
+| result.sksl | array | 与 `list` 平行的完成数组 |
+| result.wsksl | array | 与 `list` 平行的未完成数组 |
+| result.total | integer | 数据总数量 |
+
+**待确认（客户示例自带的疑点，勿据此下结论）**
+
+- 三行示例中 `sksl + wsksl` 恒为 `220`，而 `sssl` 分别为 `214` / `214` / `220`；`sssl` 是「该工序应做总数」还是「已完成数」，客户描述（总数量）与实际数值不足以判定，需在真实环境实测。
+
+## 13. 业务口径
+
+本章是跨接口的业务白话说明，配合前 12 章的契约字段阅读。
+
+### 13.1 货号 / 款号 / 货号类型
 
 服装厂里同一件衣服有好几个「编号」，混用会直接导致取错数据：
 
@@ -2221,9 +2837,9 @@ graph LR
     R -->|section| Y["生产类型 ScTypeQuery"]
 ```
 
-### 12.2 生产类型与生产工序
+### 13.2 生产类型与生产工序
 
-#### 12.2.1 生产类型（`ScTypeQuery`）= 把成衣生产切成的几个大段
+#### 13.2.1 生产类型（`ScTypeQuery`）= 把成衣生产切成的几个大段
 
 本厂实测**只有 4 段**：
 
@@ -2236,7 +2852,7 @@ graph LR
 
 注意：生产类型是**工厂自配字典**，不是全行业固定枚举——换一家工厂名称和数量都可能不同，代码里不要写死。本厂 4 条的 `sfjcj` 全为 `1`、`sfcprk` 全为 `0`（常量，无区分度）。
 
-#### 12.2.2 生产工序（`RfidWorktypeQuery`）= 每道具体工序
+#### 13.2.2 生产工序（`RfidWorktypeQuery`）= 每道具体工序
 
 本厂实测 1991 道，字段与文档一致（16 个）。实测分布：
 

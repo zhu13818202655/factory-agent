@@ -47,6 +47,7 @@ EMPTY_BUSINESS_FILTERS = ResolvedBusinessFilters(
     order_codes=None,
     style_codes=None,
     plan_codes=None,
+    material_ids=None,
 )
 
 

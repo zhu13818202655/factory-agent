@@ -106,12 +106,30 @@ def test_closed_metrics_are_confirmed() -> None:
         "org_headcount": "employee-registered-v1",
         "payroll_avg_by_dept": "customer-payroll-avg-v1",
         "time_flag_default": "confirmed-flag-v1",
-        "delivery_warning": "factory-warning-v1",
-        "delivery_days_remaining": "factory-warning-v1",
+        "output_reported_qty": "customer-ysk-v1",
+        "output_reported_amount": "customer-ysk-v1",
+        "progress_package_ratio": "customer-progress-v1",
+        "progress_cut_qty": "customer-progress-v1",
+        "workshop_rank": "factory-rank-v1",
     }.items():
         metric = registry.resolve(name, version)
         assert metric.status == "confirmed"
         assert metric.allows_numeric_rendering() is True
+
+
+def test_metrics_without_a_data_source_are_unavailable() -> None:
+    """生产计划接口弃用后，交期族与达成率都没有来源，必须显式 unavailable."""
+
+    registry = default_metric_registry()
+    for name, version in {
+        "delivery_warning": "factory-warning-v1",
+        "delivery_days_remaining": "factory-warning-v1",
+        "plan_target_output": "unavailable-target-v1",
+    }.items():
+        metric = registry.resolve(name, version)
+        assert metric.status == "unavailable"
+        assert metric.allows_numeric_rendering() is False
+        assert metric.assumption_status != ""
 
 
 def test_duplicate_registration_overwrites_explicitly() -> None:

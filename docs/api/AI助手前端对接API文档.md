@@ -585,7 +585,7 @@ data: {"question":"请问您要查询哪个时间范围的产量？","missing":[
 ```text
 id: 5
 event: interaction.result
-data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","huohao","customer_name","plan_qty","completed_qty","progress_ratio","delivery_warning","days_remaining"],"column_titles":{"order_code":"生产单号","huohao":"款号","customer_name":"客户名称","plan_qty":"订单数量","completed_qty":"完工数量","progress_ratio":"进度","delivery_warning":"交期预警","days_remaining":"距交期"},"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx","answer":"查询完成，共 12 行结果，详情请查看下方结果卡片。"}
+data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","style_code","product_name","bed_code","cut_date","package_count","cut_qty","finished_packages","progress_ratio","worktype_count","finish_state"],"column_titles":{"order_code":"订单号","style_code":"款号","product_name":"品名","bed_code":"床号","cut_date":"裁剪日期","package_count":"包数","cut_qty":"裁剪数量","finished_packages":"完工包数","progress_ratio":"进度","worktype_count":"工序数","finish_state":"状态"},"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx","answer":"查询完成，共 12 行结果，详情请查看下方结果卡片。"}
 ```
 
 字段：
@@ -607,16 +607,13 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","h
 （如"已返回 12 行结果。"）；回答文本同时以 `role=assistant`、`kind=plain_text`
 消息持久化。
 
-**交期预警标记（异常数据自动高亮）**：老板"各订单进度"（FR-009，全厂订单进度总览）的
-输出列中包含两个标记字段：
+**进度口径（前端文案必读）**：订单/款号进度的「进度」列 = **包完工率**，含义是「已做完整包的包数占比」，
+不是件数百分比。建议展示为 `22/23（95.65%）` 形式，并在卡片 `notes` 里写明口径。
 
-| 列名 | 取值 | 含义 |
-| --- | --- | --- |
-| `delivery_warning` | `'1'` / `'0'`（字符串布尔） | 交期预警：订单未完工且距交期剩余天数 ≤ 预警阈值（默认阈值 = max(1, ⌈总工期 × 10%⌉)；缺开始/交期日期时回退固定 7 天窗口） |
-| `days_remaining` | 剩余天数字符串 | 距交期剩余天数，负数表示已逾期 |
-
-前端对 `delivery_warning == '1'` 的行做标红等"异常数据自动高亮"处理，并可展示
-`days_remaining` 辅助说明。**后端只输出标记字段，不输出任何 UI 样式**。
+**已移除的列（2026-09-15 口径重梳）**：`customer_name`（客户名称）、`plan_qty`（计划数量）、
+`completed_qty`（原「完工数量」，实为投产量）、`delivery_warning`（交期预警）、`days_remaining`（距交期）
+**全部取消** —— 其唯一来源「生产计划接口」已弃用，制单侧无替代字段。客户给出新字段后再议。
+`plan_qty` 的位置由 `cut_qty`（裁剪数量）承接；`completed_qty` 由 `finished_packages`（完工包数）承接。
 
 #### 5.3.1 结构化卡片（可选增量字段 `card`）
 
@@ -640,8 +637,7 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","h
     "truncated": true,
     "group_by": "dept",
     "groups": [ { "group": "001", "row_count": 10, "total_rows": 25, "truncated": true } ],
-    "groups_total": 7,
-    "alert_marker": { "column": "delivery_warning", "equals": "1" }
+    "groups_total": 7
   },
   "totals": [ { "label": "工资金额", "unit": "元", "value": "321000" } ],
   "unavailable_columns": ["日均工资"],
@@ -659,7 +655,7 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","h
 | `table` | 明细预览表；`rows` 为**二维数组**（列序 = `columns` 序），只含预览行（仅前 N 行，完整数据走导出 xlsx）。空单元格为 `null`，渲染"—" |
 | `table.total_rows` / `truncated` / `preview_max_rows` | 行数与截断信息：`truncated=true` 时展示"仅展示前 N 行（共 M 行），完整数据请导出"类提示 |
 | `table.group_by` / `groups` / `groups_total` | **分组卡**（组长/老板工资名单）：按 `group_by` 列分组、组内已按金额降序；`groups[]` 每项 `{group, row_count, total_rows, truncated}`。同组成员在 `rows` 里**连续存放、段落顺序与 `groups[]` 一致**，前端按每组 `row_count` 顺序切片即可（tab 切换 + 组内展开成员，**不需要自己重新分组**）；建议每个 tab 文案为「组名（本组总人数）」 |
-| `table.alert_marker` | 语义高亮：`{column, equals}`——行内该列值等于 `equals` 时整行标红（FR-009 交期预警）。样式由前端决定 |
+| `table.alert_marker` | 语义高亮：`{column, equals}`——行内该列值等于 `equals` 时整行标红。**当前无能力使用**（原 FR-009 交期预警随生产计划接口弃用而取消，2026-09-15）；字段保留以便将来有新的预警列时复用 |
 | `totals` | 合计区（卡片底部），结构同 `metrics` |
 | `unavailable_columns` | 无数据源的 KPI 列中文名列表 |
 | `notes` | 面向用户的提示文本（口径说明、不完整提示等），逐条展示即可 |
@@ -673,13 +669,20 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","h
 | fr004_group_income_rank | 收入排名（我在组里排第几） | `kpi` | 金额 / 名次 / 组内名次 / 组内人数（单行） | 无 |
 | fr003_personal_wage_detail | 个人工资明细 | `table` | 小计金额（合计） | 日期/款号/工序/完成数量/工价单价/小计金额 |
 | fr001_personal_output | 个人产量统计 | `table` | 产量（合计） | 日期/款号/工序/产量 |
-| fr006_order_output | 订单/款号产量 | `table` | 产量（合计） | 款号/工序/产量/参与人数 |
-| fr005_order_progress | 订单/款号进度 | `table` | 计划/完工数量（合计） | 生产单号/款号/计划/完工/进度/当前工序/在制数量 |
-| fr009_factory_order_overview | 全厂订单进度总览 | `table` | — | 生产单号/款号/客户/订单数量/完工/进度/交期预警/距交期；**`alert_marker`：`delivery_warning=='1'` 整行标红** |
+| fr006_order_output | 订单/款号产量 | `table` | 裁剪数量 / 进度 / 报工产量合计（`件·工序` 口径） | 款号/工序/产量/参与人数/工序占比；**各工序产量之和不得当作订单总产量**，需在 `notes` 注明 |
+| fr005_order_progress | 订单/款号进度 | `table` | 包数 / 裁剪数量 / 完工包数 / 进度（包完工率） | 订单号/款号/品名/床号/裁剪日期/包数/裁剪数量/完工包数/进度/工序数/状态；**进度 = 完工包数 ÷ 包数** |
+| fr009_factory_order_overview | 全厂订单进度总览 | `table` | — | 订单号/款号/品名/床号/裁剪日期/包数/裁剪数量/完工包数/进度/工序数/状态；**无客户、无交期、无交期预警、无 `alert_marker`** |
 | fr008_payroll_ranking | 员工工资清单与排名 | `ranking` | 工资金额（合计） | 工号/姓名/车间小组/计件件数/工资金额/名次/组内名次；**`group_by: dept` 按组 tab 切换** |
 | fr011_factory_payroll_stats | 全厂工资统计 | `table` | 应发合计（合计） | 车间小组/应发合计/在册人数/人均工资 |
-| fr007_workshop_output_comparison | 车间产量对比 | `ranking` | 产量（合计） | 车间小组/产量/有产出人数/人均产量/名次/达成率 |
-| fr010_workshop_output_overview | 车间产量总览 | `table` | — | 车间小组/款号/计划数量/完工数量/达成率 |
+| fr007_workshop_output_comparison | 车间产量对比 | `ranking` | 报工产量（合计） | 车间小组/报工产量/参与人数/人均产量/名次；**可见部门数为 1 时 `rank_position` 取值不可用（单元格为 `null`，渲染「—」/暂无数据源）**，列本身仍下发、卡片仍是 `ranking` 形态（1 行），`notes` 说明「无对比对象」 |
+| fr010_workshop_output_overview | 小组/车间产量 | `table` | — | 车间小组/款号/报工产量/参与人数/人均产量；**无计划数量、无完工数量、无达成率** |
+
+**三层下钻（进度类新增）**：进度类能力支持「列表 → 包级 → 工序级」三层，**每层都是一次独立的问答轮次**
+（不是同一次 SSE 塞三层）。前端在用户点击时发起**新一轮提问**并把下钻键作为业务条件提交：
+第二层传订单号（复用 `order_codes`），第三层传物料编号（需新增槽位，见 `ALLOWED_SLOT_NAMES`）。
+第二层列：物料编号/包号/颜色/尺码/缸号/裁剪数量/工序数/总数/完成数/完成率；
+第三层列：工序/工序顺序/已完成/预发数量/正品数量/操作人/部门/刷卡时间。
+第二层「总数/完成数」是 **`件·工序` 口径**（总数 = 裁剪数量 × 工序数），**不是件数**，必须在 `notes` 注明。
 
 空结果（`row_count=0` 且 `incomplete=false`）**不下发 `card`**，前端按"没有查询到相关记录"空态处理；`incomplete=true` 时 `card` 照常下发，并附 `notes` 提示。
 
@@ -786,7 +789,7 @@ data: {"state":"composing","reason":"execution_complete","stage":"计算","statu
 
 id: 8
 event: interaction.result
-data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","huohao","customer_name","plan_qty","completed_qty","progress_ratio","delivery_warning","days_remaining"],"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx"}
+data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","style_code","product_name","bed_code","cut_date","package_count","cut_qty","finished_packages","progress_ratio","worktype_count","finish_state"],"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx"}
 
 id: 9
 event: interaction.completed
@@ -841,8 +844,9 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 - `interaction.completed` 的 `status` 区分 `"completed"` 与 `"clarifying"` 两种收尾，
   后者要把追问消息渲染为对话气泡并等待用户补充。
 - `incomplete == true` 时必须向用户明示结果不完整，不能当完整结果展示。
-- 交期预警等异常高亮由前端依据标记字段（`delivery_warning` / `days_remaining`）自行
-  渲染，后端不下发任何样式。
+- 异常高亮（「异常数据自动高亮」）依赖结果里的标记字段 + `card.table.alert_marker`：
+  后端只下发标记，前端自行渲染样式。**当前没有能力下发标记字段**（原订单进度交期预警随生产计划
+  接口弃用而取消，2026-09-15），待客户提供交期字段后再恢复。
 - 导出落盘保留（默认 90 天，重启后保留期内仍可下载）：点击导出时调
   `GET /v1/artifacts/{artifact_id}/download`，把响应当作文件直接下载/保存；收到 404
   （已过期/被清理）时走历史/收藏一键复问重新生成。
@@ -880,18 +884,20 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 | FR-006 | 订单/款号产量查询 | — | ✓ | ✓ | ✓ |
 | FR-007 | 小组/车间产量对比 | — | ✓ | ✓ | ✓ |
 | FR-008 | 员工工资清单 | — | ✓ | ✓ | ✓ |
-| FR-009 | 各订单进度（全厂订单进度总览，含交期预警列） | — | — | — | ✓ |
-| FR-010 | 车间产量总览 | — | — | — | ✓ |
+| FR-009 | 各订单进度（全厂订单进度总览） | — | — | — | ✓ |
+| FR-010 | 车间产量总览 | — | ✓ | ✓ | ✓ |
 | FR-011 | 全厂工资统计 | — | — | — | ✓ |
 | FR-012 | 员工工资查询（任一员工） | — | — | — | ✓ |
 
 说明：FR-001~FR-003 为个人能力（本人维度），四角色均可用；FR-004 收入排名（组内名次）
 仅组长/管理/老板——其唯一数据源是员工工资排名接口，该接口对 00 员工返回 `code=-403`
 （无权限查看工资排名），故员工角色问「我在小组里排第几」将得到 §5.5 的友好拒绝文案；
-FR-005~FR-008 为管理能力，组长/管理可用；FR-009~FR-012 为全厂能力，仅老板。
+FR-005~FR-008 为管理能力，组长/管理可用；FR-010 车间产量总览对组长/管理/老板开放，返回范围由 MES
+按角色行级过滤收窄（组长=本组、管理=绑定的部门/车间、老板=全厂），我方不做本地部门切分；
+FR-009/FR-011/FR-012 为全厂能力，仅老板。
 **老板拥有所有能力**：其数据范围是下级角色的超集，因此 FR-005~FR-008 同样对老板开放
 （老板问某款号/某订单/某小组的数据不应被拒）；反向不成立，01/02 不因老板能力而获得
-FR-009~FR-012。矩阵外的请求以友好拒绝处理（§5.5）。
+FR-009/FR-011/FR-012。矩阵外的请求以友好拒绝处理（§5.5）。
 闲聊（保留能力 `chitchat`）不属于业务矩阵：四角色均可用、不占用追问轮次、不进查询历史/
 收藏。
 
@@ -911,4 +917,4 @@ FR-009~FR-012。矩阵外的请求以友好拒绝处理（§5.5）。
 | 员工 | 我这个月的个人产量是多少？（FR-001）/ 我这个月的工资汇总（FR-002）/ 我这个月的工资明细是怎么算的？（FR-003） |
 | 组长 | 我这个月的工资汇总（FR-002）/ 这个订单现在做到哪道工序了？（FR-005）/ 这个款这周做了多少产量？（FR-006）/ 这个月我们组每人工资清单（FR-008） |
 | 管理 | 这个订单现在做到哪道工序了？（FR-005）/ 这个款这周做了多少产量？（FR-006）/ 各小组这个月产量对比一下（FR-007）/ 这个月我们车间每人工资清单（FR-008） |
-| 老板 | 所有订单现在进度怎么样？（FR-009）/ 整个车间这个月产量情况（FR-010）/ 这个月整个厂工资发多少？（FR-011）/ 我这个月的工资汇总（FR-002） |
+| 老板 | 所有订单现在进度怎么样？（FR-009）/ 全厂各车间这个月产量情况（FR-010）/ 这个月整个厂工资发多少？（FR-011）/ 我这个月的工资汇总（FR-002） |

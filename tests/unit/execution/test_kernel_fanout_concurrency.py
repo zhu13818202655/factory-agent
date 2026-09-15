@@ -5,14 +5,19 @@ those requests may only change how long the step takes — covered combinations,
 row order, request count and the incompleteness reason must all stay exactly
 what the serial walk produced, at every concurrency level.
 
-The row shapes mirror the reviewed FR-005 recipe (plan → materials → one
-progress lookup per material → workshop summary), so the batch behaviour is
-exercised through the real kernel rather than a mocked step.
+No production recipe fans out any more: the reviewed progress recipe reads the
+flow-card list in one paginated call and opens the package/worktype layers with
+business filters, never by fanning out per material (527 次/月 is exactly what
+the redesign forbids). The kernel still owns ``param_bindings`` fan-out plus its
+call budget, so this file exercises it through a reviewed-shape probe recipe
+loaded from a private directory — the real ``configs/`` tree stays untouched.
 """
 
 import asyncio
+import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,37 +33,70 @@ from factory_agent.execution.result_table import default_metric_registry
 from factory_agent.ports.contracts import ResourceFetchResult
 from factory_agent.ports.session import CapabilityRunRequest
 
-#: Material numbers the recipe fans its progress lookup over, one per order.
+#: Material numbers the probe fans its progress lookup over, one per row.
 _MATERIALS = ("1001", "1002")
 
-_PLAN_ROW_TEMPLATES: tuple[dict[str, Any], ...] = (
-    {
-        "dh": "PLAN-1",
-        "jhdh": "JH-1",
-        "khddh": "KHDD-1",
-        "huohao": "HH001",
-        "huohaoname": "模拟款A",
-        "khname": "客户甲",
-        "zsl": "100",
-        "ddsl": "100",
-        "zhdate": "2026-07-01",
-        "finish_date": "2026-07-31",
-        "dept": "dept-a1",
-    },
-    {
-        "dh": "PLAN-2",
-        "jhdh": "JH-2",
-        "khddh": "KHDD-2",
-        "huohao": "HH001",
-        "huohaoname": "模拟款A",
-        "khname": "客户乙",
-        "zsl": "50",
-        "ddsl": "50",
-        "zhdate": "2026-09-01",
-        "finish_date": "2026-09-30",
-        "dept": "dept-a2",
-    },
-)
+#: Probe capability under test (see the module docstring for why it exists).
+_PROBE_CAPABILITY_ID = "probe_fanout_progress"
+
+#: Two base calls (sclzd, dept) then one progress request per material.
+_PROBE_RECIPE = """
+version: 1
+capabilities:
+  - capability_id: probe_fanout_progress
+    title: 扇出探针
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_sclzd
+        kind: api
+        operation_id: SclzdGridPageList
+      - step_id: fetch_dept
+        kind: api
+        operation_id: DeptQuery
+        depends_on: [fetch_sclzd]
+      - step_id: fetch_progress
+        kind: api
+        operation_id: WorktypeProgressQuery
+        depends_on: [fetch_sclzd]
+        param_bindings:
+          userid:
+            from_step: fetch_sclzd
+            column: id
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_sclzd, fetch_dept, fetch_progress]
+        compute: |
+          SELECT
+            s.id AS material_id,
+            CAST(COUNT(DISTINCT p.worktype) AS VARCHAR) AS done_worktypes,
+            CASE WHEN COUNT(p.worktype) = 0 THEN 'unavailable' ELSE 'ok' END AS progress_ratio
+          FROM fetch_sclzd s
+          LEFT JOIN fetch_progress p ON p.userid = s.id
+          GROUP BY s.id
+          ORDER BY s.id
+    result_columns:
+      - name: material_id
+        title: 物料编号
+        source_step: compute
+      - name: done_worktypes
+        title: 已完成工序数
+        source_step: compute
+        metric: progress_done_worktype_count
+        column_type: quantity
+        unit: 道
+      - name: progress_ratio
+        title: 进度
+        source_step: compute
+        metric: progress_package_ratio
+        column_type: percent
+    metric_versions:
+      progress_done_worktype_count: factory-progress-v1
+      progress_package_ratio: customer-progress-v1
+    degradation: incomplete_marker
+"""
+
+_PROBE_DIR = Path(tempfile.mkdtemp(prefix="factory-agent-probe-"))
+(_PROBE_DIR / "probe.yaml").write_text(_PROBE_RECIPE, encoding="utf-8")
 
 #: Per-request latency long enough that unordered execution is observable,
 #: short enough to keep the suite fast.
@@ -94,7 +132,7 @@ class LatencyExecutor:
         self.calls.append((request.operation_id, params))
         if request.operation_id == "WorktypeProgressQuery":
             return await self._progress(params.get("userid", ""))
-        rows = self._rows_for(request.operation_id)
+        rows = self.rows_for(request.operation_id)
         return ResourceFetchResult(
             rows=rows, total=len(rows), pages_fetched=1, complete=True, footer=None
         )
@@ -128,9 +166,7 @@ class LatencyExecutor:
         finally:
             self.in_flight -= 1
 
-    def _rows_for(self, operation_id: str) -> tuple[dict[str, Any], ...]:
-        if operation_id == "PlanGridPageList":
-            return _PLAN_ROW_TEMPLATES
+    def rows_for(self, operation_id: str) -> tuple[dict[str, Any], ...]:
         if operation_id == "SclzdGridPageList":
             return tuple(
                 {
@@ -142,8 +178,8 @@ class LatencyExecutor:
                 }
                 for index, material in enumerate(_MATERIALS, start=1)
             )
-        if operation_id == "WskQuery":
-            return ({"id": "1001", "huohao": "HH001", "worktype": "WT02", "sl": "93"},)
+        if operation_id == "DeptQuery":
+            return ({"id": "dept-a1", "name": "一车间"}, {"id": "dept-a2", "name": "二车间"})
         return ()
 
 
@@ -156,9 +192,10 @@ def _range() -> TimeRange:
 
 
 async def _run(executor: LatencyExecutor, *, concurrency: int, max_api_calls: int = 500) -> Any:
+    catalog = load_catalog()
     runner = KernelCapabilityRunner(
         executor,
-        load_recipes(load_catalog().operation_ids),
+        load_recipes(catalog.operation_ids, _PROBE_DIR),
         default_metric_registry(),
         settings=KernelSettings(max_api_calls=max_api_calls, fanout_concurrency=concurrency),
         clock=lambda: datetime(2026, 8, 21, 8, tzinfo=UTC),
@@ -166,7 +203,7 @@ async def _run(executor: LatencyExecutor, *, concurrency: int, max_api_calls: in
     )
     return await runner.run(
         CapabilityRunRequest(
-            capability_id=CapabilityId("fr005_order_progress"),
+            capability_id=CapabilityId(_PROBE_CAPABILITY_ID),
             filters=_filters(),
             time_range=_range(),
         )
@@ -198,8 +235,8 @@ async def test_every_concurrency_level_produces_the_serial_outcome(
     """Batching may only change how long the step takes, never what it means."""
     serial_executor = LatencyExecutor()
     serial = await _run(serial_executor, concurrency=1)
-    # plan + sclzd + one progress request per material + wsk
-    assert serial.api_call_count == 3 + len(_MATERIALS)
+    # sclzd + dept + one progress request per material
+    assert serial.api_call_count == 2 + len(_MATERIALS)
     assert serial.incomplete is False
     assert serial.incomplete_reason is None
 
@@ -233,7 +270,7 @@ async def test_a_batch_never_exceeds_the_configured_concurrency() -> None:
 
 @pytest.mark.asyncio
 async def test_the_budget_covers_whole_combinations_and_reports_the_rest() -> None:
-    """plan+sclzd spend two calls, so a 3-call budget covers one material.
+    """sclzd+dept spend two calls, so a 3-call budget covers one material.
 
     The budget bounds the fan-out only; the remaining recipe steps still run,
     and the uncovered material stays an explicit ``unavailable``.
@@ -243,7 +280,7 @@ async def test_the_budget_covers_whole_combinations_and_reports_the_rest() -> No
         result = await _run(executor, concurrency=concurrency, max_api_calls=3)
 
         assert _fanout_materials(executor) == [_MATERIALS[0]]
-        assert result.api_call_count == 4  # plan + sclzd + 1 progress + wsk
+        assert result.api_call_count == 3  # sclzd + dept + 1 progress
         assert result.incomplete is True
         assert result.incomplete_reason == "pagination_call_budget_exhausted"
         assert "unavailable" in {str(row[-1]) for row in result.rows}, (
@@ -253,7 +290,7 @@ async def test_the_budget_covers_whole_combinations_and_reports_the_rest() -> No
 
 @pytest.mark.asyncio
 async def test_a_zero_budget_issues_no_fanout_request_at_all() -> None:
-    """plan+sclzd already spend the whole budget: nothing may be sent."""
+    """sclzd+dept already spend the whole budget: nothing may be sent."""
     for concurrency in (1, 4):
         executor = LatencyExecutor()
         result = await _run(executor, concurrency=concurrency, max_api_calls=2)
@@ -345,7 +382,10 @@ async def test_result_row_order_is_reproducible() -> None:
     assert list(first.rows) == list(second.rows)
 
 
-def test_plan_rows_are_stable_fixtures() -> None:
-    """Guards the fixture this file reads, so a silent edit cannot mask a bug."""
-    assert [row["dh"] for row in _PLAN_ROW_TEMPLATES] == ["PLAN-1", "PLAN-2"]
-    assert Decimal("100") == Decimal(_PLAN_ROW_TEMPLATES[0]["zsl"])
+def test_probe_fixtures_are_stable() -> None:
+    """Guards the fixtures this file reads, so a silent edit cannot mask a bug."""
+    assert _MATERIALS == ("1001", "1002")
+    items = LatencyExecutor().rows_for("SclzdGridPageList")
+    assert [row["id"] for row in items] == list(_MATERIALS)
+    assert Decimal("13") == Decimal(items[0]["sssl"])
+    assert _PROBE_CAPABILITY_ID in (load_recipes(load_catalog().operation_ids, _PROBE_DIR))

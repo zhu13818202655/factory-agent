@@ -265,6 +265,10 @@ class IntentSlots:
     order_codes: tuple[str, ...] = ()
     plan_codes: tuple[str, ...] = ()
     style_codes: tuple[str, ...] = ()
+    #: Package material numbers (``Sclzd.id``), the key that opens the
+    #: package-to-worktype drill-down. A business filter value like the codes
+    #: above: it narrows only and never carries scope identifiers.
+    material_ids: tuple[str, ...] = ()
     dept_names: tuple[str, ...] = ()
     employee_names: tuple[str, ...] = ()
 
@@ -272,7 +276,14 @@ class IntentSlots:
         filled: set[str] = set()
         if self.time_range_start is not None and self.time_range_end is not None:
             filled.add("time_range")
-        for name in ("order_codes", "plan_codes", "style_codes", "dept_names", "employee_names"):
+        for name in (
+            "order_codes",
+            "plan_codes",
+            "style_codes",
+            "material_ids",
+            "dept_names",
+            "employee_names",
+        ):
             if getattr(self, name):
                 filled.add(name)
         return frozenset(filled)

@@ -8,14 +8,20 @@ import yaml
 from factory_agent.data_api.catalog import DEFAULT_CATALOG_PATH, load_catalog
 
 
-def test_default_catalog_loads_and_covers_26_customer_operations() -> None:
+def test_default_catalog_loads_and_covers_30_customer_operations() -> None:
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
-    assert len(catalog.operation_ids) == 26
+    assert len(catalog.operation_ids) == 30
     assert "SystemToken" in catalog
     assert "YskQuery" in catalog
     assert "GongziMxQuery" in catalog
     assert "MoveMenuQuery" in catalog  # registered but disabled
     assert catalog.get("MoveMenuQuery").enabled is False
+    # 缝制进度族（进度与产量重梳方案的唯一取数族，见 docs/design/进度与产量功能重梳方案.md §1.1）
+    for scjd in ("ScjdQuery", "ScjdDetailQuery", "ScjdGxQuery", "ScjdFzHzQuery"):
+        assert scjd in catalog, scjd
+        assert catalog.get(scjd).enabled is True
+    # 生产计划接口弃用：条目保留（计费分类与种子不变），运行时拒绝调用
+    assert catalog.get("PlanGridPageList").enabled is False
     assert "A1_getTenantMembership" not in catalog
     assert "C1_listPieceworkRecords" not in catalog
 
