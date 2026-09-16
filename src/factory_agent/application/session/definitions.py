@@ -59,6 +59,32 @@ class StartRequest:
     text: str
     history: tuple[ConversationTurn, ...] = ()
     clarification_rounds: int = 0
+    #: Structured drill-down (D-3 拍板): capability + business narrowing slots
+    #: supplied by the client from a card action. Validated server-side before
+    #: any business call; absent = a normal text-parsed turn.
+    drill: "DrillPayload | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class DrillPayload:
+    """Structured drill request carried from ``start`` to the claiming executor.
+
+    Scope identifiers are absent by design: the drill only carries business
+    narrowing values (a department id set and/or one target employee uid) and
+    an optional reviewed time expression (default 当月). Every value is
+    re-validated server-side against the active DataScope before any business
+    call — the drill can only narrow, never broaden.
+
+    The payload lives in-process only (single-worker deployment): if the
+    process restarts before the interaction is claimed, the pending row is
+    swept to ``abandoned`` and the user retries — a lost drill never degrades
+    into a silently text-parsed query.
+    """
+
+    capability_id: str
+    dept_ids: tuple[str, ...] = ()
+    employee_uid: str | None = None
+    time_expression: str | None = None
 
 
 @dataclass

@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from factory_agent.application.authorization import ResolvedAuthorization
-from factory_agent.application.business_filters import DirectoryError
+from factory_agent.application.business_filters import DirectoryError, ResolvedBusinessFilters
 from factory_agent.application.capability_map import (
     CHITCHAT_CAPABILITY_ID,
     FR_INFO,
@@ -28,13 +28,18 @@ from factory_agent.application.session.consistency import SessionConsistencyMixi
 from factory_agent.application.session.definitions import (
     EMPTY_BUSINESS_FILTERS,
     TERMINAL_STATUSES,
+    DrillPayload,
     RunState,
     session_logger,
 )
 from factory_agent.application.session.executor import InteractionRunExecutor
 from factory_agent.application.structured import StructuredOutputError
 from factory_agent.application.summary import fallback_result_answer, format_aggregate_value
-from factory_agent.application.time_expressions import time_range_violation
+from factory_agent.application.time_expressions import (
+    TimeExpressionError,
+    resolve_time_expression,
+    time_range_violation,
+)
 from factory_agent.application.usage import (
     drain_mes_events,
     llm_call_event,
@@ -46,6 +51,9 @@ from factory_agent.domain import (
     CapabilityId,
     CapabilityIntent,
     DataScope,
+    DeptId,
+    EmployeeId,
+    IntentSlots,
     InteractionRecord,
     InteractionStatus,
     MessageKind,
@@ -166,6 +174,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         after_sequence: int,
         credential: TrustedCredential,
         control: InteractionRunExecutor | None = None,
+        drill: DrillPayload | None = None,
     ) -> AsyncIterator[SessionEvent]:
         state = RunState(
             record=record,
@@ -219,7 +228,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
 
                 try:
                     async for event in self._pipeline(
-                        owner, authorization, state, history, usage_events, control
+                        owner, authorization, state, history, usage_events, control, drill=drill
                     ):
                         yield event
                     if state.record.status in TERMINAL_STATUSES:
@@ -259,6 +268,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         usage_events: list[UsageEvent],
         plan: _ExecutionPlan,
         scope_classification: ScopeClassification | None = None,
+        drill: DrillPayload | None = None,
     ) -> AsyncIterator[SessionEvent]:
         """Run every denial path before any business-data call.
 
@@ -323,9 +333,20 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         # Resolve user business filters (dept/employee names, order/
         # style/plan codes) from the intent slots against the MES-filtered
         # directory. Every resolution failure happens before any business-data
-        # call and never falls back to a broader scope.
+        # call and never falls back to a broader scope. A structured drill
+        # round skips name resolution entirely: it already carries validated
+        # ids, which only go through the same scope-narrowing gates below.
         resolved = EMPTY_BUSINESS_FILTERS
-        if self._business_filters is not None:
+        if drill is not None:
+            try:
+                resolved = await self._resolve_drill_filters(drill, scope)
+            except DirectoryError as exc:
+                async for event in self._reject_message(
+                    state, f"filter_{exc.code}", exc.message, usage_events
+                ):
+                    yield event
+                return
+        elif self._business_filters is not None:
             # Directory lookups (dept/employee names) read the MES-filtered
             # directory and can take a while; announce them before the first
             # one — but only when a slot actually names a department or
@@ -429,6 +450,49 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         plan.filters = filters
         plan.time_range = time_range
 
+    async def _resolve_drill_filters(
+        self, drill: DrillPayload, scope: DataScope
+    ) -> ResolvedBusinessFilters:
+        """Turn structured drill slots into narrowing inputs (D-3/D-5 拍板).
+
+        Drill slots are already ids, not names. The department set goes through
+        the normal ``FilterNarrower`` scope intersection later (out-of-range
+        depts are rejected before any business call). The target employee of a
+        drill round is looked up in the tenant directory, and for non-
+        whole-tenant scopes (01/02) must sit inside the caller's bound
+        department set — server-side narrowing per D-5; MES row-level
+        filtering stays the second line of defence.
+        """
+        dept_ids: frozenset[DeptId] | None = None
+        if drill.dept_ids:
+            if not scope.mes_filtered:
+                out_of_range = [
+                    value for value in drill.dept_ids if DeptId(value) not in scope.dept_ids
+                ]
+                if out_of_range:
+                    raise DirectoryError("forbidden", "请求的车间/小组不在您可查询的范围内。")
+            dept_ids = frozenset(DeptId(value) for value in drill.dept_ids)
+        employee_ids: frozenset[EmployeeId] | None = None
+        if drill.employee_uid:
+            if self._business_filters is None:
+                raise DirectoryError("not_found", "员工目录不可用，无法下钻查询该员工。")
+            employee = await self._business_filters.find_employee_by_id(scope, drill.employee_uid)
+            if employee is None:
+                raise DirectoryError("not_found", "未找到该员工，无法下钻查询。")
+            if not scope.mes_filtered:
+                employee_dept = DeptId(employee.dept) if employee.dept is not None else None
+                if employee_dept is None or employee_dept not in scope.dept_ids:
+                    raise DirectoryError("forbidden", "该员工不在您可查询的车间范围内。")
+            employee_ids = frozenset({EmployeeId(drill.employee_uid)})
+        return ResolvedBusinessFilters(
+            employee_ids=employee_ids,
+            dept_ids=dept_ids,
+            order_codes=None,
+            style_codes=None,
+            plan_codes=None,
+            material_ids=None,
+        )
+
     async def _pipeline(
         self,
         owner: InteractionOwner,
@@ -437,6 +501,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         history: tuple[ConversationTurn, ...],
         usage_events: list[UsageEvent],
         control: InteractionRunExecutor | None = None,
+        drill: DrillPayload | None = None,
     ) -> AsyncIterator[SessionEvent]:
         stop = await self._stop_reason(owner, state.record.interaction_id, control)
         if stop is not None:
@@ -446,18 +511,61 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         # The parse call stays silent for as long as the model takes; announce
         # the stage before it starts so the caller watches progress, not a stall.
         yield await self._progress(state, "parse_started")
-        try:
-            parsed = await self._parse(
-                state, history, usage_events, role=authorization.tenant_context.role
+        if drill is not None:
+            # Structured drill (D-3 拍板)：intent comes from the validated
+            # drill payload, not from a model call — zero LLM spend, zero
+            # routing ambiguity. Scope classification is likewise
+            # deterministic (the slots were validated against the DataScope
+            # below, in the authorization chain).
+            session_logger.info(
+                "session.drill.applied",
+                capability_id=drill.capability_id,
+                dept_count=len(drill.dept_ids),
+                has_employee=drill.employee_uid is not None,
+                interaction_id=str(state.record.interaction_id),
+                session_id=str(state.record.session_id),
             )
-        except ModelGatewayError as exc:
-            async for event in self._fail(state, f"gateway_{exc.category.value}", usage_events):
-                yield event
-            return
-        except StructuredOutputError:
-            async for event in self._fail(state, "model_output_invalid", usage_events):
-                yield event
-            return
+            try:
+                parsed = self._drill_parse_outcome(drill)
+            except TimeExpressionError:
+                async for event in self._reject_message(
+                    state,
+                    "drill_invalid_time",
+                    "下钻时间范围无法识别，请重新发起查询。",
+                    usage_events,
+                ):
+                    yield event
+                return
+            # The drill round still gets its EXTRACT metering record (审计与
+            # 计量打通), marked as the deterministic no-model path so usage
+            # dashboards can separate it from real model spend.
+            usage_events.append(
+                llm_call_event(
+                    self._usage_context(state.record),
+                    occurred_at=self._clock.now(),
+                    logical_call_id=self._new_id(),
+                    stage=ModelStage.EXTRACT,
+                    model_alias="structured-drill",
+                    actual_model="structured_drill",
+                    attempt=0,
+                    duration_ms=0,
+                    status="completed",
+                    includes_scope=False,
+                )
+            )
+        else:
+            try:
+                parsed = await self._parse(
+                    state, history, usage_events, role=authorization.tenant_context.role
+                )
+            except ModelGatewayError as exc:
+                async for event in self._fail(state, f"gateway_{exc.category.value}", usage_events):
+                    yield event
+                return
+            except StructuredOutputError:
+                async for event in self._fail(state, "model_output_invalid", usage_events):
+                    yield event
+                return
 
         intent = parsed.intent
         state.last_intent = intent
@@ -509,6 +617,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
             usage_events,
             plan,
             parsed.scope_verdict,
+            drill=drill,
         ):
             yield event
         if (
@@ -765,6 +874,36 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         )
         yield result_event
         yield terminal
+
+    def _drill_parse_outcome(self, drill: DrillPayload) -> IntentParseOutcome:
+        """Synthetic parse outcome for a structured drill round.
+
+        Time comes from the reviewed expression vocabulary (default 当月);
+        confidence is 1.0 because the capability is client-declared from a
+        server-authored card action, and the slots carry no ambiguity.
+        """
+        expression = drill.time_expression or "本月"
+        time_range = resolve_time_expression(
+            expression, self._clock.now(), self._factory_timezone_name
+        )
+        intent = CapabilityIntent(
+            capability_id=CapabilityId(drill.capability_id),
+            confidence=1.0,
+            slots=IntentSlots(
+                time_range_start=time_range.start,
+                time_range_end=time_range.end,
+                time_expression=expression,
+            ),
+        )
+        return IntentParseOutcome(
+            intent=intent,
+            clarification=None,
+            attempts=0,
+            actual_model="structured_drill",
+            duration_ms=0,
+            rewrite_query=None,
+            scope_verdict=ScopeClassification(beyond=False, target="structured drill"),
+        )
 
     async def _parse(
         self,

@@ -18,7 +18,13 @@ Matrix (customer-confirmed):
 - FR-010 车间产量总览: 01 组长 / 02 管理, and 99 老板. The customer MES narrows the
   returned rows to the caller's own or managed departments, so one capability
   serves the whole factory for the owner and the bound department for 01/02.
-- FR-011..FR-012 factory-wide payroll capabilities: 99 老板 only.
+- FR-011 全厂工资统计: 99 老板 only.
+- FR-012 员工工资查询: 01 组长 / 02 管理, and 99 老板 (2026-09-16 拍板，D-5 of
+  结果卡片增强与层级下钻改造方案). The target employee is resolved in-tenant
+  through ``EmployeeQuery`` and, for 01/02, must sit inside the caller's bound
+  department set — enforced server-side before any business call; MES
+  row-level filtering stays the second line of defence.
+- FR-013 全厂产量总览（综合看板）: 99 老板 only (2026-09-16 拍板).
 
 The owner holds every capability a narrower role holds: his data range is a
 superset, so a wider role must never lose a narrower role's capability.
@@ -46,6 +52,7 @@ class Capability(StrEnum):
     WORKSHOP_OUTPUT_OVERVIEW = "FR-010"
     FACTORY_PAYROLL_STATS = "FR-011"
     ANY_EMPLOYEE_PAYROLL = "FR-012"
+    FACTORY_OUTPUT_DASHBOARD = "FR-013"
 
 
 #: FR-001..FR-003 personal capabilities: all four roles (they operate on the
@@ -77,7 +84,11 @@ CAPABILITY_ROLES: dict[Capability, frozenset[Role]] = {
     Capability.FACTORY_ORDER_OVERVIEW: _OWNER_ROLES,
     Capability.WORKSHOP_OUTPUT_OVERVIEW: _MANAGEMENT_AND_OWNER_ROLES,
     Capability.FACTORY_PAYROLL_STATS: _OWNER_ROLES,
-    Capability.ANY_EMPLOYEE_PAYROLL: _OWNER_ROLES,
+    # D-5 (2026-09-16 拍板): 任一员工工资查询 opens to group leaders and
+    # managers; the target employee must sit inside the caller's bound
+    # department set (server-side narrowing before any business call).
+    Capability.ANY_EMPLOYEE_PAYROLL: _MANAGEMENT_AND_OWNER_ROLES,
+    Capability.FACTORY_OUTPUT_DASHBOARD: _OWNER_ROLES,
 }
 
 REGISTERED_CAPABILITIES: frozenset[Capability] = frozenset(CAPABILITY_ROLES)

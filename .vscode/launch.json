@@ -37,54 +37,6 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "pytest：当前文件",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "args": [
-                "${file}",
-                "-vv",
-                "-s"
-            ],
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/.env",
-            "justMyCode": false,
-            "console": "integratedTerminal"
-        },
-        {
-            "name": "pytest：全量 unit",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "args": [
-                "tests/unit",
-                "tests/eval",
-                "usage-admin/tests/unit"
-            ],
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/.env",
-            "justMyCode": false,
-            "console": "integratedTerminal"
-        },
-        {
-            "name": "factory-agent-migrate（升级业务库）",
-            "consoleName": "FA-MIGRATE",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "factory_agent.persistence.migrations",
-            "args": [
-                "upgrade",
-                "head"
-            ],
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/.env",
-            "justMyCode": true,
-            "console": "integratedTerminal"
-        },
-        {
             "name": "factory-agent 测试前端（代理 + 静态页）",
             "consoleName": "FA-Demo",
             "type": "debugpy",

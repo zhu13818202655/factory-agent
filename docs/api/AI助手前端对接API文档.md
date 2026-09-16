@@ -196,8 +196,34 @@
 ```
 
 - `text`：1–4000 字符，服务端当前有效上限默认 2000 字符，超出返回 400。
-- 请求体**只有** `text`；不要携带任何身份、租户、范围字段。
+- 请求体除 `text` 外仅有一个可选字段 `drill`（结构化下钻，见下）；**不要携带任何身份、租户、范围字段**。
 - `session_id` 由前端生成，首轮即视为建档该会话。
+
+**可选字段 `drill`（结构化下钻，2026-09-16 拍板）**：用户点击结果卡片上的下钻入口
+（`card.actions`，§5.3.1）时，前端把被点行的列值填入槽位发起本轮请求：
+
+```json
+{
+  "text": "查看该车间工资",
+  "drill": {
+    "capability_id": "fr008_payroll_ranking",
+    "dept_ids": ["001"],
+    "time_expression": "本月"
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `drill.capability_id` | 必填，下钻目标能力（与 `card.actions[].capability_id` 一致）；未登记的能力返回 400 |
+| `drill.dept_ids` | 可选，目标车间/小组编号数组（来自被点行的 `bind_from` 映射列）；最多 20 个 |
+| `drill.employee_uid` | 可选，目标员工工号（成员工资条下钻，fr012） |
+| `drill.time_expression` | 可选，时间范围表述（如 `本月`）；缺席时默认当月 |
+
+服务端在下钻轮次上**跳过 LLM 意图路由**（确定性执行、零模型开销），并对槽位做三道校验：
+能力在角色矩阵内、槽位键白名单、值只收窄（部门/员工必须在调用者可查范围内）。越界时本轮
+以 `interaction.failed` 终结（`filter_forbidden` / `filter_not_found`），**零业务调用**。
+`drill` 缺席时行为与旧版完全一致。
 
 响应 `201`：
 
@@ -635,10 +661,22 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","s
     "total_rows": 137,
     "preview_max_rows": 10,
     "truncated": true,
+    "page": 1,
+    "page_size": 10,
+    "has_more": true,
     "group_by": "dept",
-    "groups": [ { "group": "001", "row_count": 10, "total_rows": 25, "truncated": true } ],
+    "groups": [ { "group": "001", "name": "缝纫一组", "row_count": 10, "total_rows": 25, "truncated": true } ],
     "groups_total": 7
   },
+  "chart": {
+    "type": "bar",
+    "unit": "件",
+    "granularity": "day",
+    "points": [ { "label": "09-08", "value": "2460" }, { "label": "09-09", "value": "2670" } ]
+  },
+  "actions": [
+    { "type": "drill", "label": "查看该成员的工资", "capability_id": "fr012_employee_payroll", "bind_from": { "employee_uid": "uid" } }
+  ],
   "totals": [ { "label": "工资金额", "unit": "元", "value": "321000" } ],
   "unavailable_columns": ["日均工资"],
   "notes": ["本次结果不完整（pagination_total_drift），以导出文件为准。"]
@@ -654,7 +692,10 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","s
 | `metrics` | KPI 数字区：`{label, value, unit}`；无数据源时为 `{label, unit, unavailable: true}`（渲染"暂无数据源"，**不得渲染为 0**） |
 | `table` | 明细预览表；`rows` 为**二维数组**（列序 = `columns` 序），只含预览行（仅前 N 行，完整数据走导出 xlsx）。空单元格为 `null`，渲染"—" |
 | `table.total_rows` / `truncated` / `preview_max_rows` | 行数与截断信息：`truncated=true` 时展示"仅展示前 N 行（共 M 行），完整数据请导出"类提示 |
-| `table.group_by` / `groups` / `groups_total` | **分组卡**（组长/老板工资名单）：按 `group_by` 列分组、组内已按金额降序；`groups[]` 每项 `{group, row_count, total_rows, truncated}`。同组成员在 `rows` 里**连续存放、段落顺序与 `groups[]` 一致**，前端按每组 `row_count` 顺序切片即可（tab 切换 + 组内展开成员，**不需要自己重新分组**）；建议每个 tab 文案为「组名（本组总人数）」 |
+| `table.group_by` / `groups` / `groups_total` | **分组卡**（组长/老板工资名单）：按 `group_by` 列分组、组内已按金额降序；`groups[]` 每项 `{group, name, row_count, total_rows, truncated}`（`name` 为组显示名，可缺席，缺席时用 `group` 原值）。同组成员在 `rows` 里**连续存放、段落顺序与 `groups[]` 一致**，前端按每组 `row_count` 顺序切片即可（tab 切换 + 组内展开成员，**不需要自己重新分组**）；建议每个 tab 文案为「组名（本组总人数）」 |
+| `table.page` / `page_size` / `has_more` | **分页三字段**（总是同时下发）：预览模式下固定 `page=1`，`page_size` = 预览行上限，`has_more` 派生自 `truncated`；完整行走导出文件 |
+| `chart` | **图表区**（可缺席）：`type` 本期仅 `"bar"`（枚举位预留）；`granularity` 为 `day`/`week`——日粒度点数超过 62 时服务端自动降为周粒度（`label` 为周起始日），**前端零聚合逻辑**；`points[]` 每项 `{label, value}`，`label` 为原始日期（`MM-DD`），本地化展示由前端负责；`points` 已按服务端排好序；无数据时整个 `chart` 区块缺席（不下发空数组） |
+| `actions` | **卡片级下钻声明**（可缺席）：`{type: "drill", label, capability_id, bind_from}`；`bind_from` 为「下钻槽位键 → 结果列名」映射（如 `{"dept_ids": "dept"}`、`{"employee_uid": "uid"}`）——用户点击某行时，前端从该行取对应列值填入 `drill` 载荷（§4.2）发起新一轮请求。**纯提示性字段**：前端忽略它零行为变化；无权角色不会收到对应入口（服务端按角色裁剪） |
 | `table.alert_marker` | 语义高亮：`{column, equals}`——行内该列值等于 `equals` 时整行标红。**当前无能力使用**（原 FR-009 交期预警随生产计划接口弃用而取消，2026-09-15）；字段保留以便将来有新的预警列时复用 |
 | `totals` | 合计区（卡片底部），结构同 `metrics` |
 | `unavailable_columns` | 无数据源的 KPI 列中文名列表 |
@@ -665,17 +706,18 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","s
 | capability_id | 能力 | `kind` | KPI 区 | 预览表要点 |
 | --- | --- | --- | --- | --- |
 | fr002_personal_wage_summary | 个人工资汇总 | `kpi` | 计件工资合计 / 计件件数 / 日均工资 | 无 |
-| fr012_employee_payroll | 任一员工工资查询 | `kpi` | 计件工资合计 / 计件件数 | 无 |
+| fr012_employee_payroll | 任一员工工资查询（01 组长 / 02 管理 / 99 老板，2026-09-16 D-5 放开；目标员工必须在调用者可查范围内） | `kpi` | 计件工资合计 / 计件件数 | 无 |
 | fr004_group_income_rank | 收入排名（我在组里排第几） | `kpi` | 金额 / 名次 / 组内名次 / 组内人数（单行） | 无 |
 | fr003_personal_wage_detail | 个人工资明细 | `table` | 小计金额（合计） | 日期/款号/工序/完成数量/工价单价/小计金额 |
 | fr001_personal_output | 个人产量统计 | `table` | 产量（合计） | 日期/款号/工序/产量 |
 | fr006_order_output | 订单/款号产量 | `table` | 裁剪数量 / 进度 / 报工产量合计（`件·工序` 口径） | 款号/工序/产量/参与人数/工序占比；**各工序产量之和不得当作订单总产量**，需在 `notes` 注明 |
 | fr005_order_progress | 订单/款号进度 | `table` | 包数 / 裁剪数量 / 完工包数 / 进度（包完工率） | 订单号/款号/品名/床号/裁剪日期/包数/裁剪数量/完工包数/进度/工序数/状态；**进度 = 完工包数 ÷ 包数** |
 | fr009_factory_order_overview | 全厂订单进度总览 | `table` | — | 订单号/款号/品名/床号/裁剪日期/包数/裁剪数量/完工包数/进度/工序数/状态；**无客户、无交期、无交期预警、无 `alert_marker`** |
-| fr008_payroll_ranking | 员工工资清单与排名 | `ranking` | 工资金额（合计） | 工号/姓名/车间小组/计件件数/工资金额/名次/组内名次；**`group_by: dept` 按组 tab 切换** |
-| fr011_factory_payroll_stats | 全厂工资统计 | `table` | 应发合计（合计） | 车间小组/应发合计/在册人数/人均工资 |
+| fr008_payroll_ranking | 员工工资清单与排名 | `ranking` | 工资金额（合计） | 工号/姓名/车间小组/计件件数/工资金额/名次/组内名次；**`group_by: dept` 按组 tab 切换**；**actions（点成员行 → fr012 工资条，01/02/99 均下发）** |
+| fr011_factory_payroll_stats | 全厂工资统计 | `table` | 工资总额 / 人均工资 / 在册人数（aux KPI） | 车间小组/应发合计/在册人数/人均工资；**actions（点车间行 → fr008 工资清单）** |
 | fr007_workshop_output_comparison | 车间产量对比 | `ranking` | 报工产量（合计） | 车间小组/报工产量/参与人数/人均产量/名次；**可见部门数为 1 时 `rank_position` 取值不可用（单元格为 `null`，渲染「—」/暂无数据源）**，列本身仍下发、卡片仍是 `ranking` 形态（1 行），`notes` 说明「无对比对象」 |
 | fr010_workshop_output_overview | 小组/车间产量 | `table` | — | 车间小组/款号/报工产量/参与人数/人均产量；**无计划数量、无完工数量、无达成率** |
+| fr013_factory_output_dashboard | 全厂产量总览（综合看板，仅老板） | `ranking` | 总产量 / 在产订单（D-2 口径）/ 人均月产（aux KPI） | 车间小组/报工产量/参与人数/人均产量/名次 + **日产量柱状图（`chart`）** + **actions（点车间行 → fr010 产量明细）**；「报工产量」为 `件·工序` 口径（`notes` 注明） |
 
 **三层下钻（进度类新增）**：进度类能力支持「列表 → 包级 → 工序级」三层，**每层都是一次独立的问答轮次**
 （不是同一次 SSE 塞三层）。前端在用户点击时发起**新一轮提问**并把下钻键作为业务条件提交：

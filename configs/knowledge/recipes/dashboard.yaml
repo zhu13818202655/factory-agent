@@ -1,0 +1,164 @@
+# Reviewed L1 factory output dashboard recipe. File changes are semantics
+# changes and require human review.
+#
+# 口径来源：``docs/design/结果卡片增强与层级下钻改造方案.md``（2026-09-16 拍板）。
+#
+# FR-013 全厂产量总览（综合看板，仅老板）：一张卡片同时给出
+# ① KPI 区（总产量 / 在产订单 / 人均月产）、② 日产量柱状图、③ 车间产量排名。
+# 主表 = 车间排名（口径与 fr007 一致，但名次恒输出——看板场景不做 N=1 置空）；
+# KPI 与日序列走 ``aux_outputs``（只进卡片，不进主表与导出文件）。
+#
+# 在产订单口径（D-2 拍板）：统计窗内 ``ScjdQuery`` 包完工率（wcl）< 100% 的
+# 制单（dh）去重数。wcl 为字符串数值，TRY_CAST 后比较；取不到（窗口无缝制
+# 记录）时该 KPI 输出「暂无数据源」，不伪造 0。
+#
+# 人均月产 = ΣYskQuery.sl ÷ 在册人数（EmployeeQuery 全量行数）。
+version: 1
+capabilities:
+  - capability_id: fr013_factory_output_dashboard
+    title: 全厂产量总览
+    required_slots: [time_range]
+    steps:
+      - step_id: fetch_ysk
+        kind: api
+        operation_id: YskQuery
+      - step_id: fetch_dept
+        kind: api
+        operation_id: DeptQuery
+        depends_on: [fetch_ysk]
+      - step_id: fetch_employee
+        kind: api
+        operation_id: EmployeeQuery
+        depends_on: [fetch_dept]
+      - step_id: fetch_scjd
+        kind: api
+        operation_id: ScjdQuery
+        depends_on: [fetch_employee]
+      - step_id: compute
+        kind: local
+        depends_on: [fetch_ysk, fetch_dept]
+        compute: |
+          WITH agg AS (
+            SELECT
+              y.dept AS dept_id,
+              COALESCE(NULLIF(d.name, ''), y.dept) AS dept_name,
+              SUM(CAST(COALESCE(TRY_CAST(y.sl AS DECIMAL), 0) AS DECIMAL)) AS output_qty,
+              COUNT(DISTINCT y.uid) AS participant_count
+            FROM fetch_ysk y
+            LEFT JOIN fetch_dept d ON d.id = y.dept
+            WHERE COALESCE(y.dept, '') <> ''
+            GROUP BY y.dept, COALESCE(NULLIF(d.name, ''), y.dept)
+          )
+          SELECT
+            CAST(RANK() OVER (ORDER BY output_qty DESC) AS VARCHAR) AS rank_position,
+            dept_id,
+            dept_name,
+            CAST(output_qty AS VARCHAR) AS output_qty,
+            CAST(participant_count AS VARCHAR) AS participant_count,
+            CASE WHEN participant_count > 0
+                 THEN CAST(output_qty / CAST(participant_count AS DECIMAL) AS VARCHAR)
+                 ELSE 'unavailable' END AS per_capita
+          FROM agg
+          ORDER BY output_qty DESC
+    result_columns:
+      - name: rank_position
+        title: 名次
+        source_step: compute
+        metric: workshop_rank
+      - name: dept_id
+        title: 车间/小组编号
+        source_step: compute
+      - name: dept_name
+        title: 车间/小组
+        source_step: compute
+      - name: output_qty
+        title: 报工产量
+        source_step: compute
+        metric: output_reported_qty
+        column_type: quantity
+        unit: 件
+      - name: participant_count
+        title: 参与人数
+        source_step: compute
+        metric: workshop_effective_headcount
+        column_type: quantity
+        unit: 人
+      - name: per_capita
+        title: 人均产量
+        source_step: compute
+        metric: workshop_output_per_capita
+        column_type: quantity
+        unit: 件/人
+    metric_versions:
+      workshop_rank: factory-rank-v1
+      output_reported_qty: customer-ysk-v1
+      workshop_effective_headcount: factory-effective-headcount-v1
+      workshop_output_per_capita: factory-per-capita-v1
+    degradation: incomplete_marker
+    aux_outputs:
+      # 全厂级单值 KPI：总产量 / 在产订单（D-2 口径）/ 人均月产。
+      - aux_id: factory_kpi
+        into: metrics
+        depends_on: [fetch_ysk, fetch_scjd, fetch_employee]
+        metrics:
+          - name: total_output
+            title: 总产量
+            unit: 件
+          - name: active_orders
+            title: 在产订单
+            unit: 单
+          - name: per_capita_output
+            title: 人均月产
+            unit: 件/人
+        compute: |
+          WITH outputs AS (
+            SELECT COALESCE(SUM(CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL)), 0)
+              AS total_output
+            FROM fetch_ysk
+          ),
+          active AS (
+            SELECT COUNT(DISTINCT dh) AS cnt
+            FROM fetch_scjd
+            WHERE COALESCE(TRY_CAST(wcl AS DECIMAL), 0) < 100
+          ),
+          roster AS (
+            SELECT COUNT(*) AS headcount FROM fetch_employee
+          )
+          SELECT
+            CAST(ROUND(total_output, 0) AS VARCHAR) AS total_output,
+            CAST((SELECT cnt FROM active) AS VARCHAR) AS active_orders,
+            CASE WHEN (SELECT headcount FROM roster) > 0
+                 THEN CAST(CAST(ROUND(total_output / (SELECT headcount FROM roster), 0) AS BIGINT) AS VARCHAR)
+                 ELSE 'unavailable' END AS per_capita_output
+          FROM outputs
+      # 日产量序列（柱状图）：点数超过 62 时由卡片构建层自动降为周粒度。
+      - aux_id: daily_series
+        into: chart
+        depends_on: [fetch_ysk]
+        chart_type: bar
+        chart_unit: 件
+        label_column: label
+        value_column: value
+        compute: |
+          SELECT
+            substr(inputtime, 1, 10) AS label,
+            CAST(ROUND(SUM(CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL)), 0) AS VARCHAR) AS value
+          FROM fetch_ysk
+          WHERE COALESCE(inputtime, '') <> ''
+          GROUP BY substr(inputtime, 1, 10)
+          ORDER BY label
+    card:
+      kind: ranking
+      metrics: []
+      totals: [output_qty]
+      preview_max_rows: 10
+      rank_column: rank_position
+      actions:
+        - label: 查看该车间/小组的产量明细
+          capability_id: fr010_workshop_output_overview
+          bind_from:
+            dept_ids: dept_id
+      notes:
+        - "「报工产量」是 Σ 已扫描记录数量，按工序累计：同一件衣服做 3 道工序就有 3 条记录，因此它是工序口径工作量，不是完工件数。"
+        - "「在产订单」是统计窗内包完工率不到 100% 的制单去重数；「人均月产」= 总产量 ÷ 在册人数。"
+        - "点击车间行可继续查看该车间按款号的产量明细。"

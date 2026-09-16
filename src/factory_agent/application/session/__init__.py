@@ -20,6 +20,7 @@ Layout (each mixin layer only calls layers below it):
 """
 
 from factory_agent.application.session.definitions import (
+    DrillPayload,
     InteractionNotFoundError,
     SessionLimits,
     StartRequest,
@@ -28,6 +29,7 @@ from factory_agent.application.session.executor import InteractionRunExecutor
 from factory_agent.application.session.service import SessionService
 
 __all__ = [
+    "DrillPayload",
     "InteractionNotFoundError",
     "InteractionRunExecutor",
     "SessionLimits",

@@ -180,6 +180,7 @@ def build_container(
             load_catalog(),
             refresher=GatewayTokenRefresher(credential_exchange),
             settings=AdapterSettings(
+                timeout_seconds=settings.mes_timeout_seconds,
                 refresh_threshold_seconds=settings.mes_token_refresh_threshold_seconds,
                 factory_timezone=settings.factory_timezone,
             ),

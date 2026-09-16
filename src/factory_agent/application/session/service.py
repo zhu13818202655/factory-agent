@@ -8,6 +8,7 @@ from factory_agent.application.context import ConversationTurn
 from factory_agent.application.session.definitions import (
     TERMINAL_NAMES,
     TERMINAL_STATUSES,
+    DrillPayload,
     StartRequest,
 )
 from factory_agent.application.session.history import SessionHistoryMixin
@@ -53,6 +54,8 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
             raise ValueError("interaction text must not be empty")
         if len(text) > self._limits.max_input_chars:
             raise ValueError("interaction text exceeds the configured maximum length")
+        if request.drill is not None:
+            self._validate_drill(request.drill)
 
         now = self._clock.now()
         interaction_id = InteractionId(self._new_id())
@@ -105,7 +108,32 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
                 ),
             )
         )
+        if request.drill is not None:
+            self._drill_requests[str(interaction_id)] = request.drill
         return record
+
+    def _validate_drill(self, drill: DrillPayload) -> None:
+        """Structural drill validation before the interaction is persisted.
+
+        Capability must be a registered recipe; slots are bounded so a bad
+        payload is a 400 at the boundary instead of a mid-pipeline failure.
+        Scope validation happens later in the pipeline against the active
+        DataScope.
+        """
+        recipes = getattr(self._runner, "recipes", None)
+        capability_id = drill.capability_id
+        if not capability_id or "/" in capability_id or ".." in capability_id:
+            raise ValueError("drill capability_id is not acceptable")
+        if recipes is not None and capability_id not in recipes.capability_ids:
+            raise ValueError("drill capability is not registered")
+        if len(drill.dept_ids) > 20:
+            raise ValueError("drill dept_ids exceeds the maximum count")
+        if any(not value or len(value) > 64 for value in drill.dept_ids):
+            raise ValueError("drill dept_ids contain an invalid value")
+        if drill.employee_uid is not None and not 0 < len(drill.employee_uid) <= 64:
+            raise ValueError("drill employee_uid is not acceptable")
+        if drill.time_expression is not None and len(drill.time_expression) > 64:
+            raise ValueError("drill time_expression is not acceptable")
 
     async def stream(
         self,
@@ -147,6 +175,7 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
 
         claimed = await self._store.claim_run(owner, interaction_id, self._clock.now())
         if claimed is not None:
+            drill = self._drill_requests.pop(str(interaction_id), None)
             if not history:
                 # Multi-turn context comes from this session's own terminal
                 # turns unless the caller supplied an explicit history; only the
@@ -154,7 +183,7 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
                 history = await self._session_history(
                     owner, claimed.session_id, exclude_interaction_id=claimed.interaction_id
                 )
-            self._spawn_executor(owner, authorization, claimed, history, credential)
+            self._spawn_executor(owner, authorization, claimed, history, credential, drill=drill)
             # Give the executor its first scheduling slice so the follow loop
             # below observes the freshly claimed run without an intervening
             # heartbeat.

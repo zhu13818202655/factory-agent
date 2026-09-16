@@ -107,9 +107,13 @@ capabilities:
         operation_id: GongziJeOrderQuery
         params:
           queryFooter: "1"
+      - step_id: fetch_dept
+        kind: api
+        operation_id: DeptQuery
+        depends_on: [fetch_je_order]
       - step_id: compute
         kind: local
-        depends_on: [fetch_je_order]
+        depends_on: [fetch_je_order, fetch_dept]
         filter_bindings:
           requested_dept_ids: requested_dept_ids
         compute: |
@@ -121,23 +125,27 @@ capabilities:
               uid,
               uname,
               dept,
-              bs,
-              je
+              CAST(CAST(bs AS DECIMAL) AS VARCHAR) AS package_count,
+              CAST(CAST(je AS DECIMAL) AS VARCHAR) AS gross,
+              CAST(ROW_NUMBER() OVER (ORDER BY CAST(je AS DECIMAL) DESC) AS VARCHAR) AS rank_position,
+              CAST(ROW_NUMBER() OVER (
+                PARTITION BY dept ORDER BY CAST(je AS DECIMAL) DESC) AS VARCHAR) AS group_rank
             FROM fetch_je_order
             WHERE (SELECT COUNT(*) FROM requested_depts) = 0
                OR dept IN (SELECT c FROM requested_depts)
           )
           SELECT
-            uid,
-            uname,
-            dept,
-            CAST(CAST(bs AS DECIMAL) AS VARCHAR) AS package_count,
-            CAST(CAST(je AS DECIMAL) AS VARCHAR) AS gross,
-            CAST(ROW_NUMBER() OVER (ORDER BY CAST(je AS DECIMAL) DESC) AS VARCHAR) AS rank_position,
-            CAST(ROW_NUMBER() OVER (
-              PARTITION BY dept ORDER BY CAST(je AS DECIMAL) DESC) AS VARCHAR) AS group_rank
-          FROM ranked
-          ORDER BY CAST(je AS DECIMAL) DESC
+            r.uid,
+            r.uname,
+            r.dept,
+            COALESCE(NULLIF(d.name, ''), r.dept) AS dept_name,
+            r.package_count,
+            r.gross,
+            r.rank_position,
+            r.group_rank
+          FROM ranked r
+          LEFT JOIN fetch_dept d ON d.id = r.dept
+          ORDER BY CAST(r.gross AS DECIMAL) DESC
     result_columns:
       - name: uid
         title: 工号
@@ -147,6 +155,9 @@ capabilities:
         source_step: compute
       - name: dept
         title: 车间/小组
+        source_step: compute
+      - name: dept_name
+        title: 小组名称
         source_step: compute
       - name: package_count
         title: 计件件数
@@ -183,7 +194,13 @@ capabilities:
       preview_max_rows: 10
       preview_max_groups: 50
       group_by: dept
+      group_name_from: dept_name
       rank_column: rank_position
+      actions:
+        - label: 查看该成员的工资
+          capability_id: fr012_employee_payroll
+          bind_from:
+            employee_uid: uid
 
   - capability_id: fr011_factory_payroll_stats
     title: 全厂工资统计
@@ -224,6 +241,7 @@ capabilities:
             GROUP BY dept
           )
           SELECT
+            w.dept AS dept_id,
             COALESCE(d.name, w.dept) AS dept_name,
             CAST(w.total AS VARCHAR) AS gross_total,
             CAST(COALESCE(h.headcount, 0) AS VARCHAR) AS headcount,
@@ -235,6 +253,9 @@ capabilities:
           LEFT JOIN headcounts h ON h.dept = w.dept
           ORDER BY w.total DESC
     result_columns:
+      - name: dept_id
+        title: 车间/小组编号
+        source_step: compute
       - name: dept_name
         title: 车间/小组
         source_step: compute
@@ -261,10 +282,54 @@ capabilities:
       org_headcount: employee-registered-v1
       payroll_avg_by_dept: customer-payroll-avg-v1
     degradation: incomplete_marker
+    aux_outputs:
+      # 全厂级单值 KPI（不可 SUM 的口径）：人均工资 = Σ应发 ÷ Σ在册人数。
+      # 只进卡片，不进主表与导出文件。
+      - aux_id: factory_kpi
+        into: metrics
+        depends_on: [fetch_je_order, fetch_employee]
+        metrics:
+          - name: factory_gross_total
+            title: 工资总额
+            unit: 元
+          - name: factory_avg_wage
+            title: 人均工资
+            unit: 元
+          - name: factory_headcount
+            title: 在册人数
+            unit: 人
+        compute: |
+          WITH wages AS (
+            SELECT dept, SUM(CAST(je AS DECIMAL)) AS total
+            FROM fetch_je_order
+            GROUP BY dept
+          ),
+          headcounts AS (
+            SELECT dept, COUNT(*) AS headcount
+            FROM fetch_employee
+            GROUP BY dept
+          ),
+          totals AS (
+            SELECT
+              COALESCE((SELECT SUM(total) FROM wages), 0) AS gross_total,
+              COALESCE((SELECT SUM(headcount) FROM headcounts), 0) AS headcount
+          )
+          SELECT
+            CAST(ROUND(gross_total, 2) AS VARCHAR) AS factory_gross_total,
+            CAST(headcount AS VARCHAR) AS factory_headcount,
+            CASE WHEN headcount > 0
+                 THEN CAST(ROUND(gross_total / headcount, 2) AS VARCHAR)
+                 ELSE 'unavailable' END AS factory_avg_wage
+          FROM totals
     card:
       kind: table
-      metrics: [gross_total]
+      metrics: []
       preview_max_rows: 10
+      actions:
+        - label: 查看该车间/小组的工资清单
+          capability_id: fr008_payroll_ranking
+          bind_from:
+            dept_ids: dept_id
 
   - capability_id: fr012_employee_payroll
     title: 任一员工工资查询

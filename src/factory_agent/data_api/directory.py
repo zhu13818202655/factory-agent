@@ -14,8 +14,6 @@ recorded as MES-side filtering (``mes_filtered``), never claimed here. User
 department requests are intersected with the scope by ``FilterNarrower``.
 """
 
-
-
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -84,6 +82,7 @@ class MesDirectorySource:
                 employee_id=str(row["uid"]),
                 name=str(row.get("uname", "") or ""),
                 name_pk=str(row.get("name_pk", "") or ""),
+                dept=(str(row["dept"]) if row.get("dept") not in (None, "") else None),
             )
             for row in rows
             if row.get("uid") is not None

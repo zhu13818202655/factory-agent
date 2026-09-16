@@ -6,8 +6,6 @@ a table whitelist, and is destroyed afterward. File reads, external scans,
 extension loading, ``ATTACH``, ``COPY``, DDL, and DML are all blocked.
 """
 
-
-
 from dataclasses import dataclass
 from typing import Any, Mapping, Self, Sequence
 
@@ -137,6 +135,20 @@ class InteractionSandbox:
         filters); positional sequences are passed as a list. Values are always
         bound parameters — never interpolated into the SQL text.
         """
+        _columns, rows = self.execute_typed(sql, params)
+        return rows
+
+    def execute_typed(
+        self,
+        sql: str,
+        params: Mapping[str, Any] | Sequence[Any] | None = None,
+    ) -> tuple[tuple[str, ...], list[tuple[Any, ...]]]:
+        """``execute`` plus the result column names from the cursor description.
+
+        Aux outputs (card-only chart/KPI series) declare their columns in the
+        reviewed SQL itself, so the runtime column names come from DuckDB —
+        never from user input.
+        """
         self._assert_read_only(sql)
         connection = self._conn()
         try:
@@ -147,9 +159,10 @@ class InteractionSandbox:
             else:
                 result = connection.execute(sql, list(params))
             rows: list[tuple[Any, ...]] = result.fetchall()
+            columns = tuple(str(item[0]) for item in (result.description or ()))
         except duckdb.Error as error:
             raise InvalidRequestError(f"sandbox rejected the statement: {error}") from error
-        return rows
+        return columns, rows
 
     def execute_df(self, sql: str) -> duckdb.DuckDBPyConnection:
         """Run a reviewed query and return the connection for result consumption."""

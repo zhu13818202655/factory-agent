@@ -1,7 +1,6 @@
-
-
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +19,7 @@ from factory_agent.application.chitchat import ChatResponder
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.intent import CapabilityCatalog, CapabilitySpec
 from factory_agent.application.session import (
+    DrillPayload,
     InteractionNotFoundError,
     SessionLimits,
     SessionService,
@@ -35,6 +35,7 @@ from factory_agent.domain import (
     INTERACTION_STARTED,
     CapabilityId,
     DataScope,
+    DeptId,
     EmployeeId,
     InteractionId,
     InteractionStatus,
@@ -136,7 +137,7 @@ class FakeDirectory:
     async def list_employees(self, scope: DataScope) -> tuple[EmployeeRecord, ...]:
         if self._employee_error is not None:
             raise self._employee_error
-        return (EmployeeRecord("emp-1", "模拟员工甲", "MNYGJ"),)
+        return (EmployeeRecord("emp-1", "模拟员工甲", "MNYGJ", dept="dept-1"),)
 
 
 def credential(tenant: str = "tenant-a", user: str = "user-a") -> TrustedCredential:
@@ -450,9 +451,7 @@ async def test_result_commit_persists_distinct_message_sequences() -> None:
 
     events = await drain(service, record.interaction_id)
 
-    result_sequence = next(
-        event.sequence for event in events if event.name == INTERACTION_RESULT
-    )
+    result_sequence = next(event.sequence for event in events if event.name == INTERACTION_RESULT)
     committed = [
         message for message in store.messages if message.interaction_id == record.interaction_id
     ]
@@ -462,13 +461,9 @@ async def test_result_commit_persists_distinct_message_sequences() -> None:
     assert kinds.count(MessageKind.PLAIN_TEXT) == 1
     sequences = [message.sequence for message in committed]
     assert len(sequences) == len(set(sequences))
-    answer_message = next(
-        m for m in assistant_messages if m.kind is MessageKind.PLAIN_TEXT
-    )
+    answer_message = next(m for m in assistant_messages if m.kind is MessageKind.PLAIN_TEXT)
     assert answer_message.text
-    table_message = next(
-        m for m in assistant_messages if m.kind is MessageKind.RESULT_TABLE
-    )
+    table_message = next(m for m in assistant_messages if m.kind is MessageKind.RESULT_TABLE)
     assert table_message.sequence == result_sequence
 
 
@@ -817,6 +812,31 @@ async def test_fr012_resolves_target_employee_into_narrowed_filters() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fr012_group_leader_member_payroll_is_authorized_locally() -> None:
+    """D-5（2026-09-16 拍板）：组长查组内成员工资明细本地链路全程放行.
+
+    403 只可能来自客户 MES（code=-403 业务级拒绝），本地矩阵 01/02/99 均允许
+    FR-012；该测试钉住本地不变量：组长点名本部门员工 → 目标员工进入
+    NarrowedFilters、业务调用照常发出、终态是 completed 而非 rejected。
+    """
+    service, store, runner = build([ANY_EMPLOYEE_PAYLOAD], role=Role.MANAGER)
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="查模拟员工甲的工资")
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert any(event.name == INTERACTION_RESULT for event in events)
+    assert events[-1].name == "interaction.completed"
+    failed = [e for e in events if e.name == "interaction.failed"]
+    assert failed == []
+    filters = runner.requests[0].filters
+    assert filters.employee_ids == frozenset({EmployeeId("emp-1")})
+    assert filters.tenant_id == TenantId("tenant-a")
+    assert store.interactions[str(record.interaction_id)].status is InteractionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_fr012_ambiguous_name_asks_for_uid_not_run() -> None:
     """同名员工追问稳定 uid，不用姓名关联（FR-012）。"""
     directory = FakeDirectory(
@@ -1122,3 +1142,138 @@ async def test_scope_guard_failure_fails_open_without_blocking_the_run() -> None
     assert events[-1].name == "interaction.completed"
     assert len(runner.requests) == 1
     assert store.interactions[str(record.interaction_id)].status is InteractionStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Structured drill rounds (D-3/D-5 拍板，2026-09-16).
+# ---------------------------------------------------------------------------
+
+
+def _drill_runner(capability_ids: frozenset[str]) -> RecordingCapabilityRunner:
+    runner = RecordingCapabilityRunner()
+    runner.recipes = SimpleNamespace(capability_ids=capability_ids)
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_drill_round_runs_the_capability_without_a_model_call() -> None:
+    """结构化下钻：意图来自 drill 载荷，跳过 LLM 路由，槽位直连 FilterNarrower."""
+    runner = _drill_runner(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    service, store, _ = build(role=Role.MANAGER, runner=runner)
+    record = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看该车间工资",
+            drill=DrillPayload(
+                capability_id="fr008_payroll_ranking",
+                dept_ids=("dept-1",),
+            ),
+        ),
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert any(event.name == INTERACTION_RESULT for event in events)
+    request = runner.requests[0]
+    assert request.capability_id == CapabilityId("fr008_payroll_ranking")
+    assert request.filters.dept_ids == frozenset({DeptId("dept-1")})
+    # 零真实模型调用：EXTRACT 计量事件标记为 structured_drill，次数为 0。
+    extract = [
+        event
+        for event in store.usage_events
+        if event.payload.get("stage") == "extract"
+        or event.payload.get("actual_model") == "structured_drill"
+    ]
+    assert extract, "expected the structured-drill EXTRACT metering event"
+    assert extract[0].payload.get("actual_model") == "structured_drill"
+
+
+@pytest.mark.asyncio
+async def test_drill_rejects_an_unregistered_capability_at_the_boundary() -> None:
+    """drill 指向未登记能力 → start 阶段 400（不落交互、零下游调用）。"""
+    runner = _drill_runner(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    service, store, _ = build(role=Role.MANAGER, runner=runner)
+
+    with pytest.raises(ValueError):
+        await service.start(
+            credential(),
+            StartRequest(
+                session_id=SESSION,
+                text="查看该车间工资",
+                drill=DrillPayload(capability_id="fr999_unknown", dept_ids=("dept-1",)),
+            ),
+        )
+    assert store.interactions == {}
+
+
+@pytest.mark.asyncio
+async def test_drill_out_of_range_dept_is_rejected_before_any_business_call() -> None:
+    """drill 部门越界（不在调用者绑定范围内）→ 拒绝且零业务调用."""
+    runner = _drill_runner(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    service, store, _ = build(role=Role.MANAGER, runner=runner)
+    record = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看其他车间工资",
+            drill=DrillPayload(capability_id="fr008_payroll_ranking", dept_ids=("dept-9",)),
+        ),
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert events[-1].name == "interaction.failed"
+    assert store.interactions[str(record.interaction_id)].error_category == "filter_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_drill_target_employee_inside_scope_runs_with_narrowed_employee() -> None:
+    """D-5：01/02 下钻点成员工资条 —— 目标员工在本部门内 → 放行并收窄到该员工."""
+    runner = _drill_runner(capability_ids=frozenset({"fr012_employee_payroll"}))
+    directory = FakeDirectory()
+    service, _, _ = build(role=Role.MANAGER, runner=runner, directory=directory)
+    record = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看该成员的工资",
+            drill=DrillPayload(
+                capability_id="fr012_employee_payroll",
+                employee_uid="emp-1",
+            ),
+        ),
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert any(event.name == INTERACTION_RESULT for event in events)
+    request = runner.requests[0]
+    assert request.capability_id == CapabilityId("fr012_employee_payroll")
+    assert request.filters.employee_ids == frozenset({EmployeeId("emp-1")})
+
+
+@pytest.mark.asyncio
+async def test_drill_target_employee_without_bound_dept_is_rejected() -> None:
+    """D-5：目标员工解析不到或不在调用者绑定部门内 → 服务端拒绝、零业务调用.
+
+    FakeDirectory 只返回无部门归属的 emp-1；换成查 emp-9 时目录查不到，两条
+    路径都必须在业务调用前拒绝（01/02 不能点本部门之外的成员）。
+    """
+    runner = _drill_runner(capability_ids=frozenset({"fr012_employee_payroll"}))
+    service, store, _ = build(role=Role.MANAGER, runner=runner)
+    record = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看该成员的工资",
+            drill=DrillPayload(capability_id="fr012_employee_payroll", employee_uid="emp-9"),
+        ),
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert runner.requests == []
+    assert events[-1].name == "interaction.failed"
+    assert store.interactions[str(record.interaction_id)].error_category == "filter_not_found"

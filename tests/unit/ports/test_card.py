@@ -119,7 +119,13 @@ def test_grouped_card_keeps_group_runs_contiguous_and_caps_rows_per_group() -> N
     # flat rows stay sliced by group in groups[] order — the client never re-groups
     assert [entry["group"] for entry in table["groups"]] == ["001", "005"]
     first = table["groups"][0]
-    assert first == {"group": "001", "row_count": 2, "total_rows": 3, "truncated": True}
+    assert first == {
+        "group": "001",
+        "name": "001",
+        "row_count": 2,
+        "total_rows": 3,
+        "truncated": True,
+    }
     assert table["groups"][1]["truncated"] is False
     assert len(table["rows"]) == 3
     assert table["rows"][0] == ["甲", "001", "100", "1"]
@@ -191,3 +197,206 @@ def test_unavailable_cells_render_as_null_and_incomplete_adds_a_note() -> None:
     notes = card["notes"]
     assert "分页拉取未完整：total_drift" in notes
     assert any("不完整" in note for note in notes)
+
+
+# ----------------------------------------------------------------------
+# 2026-09-16 卡片协议增量：分页三字段 / groups[].name / chart / actions / aux KPI
+# ----------------------------------------------------------------------
+
+
+def test_table_card_emits_the_pagination_triplet_in_preview_mode() -> None:
+    """page/page_size/has_more 三字段一起下发，has_more 派生自 truncated."""
+    spec = CardTableSpec(kind="table", preview_max_rows=2)
+    rows = tuple({"rq": f"2026-09-0{i}", "je": Decimal("10")} for i in range(1, 6))
+    card = build_card(
+        spec,
+        capability_id="fr003_personal_wage_detail",
+        title="个人工资明细",
+        columns=(
+            CardColumn("rq", title="日期", column_type="date"),
+            CardColumn("je", title="小计金额", column_type="money", unit="元"),
+        ),
+        rows=rows,
+        totals={},
+    )
+
+    table = card["table"]
+    assert table["page"] == 1
+    assert table["page_size"] == 2
+    assert table["has_more"] is True
+
+
+def test_table_card_without_truncation_reports_has_more_false() -> None:
+    spec = CardTableSpec(kind="table", preview_max_rows=10)
+    card = build_card(
+        spec,
+        capability_id="fr003_personal_wage_detail",
+        title="个人工资明细",
+        columns=(CardColumn("rq", title="日期", column_type="date"),),
+        rows=({"rq": "2026-09-01"},),
+        totals={},
+    )
+    table = card["table"]
+    assert table["truncated"] is False
+    assert table["has_more"] is False
+
+
+def test_group_name_is_taken_from_the_declared_column() -> None:
+    spec = CardTableSpec(
+        kind="ranking",
+        preview_max_rows=2,
+        preview_max_groups=50,
+        group_by="dept",
+        group_name_from="dept_name",
+        rank_column="rank_position",
+    )
+    rows = (
+        {"uname": "甲", "dept": "001", "dept_name": "缝纫一组", "rank_position": "1"},
+        {"uname": "乙", "dept": "005", "dept_name": "缝纫五组", "rank_position": "2"},
+    )
+    card = build_card(
+        spec,
+        capability_id="fr008_payroll_ranking",
+        title="员工工资清单与排名",
+        columns=(
+            CardColumn("uname", title="姓名"),
+            CardColumn("dept", title="车间/小组"),
+            CardColumn("dept_name", title="小组名称"),
+            CardColumn("rank_position", title="名次", column_type="quantity"),
+        ),
+        rows=rows,
+        totals={},
+    )
+
+    groups = card["table"]["groups"]
+    assert groups[0] == {
+        "group": "001",
+        "name": "缝纫一组",
+        "row_count": 1,
+        "total_rows": 1,
+        "truncated": False,
+    }
+    assert groups[1]["name"] == "缝纫五组"
+
+
+def test_card_actions_are_declared_as_card_level_drill_entries() -> None:
+    from factory_agent.ports.card import CardAction
+
+    spec = CardTableSpec(
+        kind="table",
+        preview_max_rows=10,
+        actions=(
+            CardAction(
+                label="查看该成员的工资",
+                capability_id="fr012_employee_payroll",
+                bind_from={"employee_uid": "uid"},
+            ),
+        ),
+    )
+    card = build_card(
+        spec,
+        capability_id="fr008_payroll_ranking",
+        title="员工工资清单与排名",
+        columns=(CardColumn("uid", title="工号"),),
+        rows=({"uid": "01001"},),
+        totals={},
+    )
+
+    assert card["actions"] == [
+        {
+            "type": "drill",
+            "label": "查看该成员的工资",
+            "capability_id": "fr012_employee_payroll",
+            "bind_from": {"employee_uid": "uid"},
+        }
+    ]
+
+
+def test_aux_metrics_render_values_and_explicit_unavailable() -> None:
+    card = build_card(
+        CardTableSpec(kind="table", preview_max_rows=10),
+        capability_id="fr011_factory_payroll_stats",
+        title="全厂工资统计",
+        columns=(CardColumn("dept_name", title="车间/小组"),),
+        rows=({"dept_name": "一车间"},),
+        totals={},
+        aux_metrics=(
+            ("工资总额", "元", "23.75"),
+            ("人均工资", "元", "unavailable"),
+            ("在册人数", "人", None),
+        ),
+    )
+
+    metrics = card["metrics"]
+    assert metrics[0] == {"label": "工资总额", "unit": "元", "value": "23.75"}
+    assert metrics[1] == {"label": "人均工资", "unit": "元", "unavailable": True}
+    assert metrics[2] == {"label": "在册人数", "unit": "人", "unavailable": True}
+
+
+def test_chart_payload_keeps_day_granularity_within_the_point_cap() -> None:
+    from factory_agent.ports.card import build_chart_payload
+
+    chart = build_chart_payload(
+        chart_type="bar",
+        unit="件",
+        labels=["2026-09-01", "2026-09-02", "2026-09-03"],
+        values=["10", "20", "9.5"],
+    )
+
+    assert chart.type == "bar"
+    assert chart.granularity == "day"
+    assert chart.points == (
+        ("09-01", "10"),
+        ("09-02", "20"),
+        ("09-03", "9.5"),
+    )
+
+
+def test_chart_payload_downsamples_to_weeks_beyond_the_point_cap() -> None:
+    from datetime import date, timedelta
+
+    from factory_agent.ports.card import MAX_CHART_DAY_POINTS, build_chart_payload
+
+    start = date(2026, 8, 3)  # Monday
+    labels = [(start + timedelta(days=day)).isoformat() for day in range(MAX_CHART_DAY_POINTS + 5)]
+    values = ["1"] * len(labels)
+    chart = build_chart_payload(chart_type="bar", unit="件", labels=labels, values=values)
+
+    assert chart.granularity == "week"
+    # 68 天横跨 10 个自然周（周一起算），每周桶内求和 = 7（末周除外）。
+    assert len(chart.points) == 10
+    assert chart.points[0] == ("08-03", "7")
+
+
+def test_chart_payload_ignores_unparseable_labels() -> None:
+    from factory_agent.ports.card import build_chart_payload
+
+    chart = build_chart_payload(
+        chart_type="bar",
+        unit="件",
+        labels=["2026-09-01", "not-a-date", ""],
+        values=["10", "20", "30"],
+    )
+    assert chart.points == (("09-01", "10"),)
+
+
+def test_build_card_embeds_the_chart_payload() -> None:
+    from factory_agent.ports.card import build_chart_payload
+
+    chart = build_chart_payload(chart_type="bar", unit="件", labels=["2026-09-01"], values=["12"])
+    card = build_card(
+        CardTableSpec(kind="ranking", preview_max_rows=10, rank_column="rank_position"),
+        capability_id="fr013_factory_output_dashboard",
+        title="全厂产量总览",
+        columns=(CardColumn("dept_name", title="车间/小组"),),
+        rows=({"dept_name": "一车间"},),
+        totals={},
+        chart=chart,
+    )
+
+    assert card["chart"] == {
+        "type": "bar",
+        "unit": "件",
+        "granularity": "day",
+        "points": [{"label": "09-01", "value": "12"}],
+    }

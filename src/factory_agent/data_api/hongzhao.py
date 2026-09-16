@@ -102,9 +102,11 @@ class TokenRefresher(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class AdapterSettings:
-    """Injected transport policy; conservative defaults for first release."""
+    """Injected transport policy; defaults mirror the reviewed config."""
 
-    timeout_seconds: float = 10.0
+    #: Per-request MES HTTP timeout (config.mes_timeout_seconds, 拍板 30s:
+    #: 真实环境 GongziMxQuery 明细查询 10s 内偶发不返回，2026-09-16 实测).
+    timeout_seconds: float = 30.0
     max_retries: int = 2
     default_retry_after_seconds: int = 1
     #: Proactive accessToken refresh threshold (seconds before expiry).

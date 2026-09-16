@@ -7,8 +7,6 @@ departments (customer contract §2). See ``factory_agent.api.identity`` for the
 degraded header fallback used only when no gateway is configured.
 """
 
-
-
 from collections.abc import AsyncIterator
 from typing import cast
 
@@ -20,6 +18,7 @@ from factory_agent.api.identity import TENANT_HEADER, USER_HEADER, resolve_crede
 from factory_agent.api.sse import encode_event, parse_last_event_id
 from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.application.session import (
+    DrillPayload,
     InteractionNotFoundError,
     SessionService,
     StartRequest,
@@ -41,6 +40,29 @@ class StartInteractionRequest(BaseModel):
     """Request body deliberately has no tenant, user, or scope field."""
 
     text: str = Field(min_length=1, max_length=4000)
+    # Optional structured drill-down (D-3 拍板): a card action's follow-up
+    # query. Business narrowing slots only; the server re-validates them
+    # against the active DataScope before any business call.
+    drill: "DrillSpec | None" = None
+
+
+class DrillSpec(BaseModel):
+    """Structured drill payload: target capability + business slots."""
+
+    model_config = {"extra": "forbid"}
+
+    capability_id: str = Field(min_length=1, max_length=128)
+    dept_ids: list[str] = Field(default_factory=list, max_length=20)
+    employee_uid: str | None = Field(default=None, max_length=64)
+    time_expression: str | None = Field(default=None, max_length=64)
+
+    def to_payload(self) -> DrillPayload:
+        return DrillPayload(
+            capability_id=self.capability_id,
+            dept_ids=tuple(self.dept_ids),
+            employee_uid=self.employee_uid,
+            time_expression=self.time_expression,
+        )
 
 
 class InteractionView(BaseModel):
@@ -100,7 +122,12 @@ async def start_interaction(
     credential, _ = await resolve_credential(request)
     try:
         record = await service.start(
-            credential, StartRequest(session_id=SessionId(session_id), text=body.text)
+            credential,
+            StartRequest(
+                session_id=SessionId(session_id),
+                text=body.text,
+                drill=body.drill.to_payload() if body.drill is not None else None,
+            ),
         )
     except IdentityRejectionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.code.value) from exc

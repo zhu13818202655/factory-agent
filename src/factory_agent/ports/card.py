@@ -13,7 +13,8 @@ contiguous in ``groups[]`` order so the client can slice by ``row_count``),
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from factory_agent.ports.contracts import UNAVAILABLE_VALUE
@@ -21,6 +22,9 @@ from factory_agent.ports.contracts import UNAVAILABLE_VALUE
 #: Hard ceiling for preview rows / groups; recipes may pick anything below it.
 MAX_PREVIEW_ROWS = 100
 MAX_PREVIEW_GROUPS = 200
+
+#: Chart points ceiling (D4-2 拍板)：日粒度点数超过该值时自动降为周粒度。
+MAX_CHART_DAY_POINTS = 62
 
 #: Columns allowed in the KPI area: only typed numeric columns, so a uid-like
 #: string can never be presented as a figure.
@@ -48,6 +52,110 @@ class CardAlertSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class CardAction:
+    """Reviewed drill entry point on the card (卡片级，D4-3/D4-4 拍板).
+
+    ``bind_from`` maps drill slot keys (``ALLOWED_DRILL_SLOT_KEYS``) to result
+    column names: when the user clicks a row, the client takes that row's
+    column values and fills the named slots of the follow-up ``drill`` request.
+    Card-level declaration keeps the payload compact; the values themselves
+    live in the rows the client already has.
+    """
+
+    label: str
+    capability_id: str
+    bind_from: dict[str, str] = field(default_factory=dict[str, str])
+
+
+@dataclass(frozen=True, slots=True)
+class CardChart:
+    """Runtime chart block assembled from an aux output (D4-1/D4-2 拍板).
+
+    ``type`` is ``bar`` today and kept as an enum slot; ``granularity`` is
+    ``day`` or ``week`` — a series longer than ``MAX_CHART_DAY_POINTS`` is
+    downsampled to week buckets server-side so the client never aggregates.
+    """
+
+    type: str
+    unit: str
+    granularity: str
+    points: tuple[tuple[str, str], ...] = ()
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "type": self.type,
+            "unit": self.unit,
+            "granularity": self.granularity,
+            "points": [{"label": label, "value": value} for label, value in self.points],
+        }
+
+
+def build_chart_payload(
+    *,
+    chart_type: str,
+    unit: str,
+    labels: Sequence[object],
+    values: Sequence[object],
+) -> CardChart:
+    """Assemble the chart block from one aux output's rows.
+
+    Labels are day strings (``MM-DD``). Beyond ``MAX_CHART_DAY_POINTS`` the
+    series is aggregated into ISO-week buckets keyed by the week's Monday
+    (still labelled ``MM-DD``), and ``granularity`` reports ``week``.
+    """
+    parsed: list[tuple[date, str]] = []
+    for label, value in zip(labels, values, strict=False):
+        day = _parse_label_date(label)
+        if day is None:
+            continue
+        parsed.append((day, _numeric_text(value)))
+    parsed.sort(key=lambda item: item[0])
+    if len(parsed) > MAX_CHART_DAY_POINTS:
+        buckets: dict[date, str] = {}
+        for day, value in parsed:
+            week_start = _week_start(day)
+            buckets[week_start] = _add_decimal_text(buckets.get(week_start), value)
+        points = tuple((day.strftime("%m-%d"), value) for day, value in sorted(buckets.items()))
+        return CardChart(type=chart_type, unit=unit, granularity="week", points=points)
+    points = tuple((day.strftime("%m-%d"), value) for day, value in parsed)
+    return CardChart(type=chart_type, unit=unit, granularity="day", points=points)
+
+
+def _parse_label_date(label: object) -> date | None:
+    if isinstance(label, date) and not isinstance(label, datetime):
+        return label
+    text = str(label).strip()
+    for pattern in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, pattern).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _week_start(day: date) -> date:
+    return day.fromordinal(day.toordinal() - day.weekday())
+
+
+def _numeric_text(value: object) -> str:
+    if isinstance(value, Decimal):
+        return _decimal_str(value)
+    try:
+        return _decimal_str(Decimal(str(value)))
+    except (InvalidOperation, ValueError):
+        return str(value)
+
+
+def _add_decimal_text(current: str | None, addition: str) -> str:
+    if current is None:
+        return addition
+    try:
+        return _decimal_str(Decimal(current) + Decimal(addition))
+    except InvalidOperation:
+        return current
+
+
+@dataclass(frozen=True, slots=True)
 class CardTableSpec:
     """Reviewed card shape resolved from a recipe ``card:`` block.
 
@@ -62,8 +170,13 @@ class CardTableSpec:
     preview_max_rows: int | None = None
     preview_max_groups: int = 50
     group_by: str | None = None
+    #: Result column supplying the group display name (e.g. ``dept_name``);
+    #: absent keeps the raw group value as the name.
+    group_name_from: str | None = None
     rank_column: str | None = None
     alert_marker: CardAlertSpec | None = None
+    #: Reviewed card-level drill entry points (前端据此组装 drill 载荷).
+    actions: tuple[CardAction, ...] = ()
     #: Reviewed, static 口径 statements for this capability. They lead the card
     #: notes so a reader always sees the measurement basis before runtime
     #: warnings; they carry no data values.
@@ -84,18 +197,40 @@ def build_card(
     incomplete: bool = False,
     incomplete_reason: str | None = None,
     warnings: Sequence[str] = (),
+    chart: CardChart | None = None,
+    aux_metrics: Sequence[tuple[str, str | None, object]] = (),
 ) -> dict[str, object]:
-    """Assemble the card payload; only numbers already in the table appear."""
+    """Assemble the card payload; only numbers already in the table appear.
+
+    ``aux_metrics`` items are ``(title, unit, value)`` triples from recipe aux
+    outputs (不可 SUM 的单值口径); ``None``/``UNAVAILABLE`` values render as the
+    explicit unavailable state instead of a fabricated zero.
+    """
     by_name = {column.name: column for column in columns}
     payload: dict[str, object] = {
         "kind": spec.kind,
         "title": title,
         "capability_id": capability_id,
-        "metrics": _metrics_payload(spec.metrics, by_name, rows, totals),
+        "metrics": [
+            *_metrics_payload(spec.metrics, by_name, rows, totals),
+            *_aux_metrics_payload(aux_metrics),
+        ],
         "totals": _totals_payload(spec.totals, by_name, totals),
     }
     if spec.has_table():
         payload["table"] = _table_payload(spec, by_name, rows)
+    if chart is not None:
+        payload["chart"] = chart.payload()
+    if spec.actions:
+        payload["actions"] = [
+            {
+                "type": "drill",
+                "label": action.label,
+                "capability_id": action.capability_id,
+                "bind_from": dict(action.bind_from),
+            }
+            for action in spec.actions
+        ]
     unavailable = _unavailable_titles(spec.metrics, by_name, rows, totals)
     if unavailable:
         payload["unavailable_columns"] = unavailable
@@ -145,6 +280,20 @@ def _metric_value(
             return None
         return _cell_text(value, column.column_type)
     return None
+
+
+def _aux_metrics_payload(
+    items: Sequence[tuple[str, str | None, object]],
+) -> list[dict[str, object]]:
+    payload: list[dict[str, object]] = []
+    for title, unit, value in items:
+        entry: dict[str, object] = {"label": title, "unit": unit or ""}
+        if value is None or value == UNAVAILABLE_VALUE:
+            entry["unavailable"] = True
+        else:
+            entry["value"] = _cell_text(value, None)
+        payload.append(entry)
+    return payload
 
 
 def _totals_payload(
@@ -202,13 +351,20 @@ def _table_payload(
         table["groups_total"] = distinct_total
         table["preview_max_rows"] = spec.preview_max_rows
         dropped_groups = len(groups) < distinct_total
-        table["truncated"] = any(entry["truncated"] for entry in groups) or dropped_groups
+        truncated = any(entry["truncated"] for entry in groups) or dropped_groups
+        table["truncated"] = truncated
     else:
         limit = spec.preview_max_rows or MAX_PREVIEW_ROWS
         kept_rows = rows[:limit]
         table["rows"] = [_row_cells(by_name, row) for row in kept_rows]
         table["preview_max_rows"] = limit
-        table["truncated"] = total_rows > len(kept_rows)
+        truncated = total_rows > len(kept_rows)
+        table["truncated"] = truncated
+    # Pagination triplet (D4 前端对齐): always emitted together in preview
+    # mode — page is fixed at 1 because full rows live in the export file.
+    table["page"] = 1
+    table["page_size"] = spec.preview_max_rows or MAX_PREVIEW_ROWS
+    table["has_more"] = truncated
     if spec.alert_marker is not None:
         table["alert_marker"] = {
             "column": spec.alert_marker.column,
@@ -243,9 +399,15 @@ def _grouped_rows(
         run = rows[index:end]
         kept = run[:per_group]
         kept_cells.extend(_row_cells(by_name, row) for row in kept)
+        name: object = group_value
+        if spec.group_name_from is not None:
+            raw_name = run[0].get(spec.group_name_from)
+            if raw_name is not None and raw_name != UNAVAILABLE_VALUE:
+                name = raw_name
         groups.append(
             {
                 "group": group_value,
+                "name": name,
                 "row_count": len(kept),
                 "total_rows": len(run),
                 "truncated": len(run) > len(kept),
@@ -290,10 +452,14 @@ def _decimal_str(value: Decimal) -> str:
 
 
 __all__ = [
+    "MAX_CHART_DAY_POINTS",
     "MAX_PREVIEW_GROUPS",
     "MAX_PREVIEW_ROWS",
+    "CardAction",
     "CardAlertSpec",
+    "CardChart",
     "CardColumn",
     "CardTableSpec",
     "build_card",
+    "build_chart_payload",
 ]

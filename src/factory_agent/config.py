@@ -48,6 +48,10 @@ class FactoryAgentSettings(BaseSettings):
     credential_header: str = "X-Factory-Credential"
     #: Proactive accessToken refresh threshold (seconds before expiry).
     mes_token_refresh_threshold_seconds: int = Field(default=300, ge=60)
+    #: Per-request MES HTTP timeout. 30s (Louis 拍板 2026-09-16)：真实环境
+    #  GongziMxQuery 明细查询在 10s 内偶发不返回（组长下钻成员工资条实测
+    #  upstream_timeout），30s 覆盖慢查询；仍由 AdapterSettings.max_retries 兑底。
+    mes_timeout_seconds: float = Field(default=30.0, gt=0.0)
 
     # MES resource pagination (BoundedPager). The first page probes with
     # ``mes_page_size``; if that probe shows the window needs more than one

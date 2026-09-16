@@ -5,8 +5,6 @@ Uses a fake step executor returning golden rows per operation so the reviewed
 recipe DAGs (缝制进度族 + 已扫描产量族) are exercised offline.
 """
 
-
-
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -656,9 +654,10 @@ async def test_fr011_groups_payroll_by_dept_with_confirmed_headcount() -> None:
             time_range=_range(),
         )
     )
-    by_dept = {row[0]: dict(zip(result.column_names, row)) for row in result.rows}
+    by_dept = {row[1]: dict(zip(result.column_names, row)) for row in result.rows}
     assert set(by_dept) == {"一车间", "二车间"}
     a1 = by_dept["一车间"]
+    assert a1["dept_id"] == "dept-a1"
     assert a1["gross_total"] == Decimal("20.00")
     assert a1["headcount"] == Decimal("2")  # 在册人数 = EmployeeQuery 全员口径
     assert a1["avg_wage"] == Decimal("10.00")  # 20.00 ÷ 2
@@ -666,6 +665,12 @@ async def test_fr011_groups_payroll_by_dept_with_confirmed_headcount() -> None:
     assert a2["gross_total"] == Decimal("3.75")
     assert a2["headcount"] == Decimal("1")
     assert a2["avg_wage"] == Decimal("3.75")
+    # 全厂级单值 KPI 走 aux 输出（卡片专属，不进主表）。
+    assert result.card is not None
+    kpis = {item["label"]: item for item in result.card["metrics"]}
+    assert kpis["工资总额"]["value"] == "23.75"
+    assert kpis["在册人数"]["value"] == "3"
+    assert kpis["人均工资"]["value"] == "7.92"  # 23.75 ÷ 3，保留两位
 
 
 @pytest.mark.asyncio
@@ -786,3 +791,54 @@ async def test_fr005_zero_package_count_reports_zero_not_unavailable() -> None:
     assert row[8] == Decimal("0")  # 完工包数
     assert row[9] == Decimal("0")  # 进度
     assert row[11] == "未完工"
+
+
+@pytest.mark.asyncio
+async def test_fr013_dashboard_combines_ranking_kpis_and_daily_chart() -> None:
+    """FR-013 综合看板：主表车间排名 + aux KPI（总产量/在产订单/人均月产）+ 日序列 chart.
+
+    Fake 数据：YskQuery 两车间报工（dept-a1 sl=9 @07-02、dept-a2 sl=3 @07-03）、
+    EmployeeQuery 在册 3 人、ScjdQuery 中 DH-1（wcl=50）未完工。
+    """
+    executor = FakeMultiRowExecutor()
+    runner = _runner(executor)
+    result = await runner.run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId("fr013_factory_output_dashboard"),
+            filters=_filters(),
+            time_range=_range(),
+        )
+    )
+    assert result.rows
+    by_dept = {row[2]: dict(zip(result.column_names, row)) for row in result.rows}
+    assert set(by_dept) == {"一车间", "二车间"}
+    a1 = by_dept["一车间"]
+    assert a1["rank_position"] == "1"
+    assert a1["output_qty"] == Decimal("9")
+    a2 = by_dept["二车间"]
+    assert a2["rank_position"] == "2"
+    assert a2["output_qty"] == Decimal("3")
+
+    card = result.card
+    assert card is not None
+    # aux KPI（D-2 口径：wcl<100% 的制单去重 = DH-1 一单）。
+    kpis = {item["label"]: item for item in card["metrics"]}
+    assert kpis["总产量"]["value"] == "12"
+    assert kpis["在产订单"]["value"] == "1"
+    assert kpis["人均月产"]["value"] == "4"
+    # 日序列 chart：按 inputtime 归日，62 点内保持日粒度。
+    assert card["chart"]["type"] == "bar"
+    assert card["chart"]["granularity"] == "day"
+    assert card["chart"]["points"] == [
+        {"label": "07-02", "value": "9"},
+        {"label": "07-03", "value": "3"},
+    ]
+    # 卡片级 actions：点车间 → fr010 产量明细。
+    assert card["actions"] == [
+        {
+            "type": "drill",
+            "label": "查看该车间/小组的产量明细",
+            "capability_id": "fr010_workshop_output_overview",
+            "bind_from": {"dept_ids": "dept_id"},
+        }
+    ]

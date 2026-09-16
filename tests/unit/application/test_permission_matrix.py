@@ -14,8 +14,6 @@ is a superset). Data visibility inside an allowed capability is still enforced b
 MES-side row filtering (``DataScope.mes_filtered``).
 """
 
-
-
 from datetime import datetime, timezone
 
 import pytest
@@ -57,7 +55,10 @@ EXPECTED_MATRIX: dict[Capability, frozenset[Role]] = {
     Capability.FACTORY_ORDER_OVERVIEW: OWNER_ROLES,
     Capability.WORKSHOP_OUTPUT_OVERVIEW: MANAGEMENT_AND_OWNER_ROLES,
     Capability.FACTORY_PAYROLL_STATS: OWNER_ROLES,
-    Capability.ANY_EMPLOYEE_PAYROLL: OWNER_ROLES,
+    # D-5 (2026-09-16 拍板): 任一员工工资查询开放给组长/管理，目标员工
+    # 由服务端收窄校验限制在调用者绑定部门内。
+    Capability.ANY_EMPLOYEE_PAYROLL: MANAGEMENT_AND_OWNER_ROLES,
+    Capability.FACTORY_OUTPUT_DASHBOARD: OWNER_ROLES,
 }
 
 
@@ -81,8 +82,8 @@ def scope(tenant_id: str = "tenant-a") -> DataScope:
     )
 
 
-def test_registered_capabilities_cover_the_twelve_l1_capabilities() -> None:
-    assert len(REGISTERED_CAPABILITIES) == 12
+def test_registered_capabilities_cover_the_thirteen_l1_capabilities() -> None:
+    assert len(REGISTERED_CAPABILITIES) == 13
     assert set(item.value for item in REGISTERED_CAPABILITIES) == {
         "FR-001",
         "FR-002",
@@ -96,6 +97,7 @@ def test_registered_capabilities_cover_the_twelve_l1_capabilities() -> None:
         "FR-010",
         "FR-011",
         "FR-012",
+        "FR-013",
     }
 
 
@@ -152,6 +154,7 @@ def test_denied_decision_lists_the_role_available_capabilities() -> None:
                 "FR-007",
                 "FR-008",
                 "FR-010",
+                "FR-012",
             },
         ),
         (
@@ -166,6 +169,7 @@ def test_denied_decision_lists_the_role_available_capabilities() -> None:
                 "FR-007",
                 "FR-008",
                 "FR-010",
+                "FR-012",
             },
         ),
         (
@@ -183,6 +187,7 @@ def test_denied_decision_lists_the_role_available_capabilities() -> None:
                 "FR-010",
                 "FR-011",
                 "FR-012",
+                "FR-013",
             },
         ),
     ],

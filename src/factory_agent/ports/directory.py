@@ -7,8 +7,6 @@ implementations live in ``data_api/`` and never leak customer payload shapes
 past this boundary.
 """
 
-
-
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -31,6 +29,10 @@ class EmployeeRecord:
     employee_id: str
     name: str
     name_pk: str
+    #: Department id of the employee (``EmployeeQuery.dept``), used by the
+    #: drill channel's server-side target-employee narrowing (D-5). Absent on
+    #: records built before the drill channel or when the field is empty.
+    dept: str | None = None
 
 
 class DirectoryResolver(Protocol):

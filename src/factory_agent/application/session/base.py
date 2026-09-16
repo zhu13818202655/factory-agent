@@ -14,6 +14,7 @@ from factory_agent.application.intent import CapabilityIntentParser
 from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.scope_guard import ScopeGuard
 from factory_agent.application.session.definitions import (
+    DrillPayload,
     IdFactory,
     SessionLimits,
 )
@@ -111,7 +112,12 @@ class SessionCore:
         self._time_range_max_days = time_range_max_days
         #: Factory-local zone for time-window labels; canonical windows are
         #: stored in UTC and must not be shown with UTC ``.date()`` values.
+        self._factory_timezone_name = factory_timezone
         self._factory_zone = ZoneInfo(factory_timezone)
+        #: In-process structured drill requests (D-3)，keyed by interaction id:
+        #: stored by ``start`` and consumed once by the claiming stream. See
+        #: ``DrillPayload`` for the restart semantics.
+        self._drill_requests: dict[str, DrillPayload] = {}
         #: Role-consistency safety net: runs post-fetch, pre-compose.
         self._validator = validator
         self._violations = violations

@@ -38,7 +38,7 @@ from factory_agent.execution.recipes import (
 from factory_agent.execution.result_table import MetricRegistry, ResultColumnMeta, ResultTable
 from factory_agent.execution.sandbox_runtime import InteractionSandbox, SandboxTable
 from factory_agent.observability.logging_adapter import get_logger
-from factory_agent.ports.card import CardColumn, build_card
+from factory_agent.ports.card import CardChart, CardColumn, build_card, build_chart_payload
 from factory_agent.ports.contracts import (
     UNAVAILABLE_VALUE,
     RenderColumn,
@@ -507,8 +507,18 @@ class KernelCapabilityRunner:
         self._reconcile(recipe, fetches)
 
         totals = _build_totals(recipe, table_rows, fetches)
+        aux_results = self._run_aux_steps(sandbox, recipe, fetches)
+        chart, aux_metrics = _build_aux_card_payloads(recipe, aux_results)
         card = self._build_card(
-            recipe, table_rows, column_metas, totals, incomplete, incomplete_reason, warnings
+            recipe,
+            table_rows,
+            column_metas,
+            totals,
+            incomplete,
+            incomplete_reason,
+            warnings,
+            chart=chart,
+            aux_metrics=aux_metrics,
         )
         return ResultTable(
             capability_id=recipe.capability_id,
@@ -531,6 +541,9 @@ class KernelCapabilityRunner:
         incomplete: bool,
         incomplete_reason: str | None,
         warnings: list[str],
+        *,
+        chart: object | None = None,
+        aux_metrics: tuple[tuple[str, str | None, object], ...] = (),
     ) -> dict[str, object] | None:
         """Front-end card payload from the reviewed recipe ``card:`` block.
 
@@ -559,6 +572,8 @@ class KernelCapabilityRunner:
             incomplete=incomplete,
             incomplete_reason=incomplete_reason,
             warnings=tuple(warnings),
+            chart=chart,  # type: ignore[arg-type]
+            aux_metrics=aux_metrics,
         )
 
     def _run_compute_steps(
@@ -611,6 +626,35 @@ class KernelCapabilityRunner:
             values = getattr(filters, filter_key, None)
             params[sql_param] = list(values) if values else []
         return params
+
+    def _run_aux_steps(
+        self,
+        sandbox: InteractionSandbox,
+        recipe: CapabilityRecipe,
+        fetches: dict[str, ResourceFetchResult],
+    ) -> dict[str, list[dict[str, object]]]:
+        """Run every aux output and keep its rows (card-only, never exported).
+
+        An aux output whose API dependencies fetched zero rows degrades to an
+        empty list: its chart/KPI block is simply omitted from the card
+        instead of showing a fabricated zero.
+        """
+        results: dict[str, list[dict[str, object]]] = {}
+        for aux in recipe.aux_outputs:
+            if aux.depends_on and all(
+                fetches.get(dependency) is None or not fetches[dependency].rows
+                for dependency in aux.depends_on
+            ):
+                results[aux.aux_id] = []
+                continue
+            try:
+                columns, rows = sandbox.execute_typed(aux.compute)
+            except InvalidRequestError as error:
+                raise InvalidRequestError(
+                    f"sandbox rejected aux compute for {aux.aux_id}: {error}"
+                ) from error
+            results[aux.aux_id] = [dict(zip(columns, row)) for row in rows]
+        return results
 
     def _render_compute_rows(
         self,
@@ -969,6 +1013,43 @@ def _to_value(value: object, column: ResultColumnMeta) -> object:
     if column.column_type in ("money", "quantity") and isinstance(value, Decimal):
         return value
     return value
+
+
+def _build_aux_card_payloads(
+    recipe: CapabilityRecipe,
+    aux_results: dict[str, list[dict[str, object]]],
+) -> tuple[object | None, tuple[tuple[str, str | None, object], ...]]:
+    """Project aux outputs onto the card: one chart block + single-value KPIs.
+
+    ``UNAVAILABLE``/missing aux values render as the explicit unavailable
+    state on the card — never a fabricated zero. A chart aux with no parseable
+    rows is omitted entirely.
+    """
+    chart: CardChart | None = None
+    metrics: list[tuple[str, str | None, object]] = []
+    for aux in recipe.aux_outputs:
+        rows = aux_results.get(aux.aux_id, ())
+        if aux.into == "chart":
+            if not rows:
+                continue
+            chart = build_chart_payload(
+                chart_type=aux.chart_type,
+                unit=aux.chart_unit or "",
+                labels=[row.get(aux.label_column) for row in rows],
+                values=[row.get(aux.value_column) for row in rows],
+            )
+            continue
+        if not rows:
+            for metric in aux.metrics:
+                metrics.append((metric.title, metric.unit, None))
+            continue
+        first = rows[0]
+        for metric in aux.metrics:
+            value = first.get(metric.name)
+            if value is None or value == UNAVAILABLE_VALUE:
+                value = None
+            metrics.append((metric.title, metric.unit, value))
+    return chart, tuple(metrics)
 
 
 def _build_totals(

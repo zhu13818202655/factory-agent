@@ -12,8 +12,6 @@ regardless of role (客户确认结论 4), so a resolved target employee carries
 customer MES.
 """
 
-
-
 from dataclasses import dataclass
 
 from factory_agent.domain import DataScope, DeptId, EmployeeId, IntentSlots
@@ -69,6 +67,16 @@ class BusinessFilterResolver:
             style_codes=_as_frozenset(slots.style_codes),
             plan_codes=_as_frozenset(slots.plan_codes),
             material_ids=_as_frozenset(slots.material_ids),
+        )
+
+    async def find_employee_by_id(
+        self, scope: DataScope, employee_id: str
+    ) -> EmployeeRecord | None:
+        """Look up one employee by uid (drill channel target-employee check)."""
+        employees = await self._directory.list_employees(scope)
+        return next(
+            (employee for employee in employees if employee.employee_id == employee_id),
+            None,
         )
 
     async def _resolve_dept_names(

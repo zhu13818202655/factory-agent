@@ -10,6 +10,7 @@ from factory_agent.application.session.definitions import (
     STOP_CANCELLED,
     STOP_RUN_TIMEOUT,
     TERMINAL_STATUSES,
+    DrillPayload,
     session_logger,
 )
 from factory_agent.domain import InteractionId, InteractionRecord
@@ -46,6 +47,8 @@ class InteractionRunExecutor:
         record: InteractionRecord,
         history: tuple[ConversationTurn, ...],
         credential: TrustedCredential,
+        *,
+        drill: "DrillPayload | None" = None,
     ) -> None:
         self._service = service
         self._owner = owner
@@ -53,6 +56,7 @@ class InteractionRunExecutor:
         self._record = record
         self._history = history
         self._credential = credential
+        self._drill = drill
         self._cancel_event = asyncio.Event()
         # Deliberate friend-class access: the executor and the service share
         # one module on purpose (same lifecycle, same invariants).
@@ -104,6 +108,7 @@ class InteractionRunExecutor:
                 0,
                 self._credential,
                 control=self,
+                drill=self._drill,
             ):
                 pass
         except asyncio.CancelledError:

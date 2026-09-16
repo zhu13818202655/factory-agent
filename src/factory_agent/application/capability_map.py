@@ -10,8 +10,6 @@ between the two; a product id can own several recipes (FR-002/FR-003 share the
 same operation with a different ``scheme``).
 """
 
-
-
 from factory_agent.application.capabilities import CapabilityRegistry
 from factory_agent.application.intent import CapabilityCatalog, CapabilitySpec
 from factory_agent.application.permission_matrix import CAPABILITY_ROLES, Capability
@@ -31,6 +29,7 @@ RECIPE_BY_FR: dict[str, str] = {
     "FR-010": "fr010_workshop_output_overview",
     "FR-011": "fr011_factory_payroll_stats",
     "FR-012": "fr012_employee_payroll",
+    "FR-013": "fr013_factory_output_dashboard",
 }
 
 #: Sub-capabilities reached by drilling into a result rather than by the FR
@@ -125,6 +124,10 @@ FR_INFO: dict[str, tuple[str, str]] = {
         "员工工资查询（任一员工）",
         "查询某位员工选定时间段的工资合计、计件件数或工资明细。",
     ),
+    "FR-013": (
+        "全厂产量总览",
+        "查看全厂总产量、在产订单数与人均产量的综合看板，含各车间产量排名与日产量趋势。",
+    ),
 }
 
 #: Required intent slots per product capability. Optional business filters
@@ -143,6 +146,7 @@ REQUIRED_SLOTS_BY_FR: dict[str, tuple[str, ...]] = {
     "FR-010": ("time_range",),
     "FR-011": ("time_range",),
     "FR-012": ("time_range", "employee_names"),
+    "FR-013": ("time_range",),
 }
 
 

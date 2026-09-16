@@ -17,6 +17,7 @@ from factory_agent.domain.errors import InvalidRequestError
 from factory_agent.ports.card import (
     MAX_PREVIEW_GROUPS,
     MAX_PREVIEW_ROWS,
+    CardAction,
     CardAlertSpec,
     CardTableSpec,
 )
@@ -109,6 +110,68 @@ class CardAlertMarker(BaseModel):
     equals: str
 
 
+#: Drill slot keys a card action may bind (keys of the follow-up ``drill``
+#: request payload). They are business narrowing keys only; scope identifiers
+#: (employee/dept *scope* sets, tenant, user) are absent by design and are
+#: re-validated server-side on every drill round.
+ALLOWED_DRILL_SLOT_KEYS: frozenset[str] = frozenset({"dept_ids", "employee_uid"})
+
+
+class CardActionSpec(BaseModel):
+    """Reviewed card-level drill entry (D4-3/D4-4 拍板).
+
+    ``bind_from`` maps drill slot keys to result column names; the follow-up
+    drill request's slots are filled from the clicked row at the client.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str
+    capability_id: str
+    bind_from: dict[str, str] = {}
+
+    def to_spec(self) -> CardAction:
+        return CardAction(
+            label=self.label,
+            capability_id=self.capability_id,
+            bind_from=dict(self.bind_from),
+        )
+
+
+class AuxMetric(BaseModel):
+    """One card-only KPI produced by an aux output (不可 SUM 的单值口径)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    title: str
+    unit: str | None = None
+
+
+class AuxOutput(BaseModel):
+    """A secondary compute output that feeds the card only (§4.2 of the plan).
+
+    Aux rows never enter the main result table or the export file; they carry
+    the chart series and the factory-level single-value KPIs the main table's
+    SUM-totals cannot express. Row count stays bounded: a chart longer than
+    ``MAX_CHART_DAY_POINTS`` is downsampled to weeks by the card builder.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    aux_id: str
+    into: Literal["chart", "metrics"]
+    compute: str
+    depends_on: tuple[str, ...] = ()
+    #: ``into=chart`` declaration (D4-1/D4-2 拍板).
+    chart_type: Literal["bar"] = "bar"
+    chart_unit: str | None = None
+    label_column: str = "label"
+    value_column: str = "value"
+    #: ``into=metrics`` declaration: one entry per KPI column of the output.
+    metrics: tuple[AuxMetric, ...] = ()
+
+
 class CardSpec(BaseModel):
     """Reviewed result-card shape for one capability.
 
@@ -125,8 +188,12 @@ class CardSpec(BaseModel):
     preview_max_rows: int | None = None
     preview_max_groups: int = 50
     group_by: str | None = None
+    #: Result column supplying the group display name (groups[].name).
+    group_name_from: str | None = None
     rank_column: str | None = None
     alert_marker: CardAlertMarker | None = None
+    #: Reviewed card-level drill entry points.
+    actions: tuple[CardActionSpec, ...] = ()
     #: Reviewed static 口径 statements rendered with the card. Mandatory when a
     #: column's meaning is not self-evident (e.g. a 件·工序 figure that must not
     #: be read as a piece count).
@@ -141,12 +208,14 @@ class CardSpec(BaseModel):
             preview_max_rows=self.preview_max_rows,
             preview_max_groups=self.preview_max_groups,
             group_by=self.group_by,
+            group_name_from=self.group_name_from,
             rank_column=self.rank_column,
             alert_marker=(
                 CardAlertSpec(column=self.alert_marker.column, equals=self.alert_marker.equals)
                 if self.alert_marker is not None
                 else None
             ),
+            actions=tuple(action.to_spec() for action in self.actions),
             notes=self.notes,
         )
 
@@ -164,6 +233,8 @@ class CapabilityRecipe(BaseModel):
     metric_versions: dict[str, str]
     #: Optional front-end card declaration; absent = no card is emitted.
     card: CardSpec | None = None
+    #: Optional card-only auxiliary outputs (chart series / single-value KPIs).
+    aux_outputs: tuple[AuxOutput, ...] = ()
     degradation: Literal["incomplete_marker", "fail"] = "incomplete_marker"
     #: Optional footer reconciliation: ``{result_column: footer_field}``. The
     #: kernel compares the locally computed column against the MES ``footer``
@@ -249,6 +320,29 @@ def validate_recipe(recipe: CapabilityRecipe, registered_operations: frozenset[s
             )
     if recipe.card is not None:
         _validate_card(recipe)
+    _validate_aux_outputs(recipe, api_step_ids)
+
+
+def _validate_aux_outputs(recipe: CapabilityRecipe, api_step_ids: set[str]) -> None:
+    """Aux outputs must reference known API steps and stay internally coherent."""
+    aux_ids = {aux.aux_id for aux in recipe.aux_outputs}
+    if len(aux_ids) != len(recipe.aux_outputs):
+        raise InvalidRequestError("recipe contains duplicate aux output IDs")
+    for aux in recipe.aux_outputs:
+        for dependency in aux.depends_on:
+            if dependency not in api_step_ids:
+                raise InvalidRequestError(
+                    f"aux output {aux.aux_id} depends on unknown API step {dependency}"
+                )
+        if not aux.compute.strip():
+            raise InvalidRequestError(f"aux output {aux.aux_id} requires a compute rule")
+        if aux.into == "chart":
+            if aux.chart_unit is None:
+                raise InvalidRequestError(
+                    f"aux output {aux.aux_id} declares a chart without chart_unit"
+                )
+        elif not aux.metrics:
+            raise InvalidRequestError(f"aux output {aux.aux_id} declares metrics without entries")
 
 
 def _validate_card(recipe: CapabilityRecipe) -> None:
@@ -264,6 +358,8 @@ def _validate_card(recipe: CapabilityRecipe) -> None:
         references += (card.rank_column,)
     if card.alert_marker is not None:
         references += (card.alert_marker.column,)
+    if card.group_name_from is not None:
+        references += (card.group_name_from,)
     for name in references:
         if name not in columns_by_name:
             raise InvalidRequestError(f"card references unknown result column {name}")
@@ -294,6 +390,15 @@ def _validate_card(recipe: CapabilityRecipe) -> None:
             raise InvalidRequestError(
                 f"card metric {name} must be a numeric column ({sorted(CARD_METRIC_TYPES)})"
             )
+
+    for action in card.actions:
+        if not _is_safe_identifier(action.capability_id):
+            raise InvalidRequestError("card action capability_id must be a plain identifier")
+        for slot_key, column_name in action.bind_from.items():
+            if slot_key not in ALLOWED_DRILL_SLOT_KEYS:
+                raise InvalidRequestError(f"card action binds an unknown drill slot {slot_key}")
+            if column_name not in columns_by_name:
+                raise InvalidRequestError(f"card action binds unknown result column {column_name}")
 
 
 def _is_safe_identifier(value: str) -> bool:
@@ -352,12 +457,30 @@ def load_recipes(
             validate_recipe(recipe, registered_operations)
             recipes[recipe.capability_id] = recipe
 
+    _validate_card_action_targets(recipes)
     return RecipeRegistry(version=version, _recipes=recipes)
 
 
+def _validate_card_action_targets(recipes: dict[str, CapabilityRecipe]) -> None:
+    """Every card drill action must target a registered capability recipe."""
+    for recipe in recipes.values():
+        if recipe.card is None:
+            continue
+        for action in recipe.card.actions:
+            if action.capability_id not in recipes:
+                raise InvalidRequestError(
+                    f"card action of {recipe.capability_id} targets unregistered "
+                    f"capability {action.capability_id}"
+                )
+
+
 __all__ = [
+    "ALLOWED_DRILL_SLOT_KEYS",
+    "AuxMetric",
+    "AuxOutput",
     "BUSINESS_FILTER_KEYS",
     "CapabilityRecipe",
+    "CardActionSpec",
     "CardAlertMarker",
     "CardSpec",
     "DEFAULT_RECIPE_DIR",

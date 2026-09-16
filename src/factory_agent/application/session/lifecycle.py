@@ -13,6 +13,7 @@ from factory_agent.application.session.definitions import (
     CATEGORY_ABANDONED,
     CATEGORY_EXECUTOR_LOST,
     TERMINAL_NAMES,
+    DrillPayload,
     session_logger,
 )
 from factory_agent.application.session.executor import InteractionRunExecutor
@@ -259,10 +260,18 @@ class SessionLifecycleMixin(SessionCore):
         claimed: InteractionRecord,
         history: tuple[ConversationTurn, ...],
         credential: TrustedCredential,
+        *,
+        drill: "DrillPayload | None" = None,
     ) -> InteractionRunExecutor:
         """Hand a claimed run to a background executor."""
         executor = InteractionRunExecutor(
-            cast("SessionService", self), owner, authorization, claimed, history, credential
+            cast("SessionService", self),
+            owner,
+            authorization,
+            claimed,
+            history,
+            credential,
+            drill=drill,
         )
         self._executors[str(claimed.interaction_id)] = executor
         executor.start()

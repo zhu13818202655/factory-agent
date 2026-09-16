@@ -114,6 +114,7 @@ ROW_SEMANTICS: dict[Capability, SemanticRule] = {
     Capability.WORKSHOP_OUTPUT_OVERVIEW: SemanticRule(RowSemantic.MANAGEMENT_OVERVIEW),
     Capability.FACTORY_PAYROLL_STATS: SemanticRule(RowSemantic.OWNER_OVERVIEW),
     Capability.ANY_EMPLOYEE_PAYROLL: SemanticRule(RowSemantic.OWNER_OVERVIEW, single_subject=True),
+    Capability.FACTORY_OUTPUT_DASHBOARD: SemanticRule(RowSemantic.OWNER_OVERVIEW),
 }
 
 #: Role interpretation table. Documents why a data shape is normal for one

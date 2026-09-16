@@ -5,8 +5,6 @@ must carry a Chinese title and a one-line usage description, and the reserved
 ``chitchat`` entry must be present but never map to a recipe.
 """
 
-
-
 from factory_agent.application.capability_map import (
     CHITCHAT_CAPABILITY_ID,
     DRILLDOWN_INFO,
@@ -73,9 +71,17 @@ def test_business_specs_carry_the_reviewed_role_sets() -> None:
 
     owner_only = catalog.get("fr012_employee_payroll")
     assert owner_only is not None
-    assert owner_only.roles == frozenset({Role.OWNER})
+    # D-5 (2026-09-16 拍板): 任一员工工资查询开放给组长/管理。
+    assert owner_only.roles == frozenset({Role.GROUP_LEADER, Role.MANAGER, Role.OWNER})
     assert owner_only.selectable_by(Role.OWNER)
-    assert not owner_only.selectable_by(Role.MANAGER)
+    assert owner_only.selectable_by(Role.MANAGER)
+    assert not owner_only.selectable_by(Role.EMPLOYEE)
+
+    dashboard = catalog.get("fr013_factory_output_dashboard")
+    assert dashboard is not None
+    assert dashboard.roles == frozenset({Role.OWNER})
+    assert dashboard.selectable_by(Role.OWNER)
+    assert not dashboard.selectable_by(Role.MANAGER)
 
     management = catalog.get("fr007_workshop_output_comparison")
     assert management is not None
@@ -159,7 +165,9 @@ def test_describe_narrows_the_capability_list_to_the_caller_role() -> None:
     assert "fr010_workshop_output_overview" in manager
     assert "fr009_factory_order_overview" not in manager
     assert "fr011_factory_payroll_stats" not in manager
-    assert "fr012_employee_payroll" not in manager
+    # D-5: fr012 开放给 01/02，选择器提示词必须出现（不变量反向：无权能力绝不出现）。
+    assert "fr012_employee_payroll" in manager
+    assert "fr013_factory_output_dashboard" not in manager
 
     owner = catalog.describe(Role.OWNER)
     for recipe in RECIPE_BY_FR.values():
