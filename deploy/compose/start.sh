@@ -6,14 +6,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 usage() {
     printf 'Usage: %s [all|middleware] [amd64|arm64]\n' "$(basename "$0")" >&2
-    printf '  all        Start PostgreSQL, Redis, SeaweedFS (S3), agent-api, and usage-admin.\n' >&2
+    printf '  all        Start PostgreSQL, Redis, SeaweedFS (S3) and agent-api.\n' >&2
     printf '  middleware Start only local PostgreSQL, Redis and SeaweedFS (S3) for debugging.\n' >&2
     printf '  架构参数仅对 all 生效，默认 amd64（本机 x86）；arm64 用于给客户交叉构建镜像。\n' >&2
 }
 
 choose_target() {
     printf '请选择要启动的目标：\n' >&2
-    printf '  1) all        启动完整本地栈：PostgreSQL、Redis、SeaweedFS(S3)、agent-api、usage-admin\n' >&2
+    printf '  1) all        启动完整本地栈：PostgreSQL、Redis、SeaweedFS(S3)、agent-api\n' >&2
     printf '  2) middleware 只启动本地调试中间件：PostgreSQL、Redis、SeaweedFS(S3)\n' >&2
     printf '请输入 1/2 或 all/middleware: ' >&2
     read -r choice

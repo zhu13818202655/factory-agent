@@ -42,6 +42,7 @@ from factory_agent.application.time_expressions import (
 )
 from factory_agent.application.usage import (
     drain_mes_events,
+    interaction_routed_event,
     llm_call_event,
     set_usage_context,
 )
@@ -569,6 +570,19 @@ class SessionPipelineMixin(SessionConsistencyMixin):
 
         intent = parsed.intent
         state.last_intent = intent
+        # Every path converges here with its routing verdict already final —
+        # the model parse, the deterministic drill round, and the chit-chat
+        # interception all arrive with the capability the router chose (or None
+        # when it matched nothing). Recording it as its own fact is what makes
+        # "有效提问" and the capability breakdown computable: the start event is
+        # written before this point and stays capability-free on purpose.
+        usage_events.append(
+            interaction_routed_event(
+                self._usage_context(state.record),
+                occurred_at=self._clock.now(),
+                capability=intent.capability_id,
+            )
+        )
 
         if intent.needs_clarification:
             if state.record.clarification_rounds + 1 >= self._limits.max_clarification_rounds:

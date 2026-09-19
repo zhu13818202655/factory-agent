@@ -101,7 +101,6 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
                     interaction_started_event(
                         usage,
                         occurred_at=now,
-                        capability=None,
                         entrypoint="api",
                         role=context.role,
                     ),

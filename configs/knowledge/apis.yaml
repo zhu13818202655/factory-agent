@@ -9,7 +9,7 @@
 #   DataScope）/ filter / clock。凭据参数绝不可来自 filter 或模型输出。
 # - pagination: none 或 list_total（result.list/result.total，累计到 total 结束）。
 # - MoveMenuQuery 登记为 enabled: false：加载器允许存在但运行时拒绝调用。
-# - usage_category: MES 调用统计的计费分类（口径见 usage-admin/API.md）：
+# - usage_category: MES 调用统计的计费分类（口径见 docs/api/统计与运营接口.md）：
 #   output（产量）/ payroll（工资）/ order（订单）/ other（其他：认证2+基础数据9+吊挂3）。
 #   能力分类 ≠ API 分类，不得以 dimensions=capability 顶替。
 version: 2
@@ -182,7 +182,7 @@ operations:
   # 已弃用（2026-09-15 口径重梳，见 docs/design/进度与产量功能重梳方案.md）：
   # 订单数量改取「缝制生产进度」ScjdQuery.zsl，进度改取 ScjdQuery.wcl。
   # 保留登记条目并置 enabled: false（加载器允许存在、运行时拒绝调用）：条目仍在
-  # mes_operation_category 种子与 usage-admin 分类映射里，删条目会牵动两处计数。
+  # mes_operation_category 种子与统计面的分类映射里，删条目会牵动两处计数。
   # Plan 的 khname / khid / dddh / finish_date 实测全空，客户/交期族列已整族删除。
   - operation_id: PlanGridPageList
     path: /api/NetYf/Plan/GridPageList

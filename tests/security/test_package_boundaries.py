@@ -3,10 +3,9 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PRODUCT_ROOT = REPOSITORY_ROOT / "src" / "factory_agent"
-USAGE_ADMIN_ROOT = REPOSITORY_ROOT / "usage-admin" / "src" / "usage_admin"
 
 ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
-    "api": {"application", "bootstrap", "config", "domain", "observability", "ports"},
+    "api": {"application", "bootstrap", "config", "domain", "observability", "ports", "statistics"},
     "application": {"domain", "observability", "ports"},
     "domain": set(),
     "ports": {"domain"},
@@ -22,13 +21,25 @@ ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     "export": {"domain", "observability", "ports"},
     "observability": {"config", "domain", "ports"},
     "infrastructure": {"domain", "ports"},
+    # The statistics surface is a peer context, not a business one: it may read
+    # the shared database and log, and nothing else. Deliberately absent are
+    # application/domain/data_api/ports, so the platform surface can never grow
+    # a business dependency and stays extractable if that is ever needed.
+    "statistics": {"config", "observability"},
 }
 
+#: Packages the statistics surface must never reach into. It reports on MES
+#: traffic; it never makes MES calls of its own.
+STATISTICS_FORBIDDEN_PACKAGES: set[str] = {"data_api"}
+
+#: Packages that must never import the statistics surface. The business
+#: runtime knows nothing about platform reporting.
+STATISTICS_UNREACHABLE_FROM: set[str] = {"application", "domain"}
+
 #: Packages allowed to own an outbound HTTP client. ``data_api`` is the only one
-#: permitted to reach MES endpoints; ``usage`` reaches usage-admin, which is not
-#: a MES endpoint. ``llm`` is deliberately absent: outbound model traffic goes
-#: through the litellm SDK, not a hand-rolled HTTP client.
-HTTP_BOUNDARY_PACKAGES: set[str] = {"data_api", "usage"}
+#: permitted to reach MES endpoints. ``llm`` is deliberately absent: outbound
+#: model traffic goes through the litellm SDK, not a hand-rolled HTTP client.
+HTTP_BOUNDARY_PACKAGES: set[str] = {"data_api"}
 
 #: Only the model gateway adapter may import the litellm SDK (ADR-0006).
 LLM_SDK_PACKAGES: set[str] = {"llm"}
@@ -77,27 +88,6 @@ def test_product_does_not_import_external_application_packages() -> None:
     assert offenders == []
 
 
-def test_usage_admin_does_not_import_product() -> None:
-    forbidden_roots = {"factory_agent"}
-    offenders = [
-        str(path.relative_to(REPOSITORY_ROOT))
-        for path in python_files(USAGE_ADMIN_ROOT)
-        if imported_roots(path) & forbidden_roots
-    ]
-
-    assert offenders == []
-
-
-def test_product_does_not_import_usage_admin() -> None:
-    offenders = [
-        str(path.relative_to(REPOSITORY_ROOT))
-        for path in python_files(PRODUCT_ROOT)
-        if "usage_admin" in imported_roots(path)
-    ]
-
-    assert offenders == []
-
-
 def test_only_http_boundary_packages_may_import_httpx() -> None:
     offenders = [
         str(path.relative_to(REPOSITORY_ROOT))
@@ -136,5 +126,25 @@ def test_product_package_dependencies_follow_architecture() -> None:
             if forbidden:
                 relative_path = path.relative_to(REPOSITORY_ROOT)
                 offenders.append(f"{relative_path}: {', '.join(sorted(forbidden))}")
+
+    assert offenders == []
+
+
+def test_statistics_never_imports_an_excluded_package() -> None:
+    offenders = [
+        str(path.relative_to(REPOSITORY_ROOT))
+        for path in python_files(PRODUCT_ROOT / "statistics")
+        if imported_product_packages(path) & STATISTICS_FORBIDDEN_PACKAGES
+    ]
+
+    assert offenders == []
+
+
+def test_business_runtime_never_imports_statistics() -> None:
+    offenders: list[str] = []
+    for package in STATISTICS_UNREACHABLE_FROM:
+        for path in python_files(PRODUCT_ROOT / package):
+            if "statistics" in imported_product_packages(path):
+                offenders.append(str(path.relative_to(REPOSITORY_ROOT)))
 
     assert offenders == []

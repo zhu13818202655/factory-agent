@@ -1,5 +1,3 @@
-
-
 from pathlib import Path
 from typing import Any, cast
 
@@ -16,20 +14,40 @@ def load_compose(name: str) -> dict[str, Any]:
 def test_application_compose_contains_all_services() -> None:
     services = cast(dict[str, dict[str, Any]], load_compose("compose.yaml")["services"])
 
+    # The statistics surface runs inside agent-api, so there is exactly one
+    # application service; a second one reappearing here would mean the split
+    # came back.
     assert set(services) == {
         "agent-api",
         "assistant-web",
         "postgres",
         "redis",
         "seaweedfs",
-        "usage-admin",
     }
     assert services["agent-api"]["depends_on"] == {
         "postgres": {"condition": "service_healthy"},
         "redis": {"condition": "service_healthy"},
     }
-    assert services["usage-admin"]["depends_on"] == {"postgres": {"condition": "service_healthy"}}
-    assert services["usage-admin"]["build"]["dockerfile"] == "usage-admin/Dockerfile"
+
+
+def test_application_compose_mounts_both_export_fallbacks() -> None:
+    """Both artifact backends keep a writable path under the read-only rootfs.
+
+    ``agent-exports`` serves the conversation artifact exporter and
+    ``agent-statistics-exports`` serves the platform report exporter. They are
+    deliberately separate directories and separate buckets: sharing either one
+    would make the two exporters overwrite each other's configuration.
+    """
+    services = cast(dict[str, dict[str, Any]], load_compose("compose.yaml")["services"])
+    volumes = services["agent-api"]["volumes"]
+
+    assert "agent-exports:/app/data/exports" in volumes
+    assert "agent-statistics-exports:/app/data/statistics-exports" in volumes
+    assert set(load_compose("compose.yaml")["volumes"]) >= {
+        "agent-exports",
+        "agent-statistics-exports",
+        "seaweedfs-data",
+    }
 
 
 def test_middleware_compose_contains_only_local_dependencies() -> None:

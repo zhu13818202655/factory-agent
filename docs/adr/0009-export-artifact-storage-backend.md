@@ -5,7 +5,7 @@
 - 所有者：项目维护者
 - 关联：`docs/design/链路优化方案.md`（阶段 1~3、T3.11）、
   `src/factory_agent/ports/artifacts.py`、`src/factory_agent/export/`、
-  `usage-admin/src/usage_admin/export_store.py`、
+  `src/factory_agent/statistics/export_store.py`、
   `docs/product/需求及方案整理.md`（报表导出与文件留存策略）、
   ADR-0001（服务边界）、ADR-0002（存储基线）、ADR-0003（表归属）
 
@@ -15,7 +15,7 @@
 
 1. `agent-api` 容器以 `read_only: true` 运行，本地目录必须靠可写卷才能落盘，扩副本时
    每个副本各写各的本地盘，产物无法跨实例读取。
-2. usage-admin 的报表导出走 `ExportFileStore` 协议，但唯一实现是
+2. 平台报表导出走 `ExportFileStore` 协议，但唯一实现是
    **纯内存** `InMemoryExportFileStore`——进程重启即丢，只适合 dev/test。
 
 同时，客户口径已统一为「即时生成、**落盘保留**」，默认保留期 90 天
@@ -62,21 +62,23 @@
 保持**惰性清理**（不访问就不过期删除），默认 90 天。S3 生命周期规则**不引入**：
 它会把清理语义从「服务层可解释」搬到「桶配置里不可见」，与 §2.1 的分层相悖。
 
-### 2.6 usage-admin：同一协议，独立实现与独立桶
+### 2.6 平台统计报表：同一协议、独立实现与独立桶
 
-- `usage-admin/src/usage_admin/export_store.py` 提供 `LocalExportFileStore` /
+- `src/factory_agent/statistics/export_store.py` 提供 `LocalExportFileStore` /
   `S3ExportFileStore` / `InMemoryExportFileStore`。
-- 选择顺序：`USAGE_ADMIN_S3_ENDPOINT_URL` 非空 → S3；否则
-  `USAGE_ADMIN_EXPORT_STORE_DIR` → 本地目录；两者都空 → 内存（dev/test，启动时打 warning）。
-- usage-admin 保留自己**签名短链 + 后端代理**的下载语义，与 §2.3 的结论一致。
-- 桶独立（`usage-admin-exports`），与 factory-agent 的 `factory-agent-exports` 分开：
-  两个服务的产物与保留策略不同，混放会让一方的清理动作碰到另一方的对象。
+- 选择顺序：`FACTORY_AGENT_STATISTICS_S3_ENDPOINT_URL` 非空 → S3；否则
+  `FACTORY_AGENT_STATISTICS_EXPORT_STORE_DIR` → 本地目录；两者都空 → 内存
+  （dev/test，启动时打 warning）。
+- 统计报表保留**签名短链 + 后端代理**的下载语义，与 §2.3 的结论一致。
+- 桶独立（`factory-agent-statistics-exports`），与业务 artifact 的
+  `factory-agent-exports` 分开：两类产物的配置与保留策略不同，混放会让一方的清理动作碰到
+  另一方的对象，配置键也会互相覆盖。
 
 ### 2.7 参考后端：单节点 SeaweedFS
 
 `weed mini` 单进程内含 Master + Volume + Filer + S3 网关，官方定位可用于单节点生产。
 桶与凭据由环境变量在首次启动时**幂等**播种；`S3_BUCKET` 支持**逗号分隔多个桶**
-（`factory-agent-exports,usage-admin-exports`，已在本机实测:两个桶都被创建）。
+（`factory-agent-exports,factory-agent-statistics-exports`，已在本机实测:两个桶都被创建）。
 
 ## 3. 不变式核对
 
@@ -85,11 +87,11 @@
 | 敏感字段不进 prompt/日志/快照 | 成立：sidecar 只存 owner 标识与展示文件名，不存业务行；下载审计只记 artifact id + scope 摘要 |
 | 访问控制不因换后端而放宽 | 成立：owner 复核与审计门仍在服务层/API 层；后端无鉴权语义 |
 | 业务回答不受对象存储影响 | 成立：导出是业务提交**之后**的独立步骤，S3 不可用只降级导出（fail-closed），不阻塞问答 |
-| 服务边界 | 成立：usage-admin 仍从不调用 MES，也不与 factory-agent 互相 import；两者只共享数据库与同一个对象存储网关 |
+| 服务边界 | 成立：统计面仍从不调用 MES，也不被业务域 import；两者只共享数据库与同一个对象存储网关，配置前缀与桶各自独立 |
 
 ## 4. 后果与风险
 
-- 正面：导出跨实例、跨重启可读；扩副本不再依赖本地卷；usage-admin 报表导出不再是
+- 正面：导出跨实例、跨重启可读；扩副本不再依赖本地卷；平台报表导出不再是
   重启即丢的临时数据。
 - 风险一（桶名写错不会报错）：**SeaweedFS 对不存在的桶会自动创建**，PUT 静默成功。
   所以桶名不一致的后果是「产物落进另一个桶」，而不是 fail-closed。真正会触发 fail-closed

@@ -58,6 +58,26 @@ def metrics(facts: list[MesCallFactRow]) -> dict[str, float]:
     return buckets[BUCKET]
 
 
+def interaction(
+    event_type: str,
+    *,
+    capability_id: str | None = None,
+    occurred_at: datetime = NOW,
+) -> InteractionFactRow:
+    return InteractionFactRow(
+        tenant_id="tenant-a",
+        occurred_at=occurred_at,
+        event_type=event_type,
+        user_subject_id="u" * 64,
+        capability_id=capability_id,
+    )
+
+
+def interaction_metrics(facts: list[InteractionFactRow]) -> dict[str, float]:
+    buckets = compute_bucket_metrics(facts, no_llm(), [], CATEGORIES, "hour")
+    return buckets[BUCKET]
+
+
 def test_each_category_is_aggregated_separately() -> None:
     bucket = metrics(
         [
@@ -196,3 +216,43 @@ def test_daily_granularity_buckets_by_utc_date() -> None:
             "mes_calls.other": 0.0,
         }
     }
+
+
+# --- 有效提问（rollup-v3）：能力只由路由事件记录 -------------------------------
+
+
+def test_questions_come_from_the_start_event_and_valid_questions_from_routing() -> None:
+    bucket = interaction_metrics(
+        [
+            interaction("interaction_started"),
+            interaction("interaction_routed", capability_id="FR-001"),
+        ]
+    )
+
+    assert bucket["questions"] == 1
+    assert bucket["valid_questions"] == 1
+
+
+def test_a_routed_question_that_matched_nothing_is_not_a_valid_question() -> None:
+    bucket = interaction_metrics(
+        [
+            interaction("interaction_started"),
+            interaction("interaction_routed", capability_id=None),
+        ]
+    )
+
+    assert bucket["questions"] == 1
+    assert bucket["valid_questions"] == 0
+
+
+def test_a_capability_on_the_start_event_cannot_inflate_valid_questions() -> None:
+    """The regression behind rollup-v3: the start event never carries one.
+
+    Before v3 the start event did carry a capability, so the counter read from it
+    and silently stayed at zero once the field became honest. Count it from the
+    routed event only, and a start event claiming a capability stops mattering.
+    """
+    bucket = interaction_metrics([interaction("interaction_started", capability_id="FR-001")])
+
+    assert bucket["questions"] == 1
+    assert bucket["valid_questions"] == 0

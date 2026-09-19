@@ -11,11 +11,9 @@ WORKDIR /app
 RUN pip install --no-cache-dir uv==0.9.15
 
 COPY pyproject.toml uv.lock README.md ./
-# uv resolves the whole workspace lock; copy member metadata only, not their source.
-COPY usage-admin/pyproject.toml usage-admin/README.md ./usage-admin/
 COPY src ./src
 
-RUN uv sync --frozen --no-dev --package factory-agent --no-editable
+RUN uv sync --frozen --no-dev --no-editable
 
 FROM --platform=linux/${TARGETARCH} python:3.12-slim AS runtime
 
@@ -27,11 +25,12 @@ WORKDIR /app
 
 RUN useradd --create-home --uid 10001 app
 
-# The export artifact store lives here when mounted. Pre-creating it as
-# app-owned makes a named volume inherit the right owner on first mount;
-# without it docker creates the volume root-owned and uid 10001 could never
-# write (exports would silently degrade to "unavailable").
-RUN mkdir -p /app/data/exports && chown -R app:app /app/data
+# The artifact export store and the statistics report store live here when
+# mounted. Pre-creating them as app-owned makes a named volume inherit the
+# right owner on first mount; without it docker creates the volume root-owned
+# and uid 10001 could never write (exports would silently degrade to
+# "unavailable").
+RUN mkdir -p /app/data/exports /app/data/statistics-exports && chown -R app:app /app/data
 
 COPY --from=builder /app/.venv /app/.venv
 COPY alembic.ini ./alembic.ini

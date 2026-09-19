@@ -9,6 +9,7 @@ from factory_agent.application.usage import (
     UsageContext,
     completion_status,
     interaction_completed_event,
+    interaction_routed_event,
     interaction_started_event,
     llm_call_event,
     new_trace_id,
@@ -68,11 +69,11 @@ def test_row_counts_are_bucketed(rows: int, bucket: str) -> None:
     assert row_count_bucket(rows) == bucket
 
 
-def test_started_event_carries_only_whitelisted_fields() -> None:
+def test_started_event_carries_no_capability() -> None:
+    """The start event is written before the parse call, so it cannot know one."""
     event = interaction_started_event(
         context(),
         occurred_at=NOW,
-        capability=CapabilityId("FR-001"),
         entrypoint="api",
         role=Role.EMPLOYEE,
     )
@@ -87,11 +88,36 @@ def test_started_event_carries_only_whitelisted_fields() -> None:
         "interaction_id",
         "trace_id",
         "event_type",
-        "capability",
         "entrypoint",
         "role_category",
     }
     assert event.payload["schema_version"] == SCHEMA_VERSION
+
+
+def test_routed_event_carries_only_the_capability() -> None:
+    event = interaction_routed_event(context(), occurred_at=NOW, capability=CapabilityId("FR-001"))
+
+    assert set(event.payload) == {
+        "event_id",
+        "schema_version",
+        "occurred_at",
+        "tenant_id",
+        "user_subject_id",
+        "session_id",
+        "interaction_id",
+        "trace_id",
+        "event_type",
+        "capability",
+    }
+    assert event.payload["capability"] == "FR-001"
+
+
+def test_a_question_that_matched_nothing_is_still_recorded_as_routed() -> None:
+    """``None`` means "routed, nothing matched" — not "never routed"."""
+    event = interaction_routed_event(context(), occurred_at=NOW, capability=None)
+
+    assert event.event_type == "interaction_routed"
+    assert event.payload["capability"] is None
 
 
 def test_llm_event_never_carries_prompt_or_completion_text() -> None:
@@ -172,12 +198,8 @@ def test_free_text_categories_are_truncated() -> None:
 
 def test_event_ids_are_unique_per_event() -> None:
     shared = context()
-    first = interaction_started_event(
-        shared, occurred_at=NOW, capability=None, entrypoint="api", role=Role.OWNER
-    )
-    second = interaction_started_event(
-        shared, occurred_at=NOW, capability=None, entrypoint="api", role=Role.OWNER
-    )
+    first = interaction_started_event(shared, occurred_at=NOW, entrypoint="api", role=Role.OWNER)
+    second = interaction_started_event(shared, occurred_at=NOW, entrypoint="api", role=Role.OWNER)
 
     assert first.event_id != second.event_id
 

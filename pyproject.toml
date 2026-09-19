@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aioboto3>=13.0,<14.0",
     "alembic>=1.16.0,<2.0.0",
+    "bcrypt>=4.1.0,<5.0.0",
     "duckdb>=1.1.0,<2.0.0",
     "fastapi>=0.116.0,<1.0.0",
     "greenlet>=3.0,<4.0",
@@ -39,9 +40,8 @@ dev = [
 factory-agent = "factory_agent.__main__:main"
 factory-agent-migrate = "factory_agent.persistence.migrations:main"
 factory-agent-scope-review = "factory_agent.cli:scope_review_main"
-
-[tool.uv.workspace]
-members = ["usage-admin"]
+factory-agent-retention = "factory_agent.cli:retention_main"
+factory-agent-rollup = "factory_agent.cli:rollup_main"
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -66,8 +66,8 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "W"]
 
 [tool.pyright]
-include = ["src", "tests", "usage-admin/src", "usage-admin/tests"]
-extraPaths = ["src", "usage-admin/src"]
+include = ["src", "tests"]
+extraPaths = ["src"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."

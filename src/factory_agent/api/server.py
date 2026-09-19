@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Literal, cast
 
 from fastapi import APIRouter, FastAPI, Request, Response
@@ -18,6 +19,7 @@ from factory_agent.observability.context import (
     bind_request_id,
 )
 from factory_agent.observability.logging_adapter import configure_logging, get_logger
+from factory_agent.statistics.api.router import statistics_router
 
 _logger = get_logger("factory_agent.api.server")
 
@@ -61,6 +63,17 @@ async def _lifespan(app: FastAPI):
     Shutdown: stop the sweep loop, then give the in-process executors a bounded
     drain window; whatever is still running is cancelled and recovered by the
     next startup sweep.
+
+    A third loop maintains the ``usage_event`` monthly partitions. Metering is
+    isolated (a failed write is alerted, never rolled back into the answer), so
+    a missing partition would otherwise be silent data loss; keeping the current
+    and the following month present means crossing a month boundary is a
+    non-event.
+
+    A fourth loop recomputes the hourly/daily rollups that every reported KPI
+    reads. Unlike a missed partition this is not data loss — the facts are all
+    still there — but it is equally invisible: an unrun rollup reads as zero
+    traffic on every dashboard, which is indistinguishable from a quiet day.
     """
     container = cast(ApplicationContainer, app.state.container)
     settings = cast(FactoryAgentSettings, app.state.settings)
@@ -96,9 +109,43 @@ async def _lifespan(app: FastAPI):
                 health.probe_forever(settings.llm_health_probe_interval_seconds),
                 name="llm-endpoint-health",
             )
+    partitions = container.usage_partitions
+    partition_task: asyncio.Task[None] | None = None
+    if partitions is not None:
+        try:
+            await partitions.ensure()
+        except Exception:  # noqa: BLE001 - maintenance must never block startup
+            _logger.exception("usage.partition.startup_failed")
+        if settings.usage_partition_sweep_interval_seconds > 0:
+            partition_task = asyncio.create_task(
+                partitions.ensure_forever(settings.usage_partition_sweep_interval_seconds),
+                name="usage-event-partitions",
+            )
+    # Every reported KPI reads the rollup tables, so the first pass runs before
+    # the app serves traffic: an instance brought up after downtime answers with
+    # real numbers instead of zeros. A failure here is alerted and dropped —
+    # reporting must never block startup.
+    rollup = container.usage_rollup
+    rollup_task: asyncio.Task[None] | None = None
+    if rollup is not None:
+        try:
+            await rollup.run_once(datetime.now(timezone.utc))
+        except Exception:  # noqa: BLE001 - reporting must never block startup
+            _logger.exception("usage.rollup.startup_failed")
+        if settings.usage_rollup_sweep_interval_seconds > 0:
+            rollup_task = asyncio.create_task(
+                rollup.run_forever(),
+                name="usage-rollup",
+            )
     try:
         yield
     finally:
+        if rollup_task is not None:
+            rollup_task.cancel()
+            await asyncio.gather(rollup_task, return_exceptions=True)
+        if partition_task is not None:
+            partition_task.cancel()
+            await asyncio.gather(partition_task, return_exceptions=True)
         if health_task is not None:
             health_task.cancel()
             await asyncio.gather(health_task, return_exceptions=True)
@@ -124,8 +171,12 @@ def create_app(
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings)
     app = FastAPI(title="factory-agent", version=__version__, lifespan=_lifespan)
-    app.state.container = build_container(resolved_settings, overrides)
+    container = build_container(resolved_settings, overrides)
+    app.state.container = container
     app.state.settings = resolved_settings
+    # The statistics surface resolves its own container, so a platform request
+    # can never be served by reading the business container's state.
+    app.state.statistics = container.statistics
 
     header_name = resolved_settings.request_id_header
 
@@ -146,4 +197,5 @@ def create_app(
     app.include_router(export_router)
     app.include_router(personal_router)
     app.include_router(preferences_router)
+    app.include_router(statistics_router)
     return app

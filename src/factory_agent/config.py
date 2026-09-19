@@ -163,6 +163,25 @@ class FactoryAgentSettings(BaseSettings):
     #: the periodic sweep; the startup sweep always runs.
     session_sweep_interval_seconds: float = Field(default=300.0, ge=0.0)
 
+    #: ``usage_event`` is range-partitioned by month, so a write can only land in
+    #: a partition that already exists. This job keeps the current and the
+    #: following month present (startup + every interval), so crossing a month
+    #: boundary needs no restart. Zero runs it at startup only.
+    usage_partition_sweep_interval_seconds: int = Field(default=86_400, ge=0)
+
+    #: ``tenant_usage_hourly`` / ``tenant_usage_daily`` are what every reported
+    #: KPI reads, and nothing else writes them. This job recomputes the trailing
+    #: window (startup + every interval) so a fact that landed since the last
+    #: pass shows up in the dashboard without an operator. Zero runs it at
+    #: startup only. It is deliberately much shorter than the partition cadence:
+    #: an unrun rollup is not an error, it reads as zero traffic.
+    usage_rollup_sweep_interval_seconds: int = Field(default=300, ge=0)
+
+    #: How far back each rollup pass recomputes. Must comfortably exceed the
+    #: sweep interval so a restart or a failed cycle cannot leave a gap, and it
+    #: is the replay window for late-arriving facts.
+    usage_rollup_window_hours: int = Field(default=24, ge=1)
+
 
 @lru_cache
 def get_settings() -> FactoryAgentSettings:

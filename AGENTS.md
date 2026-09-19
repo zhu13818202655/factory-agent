@@ -42,29 +42,36 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 8. L1 capabilities use reviewed deterministic DAGs. L2 uses the same bounded executor.
 9. Local SQL is read-only and cannot access files, extensions, external scans, DDL, or DML.
 10. All MES operations are read-only. Coding agents never receive production credentials.
+11. The statistics surface is isolated from the business pipeline: it never shares the session
+    engine or connection pool, its read paths default to read-only transactions, every statement
+    carries a `statement_timeout`, and a suspended tenant is rejected at the business API edge
+    before any LLM or MES work — while the statistics routes stay readable for that tenant.
 
 ## Repository Boundaries
 
-- `src/factory_agent/`: production application built by the root project.
-- `usage-admin/`: independently built production service for authorized multi-tenant usage
-   aggregation, operational APIs, and reports; it never calls MES endpoints.
+- `src/factory_agent/`: production application built by the root project. One process serves both
+   the business API and the platform statistics API.
+- `src/factory_agent/statistics/`: the platform stats surface (multi-tenant usage aggregation,
+   tenant lifecycle, operational APIs, reports) inside that one application. It is a self-contained
+   subpackage, never calls MES endpoints, and is kept separable by a package-boundary test.
 - `configs/knowledge/`: reviewed API catalog, metrics, and L1 DAGs.
 - `tests/support/`: in-process fakes and pytest-managed test processes, not services.
 - `data/`: ignored runtime output only.
 
-`factory_agent` and `usage_admin` must never import each other. There is no
-cross-service usage transport and no usage-event contract:
-factory-agent writes every metering table (`usage_event`, the `*_fact` tables,
-`mes_operation_category`, `tenant_usage_*`) directly into the shared PostgreSQL in a separate
-transaction after its business commit (failures are alerted, never rolled back into or blocking
-the business answer), and usage-admin only
-reads the shared PostgreSQL. Table ownership is exclusive (ADR-0003 §7): factory-agent owns
-its business tables (`agent_*`) plus all metering tables; usage-admin owns and writes only
-`tenant_registry`, `admin_audit`, `platform_principal`, and `usage_export` — factory-agent reads
-`tenant_registry` read-only for MES AppKey resolution (ADR-0003 §4.3). Both services migrate one
-shared database with separate Alembic version tables (`alembic_version` /
-`alembic_version_usage_admin`). Production Compose includes `usage-admin` when usage metering
-is enabled. Read the nearest scoped `AGENTS.md` before modifying a governed
+`src/factory_agent/statistics/` must not depend on the business domain, and the business
+domain must not import it — the API edge reaches it only through ports
+(`ports/tenant_registry.py`). Application and domain code depend on `MesDataSource`, never customer
+URLs or payloads.
+
+There is no cross-service usage transport and no usage-event contract: factory-agent writes every
+metering table (`usage_event`, the `*_fact` tables, `mes_operation_category`, `tenant_usage_*`)
+directly into PostgreSQL in a separate transaction after its business commit (failures are alerted,
+never rolled back into or blocking the business answer). Table ownership is exclusive (ADR-0003 §7):
+this application owns its business tables (`agent_*`), all metering tables, and the statistics
+surface's own tables (`tenant_registry`, `admin_audit`, `platform_principal`, `usage_export`);
+business code reads `tenant_registry` read-only for MES AppKey resolution and the suspended-tenant
+gate (ADR-0003 §4.3). The whole database is built by **one** Alembic baseline
+(`alembic_version`, single value). Read the nearest scoped `AGENTS.md` before modifying a governed
 directory.
 
 ## Story Workflow

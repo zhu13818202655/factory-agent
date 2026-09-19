@@ -1,5 +1,3 @@
-
-
 from logging.config import fileConfig
 
 from alembic import context
@@ -15,9 +13,6 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = METADATA
-
-# factory-agent uses the default Alembic version table; usage-admin keeps its
-# own isolated version table.
 
 
 def run_migrations_offline() -> None:

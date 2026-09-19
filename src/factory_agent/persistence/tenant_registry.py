@@ -1,13 +1,11 @@
-"""Read-only access to the usage-admin-owned ``tenant_registry`` table.
+"""Read-only access to the ``tenant_registry`` table.
 
-Per table ownership (ADR-0003) this service never
-creates, alters, or deletes ``tenant_registry``; it only reads the AppKey /
-status pair that drives the D13 pre-call guard. The table is deliberately not
-declared in this service's ``tables.METADATA`` so the disposable test schema
-cannot accidentally create or drop it.
+The table is owned by the statistics surface, which creates and writes it; this
+service only reads the AppKey / status pair that drives the D13 pre-call guard
+and the API edge's suspended-tenant gate. The table is deliberately not declared
+in this service's ``tables.METADATA``, so the disposable test schema cannot
+accidentally create or drop the statistics surface's own tables.
 """
-
-
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine

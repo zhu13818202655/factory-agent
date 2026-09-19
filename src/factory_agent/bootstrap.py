@@ -1,9 +1,10 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+from factory_agent.api.tenant_lifecycle import TenantLifecycle
 from factory_agent.application.authorization import (
     AuthorizationService,
     FixedScopeVersionAssigner,
@@ -20,6 +21,7 @@ from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.preferences import PreferencesService
 from factory_agent.application.push_channel import LocalPushChannel
 from factory_agent.application.reporting import DirectReportRunner, ReportingService
+from factory_agent.application.rollup import RollupEngine, RollupWorker
 from factory_agent.application.scope_guard import ScopeGuard
 from factory_agent.application.session import SessionLimits, SessionService
 from factory_agent.application.summary import ResultSummarizer
@@ -60,6 +62,7 @@ from factory_agent.persistence.push_store import (
     SqlPushDeliveryStore,
     SqlPushPreferenceRepository,
 )
+from factory_agent.persistence.rollup_store import SqlRollupStore
 from factory_agent.persistence.scope_violation import SqlScopeViolationStore
 from factory_agent.persistence.session_store import SqlInteractionStore
 from factory_agent.persistence.tenant_registry import SqlTenantRegistryReader
@@ -85,6 +88,15 @@ from factory_agent.ports.not_configured import (
     NotConfiguredSessionRepository,
 )
 from factory_agent.ports.push import PushChannel
+from factory_agent.statistics.config import StatisticsSettings
+from factory_agent.statistics.container import (
+    StatisticsContainer,
+)
+from factory_agent.statistics.container import (
+    build_container as build_statistics_container,
+)
+from factory_agent.statistics.ops import OpsLimits
+from factory_agent.statistics.partitions import UsagePartitionMaintainer
 
 
 class SystemClock(Clock):
@@ -112,6 +124,8 @@ class DependencyOverrides:
     new_id: Callable[[], str] | None = None
     mes_call_recorder: MesCallRecorder | None = None
     credential_exchange: TokenCredentialExchange | None = None
+    statistics: StatisticsContainer | None = None
+    tenant_lifecycle: TenantLifecycle | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +150,10 @@ class ApplicationContainer:
     cache: AuthAwareCache | None = None
     credential_exchange: TokenCredentialExchange | None = None
     model_health: EndpointHealthMonitor | None = None
+    statistics: StatisticsContainer | None = None
+    tenant_lifecycle: TenantLifecycle | None = None
+    usage_partitions: UsagePartitionMaintainer | None = None
+    usage_rollup: RollupWorker | None = None
     readiness: dict[str, str] = field(default_factory=lambda: {})
 
 
@@ -150,15 +168,19 @@ def build_container(
     # /api/system/token and owns the live bundles. It exists exactly when a
     # canonical MES base URL is configured (single adapter, no second impl).
     credential_exchange: TokenCredentialExchange | None = supplied.credential_exchange
+    # The registry reader serves two callers: the MES adapter's pre-call guard
+    # and the API edge's suspended-tenant gate. It is built once whenever a
+    # database is configured, not only alongside a live MES gateway.
+    tenant_registry = (
+        SqlTenantRegistryReader(create_session_engine(str(settings.postgres_url)))
+        if settings.postgres_url is not None
+        else None
+    )
+    statistics = _build_statistics(supplied, settings)
     if supplied.mes is not None:
         mes = supplied.mes
         mes_status = "fake"
     elif settings.canonical_mes_base_url is not None:
-        tenant_registry = (
-            SqlTenantRegistryReader(create_session_engine(str(settings.postgres_url)))
-            if settings.postgres_url is not None
-            else None
-        )
         if credential_exchange is None:
             credential_exchange = TokenCredentialExchange(
                 str(settings.canonical_mes_base_url),
@@ -257,6 +279,7 @@ def build_container(
         "artifacts": "fake" if supplied.artifacts is not None else "not_configured",
         "interactions": interactions_status,
         "postgres": "configured" if settings.postgres_url is not None else "not_configured",
+        "statistics": "configured" if settings.postgres_url is not None else "not_configured",
         "litellm": model_status,
         "redis": "configured" if settings.redis_url is not None else "not_configured",
         "export": export_status,
@@ -314,6 +337,19 @@ def build_container(
         cache=cache,
         credential_exchange=credential_exchange,
         model_health=model_health,
+        statistics=statistics,
+        tenant_lifecycle=(
+            supplied.tenant_lifecycle
+            if supplied.tenant_lifecycle is not None
+            else TenantLifecycle(
+                reader=tenant_registry,
+                writer=statistics.tenant_registration(),
+                registration_mode=statistics.settings.tenant_registration_mode,
+                alerts=statistics.alerts,
+            )
+        ),
+        usage_partitions=_build_usage_partitions(settings, statistics),
+        usage_rollup=_build_usage_rollup(settings, statistics),
         sessions_service=_build_session_service(
             settings,
             supplied,
@@ -329,6 +365,75 @@ def build_container(
             audit,
         ),
         readiness=readiness,
+    )
+
+
+def _build_statistics(
+    supplied: DependencyOverrides, settings: FactoryAgentSettings
+) -> StatisticsContainer:
+    """Compose the statistics surface over the shared database.
+
+    The statistics store opens its own connections (see
+    ``factory_agent.statistics.store``); it never shares the session pipeline's
+    engine or pool, so a platform-wide aggregate cannot starve business traffic.
+    """
+    if supplied.statistics is not None:
+        return supplied.statistics
+    return build_statistics_container(
+        StatisticsSettings(),
+        database_url=str(settings.postgres_url) if settings.postgres_url is not None else None,
+        limits=OpsLimits(rollup_lag_tolerance=_rollup_lag_tolerance(settings)),
+    )
+
+
+def _rollup_lag_tolerance(settings: FactoryAgentSettings) -> timedelta:
+    """How stale the rollup may be before responses call themselves incomplete.
+
+    Two sweep intervals absorb the ordinary window between "a fact was written"
+    and "the next cycle recomputed its bucket", so a healthy worker never trips
+    the flag. The floor keeps a deliberately disabled or very fast sweep from
+    producing a figure that flickers between true and false.
+    """
+    return max(
+        timedelta(seconds=2 * settings.usage_rollup_sweep_interval_seconds),
+        timedelta(minutes=5),
+    )
+
+
+def _build_usage_partitions(
+    settings: FactoryAgentSettings, statistics: StatisticsContainer
+) -> UsagePartitionMaintainer | None:
+    """The ``usage_event`` partition maintainer, absent without a database."""
+    if settings.postgres_url is None:
+        return None
+    return UsagePartitionMaintainer(
+        str(settings.postgres_url),
+        statement_timeout_ms=statistics.settings.statement_timeout_ms,
+        alerts=statistics.alerts,
+    )
+
+
+def _build_usage_rollup(
+    settings: FactoryAgentSettings, statistics: StatisticsContainer
+) -> RollupWorker | None:
+    """The rollup worker, absent without a database.
+
+    Every reported KPI in the statistics surface reads ``tenant_usage_*``, and
+    this is the only writer of those tables. Building it here rather than
+    inside the statistics surface keeps the direction the ADR requires: the
+    business side owns the rollup, the reporting surface only reads it.
+    """
+    if settings.postgres_url is None:
+        return None
+    engine = RollupEngine(
+        SqlRollupStore(create_session_engine(str(settings.postgres_url))),
+        clock=lambda: datetime.now(timezone.utc),
+    )
+    return RollupWorker(
+        engine,
+        poll_seconds=float(settings.usage_rollup_sweep_interval_seconds) or 60.0,
+        window_hours=settings.usage_rollup_window_hours,
+        alerts=statistics.alerts,
     )
 
 

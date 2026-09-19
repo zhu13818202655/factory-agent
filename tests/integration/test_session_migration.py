@@ -7,8 +7,6 @@ a real database and reflects the result back.
 Set ``FACTORY_AGENT_TEST_POSTGRES_URL`` to a disposable database to enable it.
 """
 
-
-
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -46,11 +44,9 @@ def clean_database() -> Iterator[sa.Engine]:
     def drop_everything() -> None:
         with engine.begin() as connection:
             METADATA.drop_all(connection)
-            # factory-agent uses the default ``alembic_version`` table and
-            # usage-admin keeps ``alembic_version_usage_admin``; drop both so a
-            # stale stamp never skips a needed upgrade on a reused test database.
-            for table in ("alembic_version", "alembic_version_usage_admin"):
-                connection.execute(sa.text(f"DROP TABLE IF EXISTS {table}"))
+            # Drop the version table too, so a stale stamp never skips a needed
+            # upgrade on a reused test database.
+            connection.execute(sa.text("DROP TABLE IF EXISTS alembic_version"))
 
     drop_everything()
     try:

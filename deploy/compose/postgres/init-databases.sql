@@ -1,30 +1,16 @@
 -- Local/dev PostgreSQL bootstrap (ADR-0003 §7 table ownership).
 --
--- factory-agent and usage-admin share ONE logical database (factory_agent):
--- each service connects with its own user and runs its own Alembic migrations
--- against it, tracked in separate version tables (alembic_version /
--- alembic_version_usage_admin). Table ownership is exclusive per service.
+-- One logical database (factory_agent), one application user, one Alembic
+-- version table. The business tables, the metering tables, and the platform
+-- surface's own tables (tenant_registry / admin_audit / platform_principal /
+-- usage_export) all live here under the single baseline migration, so no
+-- cross-user grants are needed.
 --
--- PG16: schema "public" is owned by pg_database_owner (the database owner),
--- so usage_admin needs an explicit CREATE grant on the schema to build its own
--- tables. Default privileges make every table each service creates later
--- readable by the other service (factory-agent reads tenant_registry etc.;
--- usage-admin reads the metering tables read-only).
---
--- GRANT ... ON SCHEMA and ALTER DEFAULT PRIVILEGES are per-database, and docker
--- runs *.sql init scripts against $POSTGRES_DB (postgres). \connect into the
--- shared factory_agent database first, or usage_admin never gets CREATE on the
--- right schema and the cross-service SELECT defaults land in the wrong DB.
+-- PG16: schema "public" is owned by pg_database_owner (the database owner), so
+-- making factory_agent the database owner is what grants it CREATE on the
+-- schema.
 
 CREATE USER factory_agent WITH PASSWORD 'factory_agent_dev';
 CREATE DATABASE factory_agent OWNER factory_agent;
 
 \connect factory_agent
-
-CREATE USER usage_admin WITH PASSWORD 'usage_admin_dev';
-GRANT CONNECT ON DATABASE factory_agent TO usage_admin;
-GRANT CREATE ON SCHEMA public TO usage_admin;
-ALTER DEFAULT PRIVILEGES FOR ROLE usage_admin IN SCHEMA public
-    GRANT SELECT ON TABLES TO factory_agent;
-ALTER DEFAULT PRIVILEGES FOR ROLE factory_agent IN SCHEMA public
-    GRANT SELECT ON TABLES TO usage_admin;

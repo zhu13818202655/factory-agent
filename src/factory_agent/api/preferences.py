@@ -1,15 +1,17 @@
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from factory_agent.api.identity import resolve_credential
+from factory_agent.api.identity import require_tenant_enabled, resolve_credential
 from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.application.preferences import PreferenceValidationError
 from factory_agent.bootstrap import ApplicationContainer
 from factory_agent.ports.push_preferences import PushPreferences
 
-preferences_router = APIRouter(prefix="/v1/push", tags=["push"])
+preferences_router = APIRouter(
+    prefix="/v1/push", tags=["push"], dependencies=[Depends(require_tenant_enabled)]
+)
 
 
 class PreferencesView(BaseModel):

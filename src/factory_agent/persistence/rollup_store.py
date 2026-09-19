@@ -6,8 +6,6 @@ classify MES calls at aggregation time; the classification is never stored in
 the events themselves.
 """
 
-
-
 from datetime import datetime
 
 import sqlalchemy as sa
@@ -35,6 +33,30 @@ class SqlRollupStore:
 
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
+
+    async def list_tenant_ids(self, start: datetime, end: datetime) -> frozenset[str]:
+        """Tenants with facts in the window, across all three fact tables.
+
+        The rollup worker has no configured tenant list, so it asks here rather
+        than being handed one: a fixed list would silently stop covering a
+        factory that is onboarded after the list was written.
+        """
+        union = sa.union(
+            *(
+                sa.select(table.c.tenant_id).where(
+                    table.c.occurred_at >= start,
+                    table.c.occurred_at < end,
+                )
+                for table in (
+                    interaction_fact_table,
+                    llm_call_fact_table,
+                    mes_call_fact_table,
+                )
+            )
+        )
+        async with self._engine.connect() as connection:
+            tenant_ids = (await connection.execute(union)).scalars().all()
+        return frozenset(str(tenant_id) for tenant_id in tenant_ids)
 
     async def list_facts(
         self,

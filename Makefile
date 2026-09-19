@@ -6,12 +6,12 @@ PYTEST := $(RUN) pytest
 GIT_SAFE_ENV := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=$(CURDIR)
 
 # --- local database helpers -------------------------------------------------
-# Both migration entry points read their DSN from the environment and do NOT
-# load .env themselves, so every migration recipe loads it first.
+# The migration entry point reads its DSN from the environment and does NOT
+# load .env itself, so every migration recipe loads it first.
 VENV_PYTHON := .venv/bin/python
 ENV_FILE ?= .env
 PG_CONTAINER ?= factory-agent-middleware-postgres-1
-# Usage: make migrate-agent ACTION=downgrade REVISION=-1
+# Usage: make migrate ACTION=downgrade REVISION=base
 ACTION ?= upgrade
 REVISION ?= head
 LOAD_ENV := if [ -f "$(ENV_FILE)" ]; then set -a; . "./$(ENV_FILE)"; set +a; \
@@ -20,33 +20,29 @@ LOAD_ENV := if [ -f "$(ENV_FILE)" ]; then set -a; . "./$(ENV_FILE)"; set +a; \
 .DEFAULT_GOAL := help
 
 .PHONY: help bootstrap lint typecheck test-unit test-integration
-.PHONY: test-e2e security check dev dev-usage-admin pre-commit compose-config compose-config-template compose-up compose-down compose-reset middleware-up middleware-down middleware-reset
-.PHONY: migrate migrate-agent migrate-usage-admin migrate-status pg-grants build-images test-images
+.PHONY: test-e2e security check dev pre-commit compose-config compose-up compose-down compose-reset middleware-up middleware-down middleware-reset
+.PHONY: migrate migrate-status pg-grants build-images test-images
 
 help:
 	@printf '%s\n' \
-		'make bootstrap         Install the complete uv workspace' \
+		'make bootstrap         Install the complete uv project' \
 		'make check             Run all repository code checks' \
 		'make compose-config    Validate development Compose files' \
-		'make compose-config-template  Parse the production Compose template' \
 		'make compose-up        Start all application services' \
 		'make compose-down      Stop all application services' \
 		'make compose-reset     Wipe all local data volumes and restart' \
 		'make middleware-up     Start local PostgreSQL and Redis' \
 		'make middleware-down   Stop local PostgreSQL and Redis' \
 		'make middleware-reset  Wipe local PostgreSQL and Redis data, then restart' \
-		'make migrate           Run factory-agent then usage-admin migrations' \
-		'make migrate-agent     Migrate only the factory-agent schema' \
-		'make migrate-usage-admin  Migrate only the usage-admin schema' \
-		'make migrate-status    Show both Alembic version-table heads' \
+		'make migrate           Run the database migrations' \
+		'make migrate-status    Show the Alembic version-table head' \
 		'make pg-grants         Repair schema grants on a legacy PostgreSQL volume' \
 		'make build-images      Build all application images' \
 		'make test-images       Run image health and non-root checks' \
-		'make dev               Run factory-agent locally' \
-		'make dev-usage-admin   Run usage-admin locally'
+		'make dev               Run factory-agent locally'
 
 bootstrap:
-	$(UV) sync --all-packages --group dev
+	$(UV) sync --group dev
 
 lint:
 	$(RUN) ruff check .
@@ -58,16 +54,16 @@ typecheck:
 	$(RUN) pyright
 
 test-unit:
-	$(PYTEST) tests/unit tests/eval usage-admin/tests/unit
+	$(PYTEST) tests/unit tests/statistics/unit tests/eval
 
 test-integration:
-	$(PYTEST) tests/integration usage-admin/tests/integration
+	$(PYTEST) tests/integration
 
 test-e2e:
 	$(PYTEST) tests/e2e
 
 security:
-	$(RUN) bandit --quiet --recursive src usage-admin/src
+	$(RUN) bandit --quiet --recursive src
 	$(RUN) pip-audit --skip-editable
 	$(PYTEST) tests/security
 
@@ -81,12 +77,6 @@ pre-commit:
 compose-config:
 	bash deploy/compose/check.sh all
 	bash deploy/compose/check.sh middleware
-	bash deploy/compose/check.sh template
-
-# Parses the production reference menu with placeholder values: YAML syntax,
-# anchors, and variable interpolation are checked, but nothing is started.
-compose-config-template:
-	bash deploy/compose/check.sh template
 
 compose-up:
 	bash deploy/compose/start.sh all
@@ -110,47 +100,30 @@ middleware-down:
 middleware-reset:
 	bash deploy/compose/reset.sh middleware $(if $(filter 1,$(CONFIRM)),--yes,)
 
-# --- database migrations (factory-agent and usage-admin share one database,
-# each with its own Alembic version table; see ADR-0003 §7) -------------------
+# --- database migrations (one database, one Alembic version table; the
+# statistics tables live in the same baseline; see ADR-0003 §7) ---------------
 
-migrate: migrate-agent migrate-usage-admin
-
-migrate-agent: middleware-up
-	@printf '== factory-agent schema ==\n'
+migrate: middleware-up
 	@$(LOAD_ENV); $(VENV_PYTHON) -m factory_agent.persistence.migrations $(ACTION) $(REVISION)
 
-migrate-usage-admin: middleware-up
-	@printf '== usage-admin schema ==\n'
-	@$(LOAD_ENV); $(VENV_PYTHON) -m usage_admin.migrations $(ACTION) $(REVISION) || { \
-		printf '\n若报 permission denied for schema public：先跑 make pg-grants 补授权再重试\n' >&2; \
-		exit 1; \
-	}
-
 migrate-status:
-	@for table in alembic_version alembic_version_usage_admin; do \
-		rev=$$(docker exec $(PG_CONTAINER) psql -U postgres -d factory_agent \
-			-tAc "SELECT version_num FROM $$table;" 2>/dev/null | tr -d '[:space:]'); \
-		printf '%-30s %s\n' "$$table:" "$${rev:-NOT MIGRATED}"; \
-	done
+	@rev=$$(docker exec $(PG_CONTAINER) psql -U postgres -d factory_agent \
+		-tAc "SELECT version_num FROM alembic_version;" 2>/dev/null | tr -d '[:space:]'); \
+	printf '%-30s %s\n' "alembic_version:" "$${rev:-NOT MIGRATED}"
 
-# One-off repair for volumes initialised before init-databases.sql granted
-# usage_admin CREATE on schema public; also re-applies the cross-service
-# SELECT grants after new tables are created.
+# One-off repair for volumes initialised before init-databases.sql created the
+# single application role with ownership of the schema.
 pg-grants:
 	docker exec $(PG_CONTAINER) psql -U postgres -d factory_agent \
-		-c "GRANT CREATE ON SCHEMA public TO usage_admin;" \
-		-c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO usage_admin;" \
-		-c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO factory_agent;"
+		-c "ALTER SCHEMA public OWNER TO factory_agent;" \
+		-c "GRANT ALL ON ALL TABLES IN SCHEMA public TO factory_agent;" \
+		-c "GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO factory_agent;"
 
 build-images:
 	docker build --tag factory-agent:dev --file Dockerfile .
-	docker build --tag usage-admin:dev --file usage-admin/Dockerfile .
 
 test-images:
 	bash scripts/verify_images.sh
 
 dev:
 	$(RUN) factory-agent
-
-dev-usage-admin:
-	$(RUN) usage-admin

@@ -1,0 +1,586 @@
+{
+  "source": "usage-admin (删除前，独立 FastAPI 服务，前缀 /admin/v1)",
+  "frozen_at": "2026-09-17",
+  "note": "合并进 factory-agent 统计面之前的接口形状快照，取自 git 历史里的 usage-admin/api/*.py。测试只读本文件与当前 statistics_router 的 OpenAPI，不 import 已删除的 usage_admin 包。用于守住 ADR-0003 的「契约可控变更」：除 intended_changes 列出的四处外，其余路径、参数、请求体、状态码与出参字段必须逐一致。",
+  "intended_changes": {
+    "prefix": {
+      "from": "/admin/v1",
+      "to": "/v1/statistics"
+    },
+    "path_param": {
+      "from": "{app_key}",
+      "to": "{tenant_ref}"
+    },
+    "response_field_added": {
+      "model": "RegistryItemOut",
+      "field": "tenant_ref"
+    },
+    "query_param_added": {
+      "param": "query:tenant_ref",
+      "note": "精确工厂过滤改按非密句柄 tenant_ref（原先要客户端持有明文 AppKey）。by-tenant 上原 query:app_key 仍留在签名里，但任何取值都会 422：宁可报错，也不让旧客户端静默失去筛选。其余聚合端点此前没有工厂过滤，本次一并铺开，全部走同一个 tenant_ref 句柄。",
+      "endpoints": [
+        "/v1/statistics/usage/summary",
+        "/v1/statistics/usage/timeseries",
+        "/v1/statistics/usage/dimensions",
+        "/v1/statistics/usage/users",
+        "/v1/statistics/usage/mes-categories",
+        "/v1/statistics/usage/mes-failures",
+        "/v1/statistics/usage/mes-operations",
+        "/v1/statistics/usage/models",
+        "/v1/statistics/usage/capabilities",
+        "/v1/statistics/usage/errors",
+        "/v1/statistics/usage/by-tenant"
+      ]
+    },
+    "response_model_changed": {
+      "path": "/v1/statistics/tenants",
+      "method": "get",
+      "from": "array of string（时间范围内有数据租户的明文 AppKey）",
+      "to": "array of TenantOptionView",
+      "model": "TenantOptionView",
+      "fields": [
+        "tenant_ref",
+        "tenant_name"
+      ],
+      "note": "用量看板的工厂选择器不再下发明文密钥，改发非密句柄与工厂名；未登记（无句柄可寻址）的租户从选择器中略去。"
+    }
+  },
+  "retired_paths": [
+    "/health/live",
+    "/health/ready"
+  ],
+  "retired_schemas": [
+    "HealthResponse"
+  ],
+  "paths": {
+    "/admin/v1/auth/login": {
+      "post": {
+        "params": [],
+        "request_media": [
+          "application/json"
+        ],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/auth/register": {
+      "post": {
+        "params": [],
+        "request_media": [
+          "application/json"
+        ],
+        "statuses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/exports": {
+      "post": {
+        "params": [],
+        "request_media": [
+          "application/json"
+        ],
+        "statuses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/exports/{export_id}": {
+      "get": {
+        "params": [
+          "path:export_id required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/exports/{export_id}/download": {
+      "get": {
+        "params": [
+          "path:export_id required",
+          "query:token required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/tenants": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/tenants/registry": {
+      "get": {
+        "params": [
+          "query:limit",
+          "query:offset"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      },
+      "post": {
+        "params": [],
+        "request_media": [
+          "application/json"
+        ],
+        "statuses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/tenants/registry/{app_key}": {
+      "get": {
+        "params": [
+          "path:app_key required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      },
+      "patch": {
+        "params": [
+          "path:app_key required"
+        ],
+        "request_media": [
+          "application/json"
+        ],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      },
+      "delete": {
+        "params": [
+          "path:app_key required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "204",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/tenants/registry/{app_key}/enable": {
+      "post": {
+        "params": [
+          "path:app_key required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/by-tenant": {
+      "get": {
+        "params": [
+          "query:app_key",
+          "query:end required",
+          "query:limit",
+          "query:name",
+          "query:offset",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/capabilities": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/dimensions": {
+      "get": {
+        "params": [
+          "query:dimension required",
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/errors": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/mes-categories": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/mes-failures": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/mes-operations": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/models": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/summary": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/timeseries": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:granularity",
+          "query:metrics",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/admin/v1/usage/users": {
+      "get": {
+        "params": [
+          "query:end required",
+          "query:limit",
+          "query:offset",
+          "query:start required"
+        ],
+        "request_media": [],
+        "statuses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/health/live": {
+      "get": {
+        "params": [],
+        "request_media": [],
+        "statuses": [
+          "200"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "params": [],
+        "request_media": [],
+        "statuses": [
+          "200"
+        ]
+      }
+    }
+  },
+  "schemas": {
+    "ByTenantItemView": [
+      "app_key",
+      "last_usage_at",
+      "mes_order",
+      "mes_other",
+      "mes_output",
+      "mes_payroll",
+      "question_count",
+      "status",
+      "tenant_name",
+      "token_total"
+    ],
+    "ByTenantPageView": [
+      "end",
+      "items",
+      "metric_version",
+      "next_cursor",
+      "start",
+      "tenant_ids",
+      "timezone",
+      "total"
+    ],
+    "DimensionsView": [
+      "dimension",
+      "end",
+      "metric_version",
+      "start",
+      "tenant_ids",
+      "timezone",
+      "truncated",
+      "values"
+    ],
+    "DurationStatsView": [
+      "count",
+      "mean_ms",
+      "p50_ms",
+      "p95_ms",
+      "p99_ms"
+    ],
+    "ErrorsViewOut": [
+      "end",
+      "metric_version",
+      "start",
+      "tenant_ids",
+      "timezone",
+      "truncated",
+      "values"
+    ],
+    "ExportCreateRequest": [
+      "end",
+      "format",
+      "granularity",
+      "metrics",
+      "start"
+    ],
+    "ExportViewOut": [
+      "created_at",
+      "download_url",
+      "expires_at",
+      "export_id",
+      "format",
+      "status"
+    ],
+    "HTTPValidationError": [
+      "detail"
+    ],
+    "HealthResponse": [
+      "database",
+      "service",
+      "status",
+      "version"
+    ],
+    "LoginRequest": [
+      "password",
+      "username"
+    ],
+    "LoginResponse": [
+      "expires_in",
+      "token",
+      "token_type"
+    ],
+    "MesCategoriesViewOut": [
+      "categories",
+      "end",
+      "incomplete",
+      "metric_version",
+      "start",
+      "tenant_ids",
+      "timezone",
+      "total"
+    ],
+    "MesFailuresViewOut": [
+      "by_error",
+      "categories",
+      "end",
+      "metric_version",
+      "start",
+      "tenant_ids",
+      "timezone",
+      "total"
+    ],
+    "MesOperationsViewOut": [
+      "end",
+      "metric_version",
+      "start",
+      "tenant_ids",
+      "timezone",
+      "truncated",
+      "values"
+    ],
+    "ModelStatsOut": [
+      "cached_tokens",
+      "calls",
+      "completion_tokens",
+      "prompt_tokens",
+      "reasoning_tokens"
+    ],
+    "ModelsViewOut": [
+      "end",
+      "metric_version",
+      "start",
+      "tenant_ids",
+      "timezone",
+      "values"
+    ],
+    "RegisterRequest": [
+      "password",
+      "role",
+      "tenant_scope",
+      "username"
+    ],
+    "RegisterResponse": [
+      "created_at",
+      "principal_id",
+      "role",
+      "status",
+      "tenant_scope",
+      "updated_at",
+      "username"
+    ],
+    "RegistryCreateRequest": [
+      "app_key",
+      "status",
+      "tenant_name"
+    ],
+    "RegistryItemOut": [
+      "app_key",
+      "created_at",
+      "status",
+      "tenant_name",
+      "updated_at"
+    ],
+    "RegistryPageOut": [
+      "items",
+      "next_cursor",
+      "timezone",
+      "total"
+    ],
+    "RegistryUpdateRequest": [
+      "status",
+      "tenant_name"
+    ],
+    "SummaryView": [
+      "durations",
+      "end",
+      "freshness",
+      "incomplete",
+      "llm_logical_calls",
+      "llm_physical_attempts",
+      "metric_version",
+      "questions",
+      "start",
+      "status",
+      "tenant_ids",
+      "timezone",
+      "tokens",
+      "users",
+      "valid_questions"
+    ],
+    "TimeseriesPointView": [
+      "bucket",
+      "metrics"
+    ],
+    "TimeseriesView": [
+      "end",
+      "granularity",
+      "incomplete",
+      "metric_version",
+      "points",
+      "start",
+      "tenant_ids",
+      "timezone"
+    ],
+    "UserActivityView": [
+      "question_count",
+      "user_subject_id"
+    ],
+    "UsersPageView": [
+      "end",
+      "items",
+      "metric_version",
+      "next_cursor",
+      "start",
+      "tenant_ids",
+      "timezone",
+      "total"
+    ],
+    "ValidationError": [
+      "ctx",
+      "input",
+      "loc",
+      "msg",
+      "type"
+    ]
+  }
+}

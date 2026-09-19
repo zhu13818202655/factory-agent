@@ -16,8 +16,6 @@ Registry semantics:
   ``result.total``.
 """
 
-
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -31,7 +29,7 @@ DEFAULT_CATALOG_PATH = Path("configs/knowledge/apis.yaml")
 
 ParameterSource = Literal["credential", "scope", "filter", "clock"]
 PaginationKind = Literal["none", "list_total"]
-#: MES 调用统计的计费分类（口径见 usage-admin/docs/API.md）。能力分类 ≠ API 分类，该字段只在
+#: MES 调用统计的计费分类（口径见 docs/api/统计与运营接口.md）。能力分类 ≠ API 分类，该字段只在
 #: ``data_api`` 内部消费，绝不作为能力维度统计。
 UsageCategory = Literal["output", "payroll", "order", "other"]
 

@@ -768,7 +768,12 @@ async def test_usage_events_are_written_in_the_same_commit_and_stay_pseudonymous
     await drain(service, record.interaction_id)
 
     kinds = {event.event_type for event in store.usage_events}
-    assert kinds == {"interaction_started", "llm_call_completed", "interaction_completed"}
+    assert kinds == {
+        "interaction_started",
+        "interaction_routed",
+        "llm_call_completed",
+        "interaction_completed",
+    }
     for event in store.usage_events:
         assert event.payload["user_subject_id"] == pseudonymous_subject(
             TenantId("tenant-a"), UserId("user-a")

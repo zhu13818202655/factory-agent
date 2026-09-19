@@ -8,22 +8,26 @@
 
 One deployment serves users from many company/factory tenants. MES business interactions use an
 active tenant-local `DataScope`; platform usage aggregation uses a separate `PlatformScope`. The
-repository co-hosts two buildable units whose boundaries must stay enforceable: the product
-service and the usage administration service.
+repository builds one application that serves both surfaces, and the boundary between them must
+stay enforceable in code.
 
 ## Decision
 
-- The repository root directly builds `src/factory_agent`.
-- `usage-admin/` is a self-contained production uv workspace child with its own package, Dockerfile,
-  tests, configuration, and migrations. It shares the application PostgreSQL, reads the tables it
-  does not own read-only, and never calls MES endpoints.
+- The repository root builds `src/factory_agent`, one installable package.
+- The platform statistics surface lives inside that package at `src/factory_agent/statistics/` and
+  is mounted at `/v1/statistics`. It shares the application PostgreSQL, reads the tables it does
+  not own read-only, and never calls MES endpoints.
 - The repository has one `.git` and one `uv.lock`.
-- The packages never import each other. There is no cross-service usage transport and no
-  usage-event contract: factory-agent writes its metering tables directly into the shared
-  PostgreSQL in a separate transaction after its business commit, and usage-admin only reads them
-  (table ownership: ADR-0003 §7). The single shared-table read boundary for factory-agent is
-  `tenant_registry` (ADR-0003 §4.3).
-- Production usage metering deploys `usage-admin` independently from `factory-agent`.
+- The statistics surface never depends on the business domain, and the business domain never
+  imports it; the single business-side entry point to its tables is the
+  `ports/tenant_registry.py` reader. There is no cross-service usage transport and no usage-event
+  contract: factory-agent writes its metering tables directly into PostgreSQL in a separate
+  transaction after its business commit, and the statistics surface only reads them (table
+  ownership: ADR-0003 §7). The shared-table read boundary for business code is `tenant_registry`
+  (ADR-0003 §4.3).
+- Production deployment runs one application process, which serves both the business routes and
+  the statistics routes. Changing statistics code therefore requires restarting the process that
+  answers questions (ADR-0003 §14).
 - There is no OpenAPI/JSON Schema contract directory in the repository. The customer MES interface
   contract lives in `docs/product/AI问答对外接口-整理.md`, the reviewed operation catalog is
   `configs/knowledge/apis.yaml`, and the product requirements live in
@@ -32,18 +36,21 @@ service and the usage administration service.
 
 ## Consequences
 
-- The product, usage administration service, adapters, and cross-service tests evolve
-  together in one repository.
-- Usage administration can scale, adopt Kafka or an analytical replica, and move to a repository
-  later without changing the MES execution boundary.
-- Workspace CI treats both packages as separate applications. Package-boundary tests (no
-  cross-import), health-surface tests, and produced-usage-event hygiene tests are mandatory.
+- The product and the statistics surface, adapters, and their tests evolve together in one
+  repository.
+- The statistics surface can still be split out later — into its own service or repository —
+  without changing the MES execution boundary, because the dependency direction is enforced in
+  code.
+- CI treats the repository as a single application. Package-boundary tests (no dependency from
+  `statistics` on the business domain, and none in the other direction), health-surface tests, and
+  produced-usage-event hygiene tests are mandatory.
 - A future repository split requires stable published contracts and an independent release cadence
   before moving code.
 
 ## Revisit When
 
-Split a service into a separate repository when it has an independent team or release cadence,
-stable published contracts, or materially slows shared CI. Revisit the shared-database direct write
-when measured throughput, multiple consumers, replay, or cross-region delivery justify
-Kafka/Redpanda or an analytical replica (ADR-0003 §15).
+Split the statistics surface into a separate service or repository when it has an independent team
+or release cadence, stable published contracts, materially slows shared CI, or when measured
+statistics concurrency or database load starts affecting question-answering latency
+(ADR-0003 §15). Revisit the shared-database direct write when measured throughput, multiple
+consumers, replay, or cross-region delivery justify Kafka/Redpanda or an analytical replica.

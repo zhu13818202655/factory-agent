@@ -2,13 +2,11 @@
 
 The reviewed billing classification lives in ``configs/knowledge/apis.yaml``
 (``usage_category``) and is mirrored as the seed rows of the single
-development-baseline migration ``20260824_0001_session``. Any drift — a new
+development-baseline migration ``20260917_0001_init``. Any drift — a new
 operation without a category, an illegal value, or a seed row out of sync with
 the catalog — fails here so a new MES interface can never be added without
 being classified (D5).
 """
-
-
 
 import re
 from pathlib import Path
@@ -17,7 +15,7 @@ import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 APIS_YAML = REPOSITORY_ROOT / "configs" / "knowledge" / "apis.yaml"
-MIGRATION = REPOSITORY_ROOT / "migrations" / "versions" / "20260824_0001_session.py"
+MIGRATION = REPOSITORY_ROOT / "migrations" / "versions" / "20260917_0001_init.py"
 
 VALID_CATEGORIES = frozenset({"output", "payroll", "order", "other"})
 EXPECTED_DISTRIBUTION = {"output": 6, "payroll": 2, "order": 8, "other": 14}

@@ -5,6 +5,7 @@
 | 目录 | 负责回答 | 当前入口 |
 |---|---|---|
 | `product/` | 做什么、谁能看什么、口径确认、方案设计 | [`需求及方案整理.md`](product/需求及方案整理.md)（产品需求 + 客户确认结论）、[`AI问答对外接口-整理.md`](product/AI问答对外接口-整理.md)（客户 MES 接口契约，标准区） |
+| `api/` | 对外接口形态与前端对接说明 | [`AI助手前端对接API文档.md`](api/AI助手前端对接API文档.md)（业务问答与导出，SSE）、[`统计与运营接口.md`](api/统计与运营接口.md)（`/v1/statistics` 平台统计与租户生命周期） |
 | `adr/` | 为什么采用某项难以逆转的技术或边界决策 | [`0001-repository-and-service-boundaries.md`](adr/0001-repository-and-service-boundaries.md)、[`0002-runtime-storage-and-migration-baseline.md`](adr/0002-runtime-storage-and-migration-baseline.md)、[`0003-usage-metering-and-admin-service.md`](adr/0003-usage-metering-and-admin-service.md)、[`0004-logging-configuration-and-tracing.md`](adr/0004-logging-configuration-and-tracing.md)、[`0005-local-aggregation-over-server-shortcut.md`](adr/0005-local-aggregation-over-server-shortcut.md)、[`0006-model-provider-access-without-proxy.md`](adr/0006-model-provider-access-without-proxy.md)、[`0007-interaction-executor-decoupling.md`](adr/0007-interaction-executor-decoupling.md)、[`0008-scope-guard-merged-into-extract.md`](adr/0008-scope-guard-merged-into-extract.md)、[`0009-export-artifact-storage-backend.md`](adr/0009-export-artifact-storage-backend.md) |
 
 `docs/product/` 两份文档是需求与接口契约的依据；实施过程中新确认的口径只回写这两份文档，

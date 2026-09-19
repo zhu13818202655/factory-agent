@@ -79,7 +79,10 @@ ENVELOPE_FIELDS = frozenset(
 
 #: Whitelisted fields per event type (mirror of ``application/usage.py``).
 ALLOWED_FIELDS: dict[str, frozenset[str]] = {
-    "interaction_started": ENVELOPE_FIELDS | {"capability", "entrypoint", "role_category"},
+    # The start event is written before the parse call and is deliberately
+    # capability-free; the routing verdict is its own event.
+    "interaction_started": ENVELOPE_FIELDS | {"entrypoint", "role_category"},
+    "interaction_routed": ENVELOPE_FIELDS | {"capability"},
     "interaction_completed": ENVELOPE_FIELDS
     | {
         "status",
@@ -238,6 +241,41 @@ async def test_every_event_id_is_unique_for_idempotent_writes() -> None:
     event_ids = [event.event_id for event in events]
 
     assert len(event_ids) == len(set(event_ids))
+
+
+#: The capability each routing outcome must be recorded with. ``None`` is a
+#: question that did reach routing but matched nothing — the fact still exists so
+#: the difference between "unrecognised" and "never routed" stays computable.
+ROUTED_CAPABILITY: dict[str, str | None] = {
+    "completed": "FR-001",
+    "clarifying": None,
+    "rejected": "FR-011",
+    "chat": "chitchat",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("scenario", "expected"), sorted(ROUTED_CAPABILITY.items()))
+async def test_routing_records_the_capability_the_router_chose(
+    scenario: str, expected: str | None
+) -> None:
+    events = await run_pipeline(**PIPELINES[scenario])
+
+    routed = [event for event in events if event.event_type == "interaction_routed"]
+
+    assert len(routed) == 1, "one question is routed exactly once"
+    assert routed[0].payload["capability"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["gateway_failure", "cancelled"])
+async def test_a_question_that_never_reached_routing_has_no_routed_event(
+    scenario: str,
+) -> None:
+    """No routing verdict exists yet, so claiming one would be a false record."""
+    events = await run_pipeline(**PIPELINES[scenario])
+
+    assert not [event for event in events if event.event_type == "interaction_routed"]
 
 
 def completion_payload(events: list[UsageEvent]) -> dict[str, object]:

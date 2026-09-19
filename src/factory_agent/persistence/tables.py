@@ -3,12 +3,12 @@
 Every business read and write is filtered by the trusted ``(tenant_id, user_id)``
 ownership pair; there is deliberately no "by id only" access path.
 
-Table ownership (ADR-0003): this service owns every
-``agent_*`` business table plus all metering tables (``usage_event``,
+Table ownership (ADR-0003): one service and one schema own every table here.
+Business tables are the ``agent_*`` family; metering tables are ``usage_event``,
 ``interaction_fact``, ``llm_call_fact``, ``mes_call_fact``,
-``mes_operation_category``, ``tenant_usage_hourly``, ``tenant_usage_daily``).
-``tenant_registry`` / ``admin_audit`` / ``platform_principal`` / ``usage_export``
-are owned by usage-admin and never declared here. The Alembic migration history
+``mes_operation_category``, ``tenant_usage_hourly``, ``tenant_usage_daily``; and
+the platform surface adds ``tenant_registry``, ``admin_audit``,
+``platform_principal``, ``usage_export``. The Alembic migration history
 (mirroring this metadata) is the only schema source in production; these
 definitions drive the disposable test schema.
 """
@@ -329,8 +329,77 @@ push_delivery_table = sa.Table(
     sa.Index("agent_push_delivery_owner_idx", "tenant_id", "user_id", "created_at"),
 )
 
+#: Tenant master data. ``app_key`` is the primary key: the AppKey is globally
+#: unique and is itself the tenant identifier, so the metering stream's
+#: ``tenant_id`` needs no mapping. ``status`` drives the dashboard column, the
+#: business-edge admission guard, and "disable instead of delete". The AppKey is
+#: stored in plaintext and masked in every outbound response; ``tenant_ref`` is
+#: the non-secret handle operators and audit records address a tenant by, since
+#: a masked AppKey is not unique across tenants.
+tenant_registry_table = sa.Table(
+    "tenant_registry",
+    METADATA,
+    sa.Column("app_key", sa.Text, primary_key=True),
+    sa.Column("tenant_ref", sa.Text, nullable=False),
+    sa.Column("tenant_name", sa.Text, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.UniqueConstraint("tenant_ref", name="tenant_registry_tenant_ref_key"),
+    sa.Index("tenant_registry_status_idx", "status"),
+    sa.Index("tenant_registry_name_idx", "tenant_name"),
+)
+
+#: Platform operation actions on tenant master data and platform accounts.
+admin_audit_table = sa.Table(
+    "admin_audit",
+    METADATA,
+    sa.Column("audit_id", sa.Text, primary_key=True),
+    sa.Column("principal_id", sa.Text, nullable=False),
+    sa.Column("action", sa.Text, nullable=False),
+    sa.Column("target", sa.Text, nullable=True),
+    sa.Column("detail", sa.JSON, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("admin_audit_principal_idx", "principal_id", "created_at"),
+)
+
+#: Platform operations accounts, fully isolated from factory MES users.
+#: Passwords are stored hashed; ``tenant_scope`` is an array of allowed AppKeys
+#: (empty = all tenants).
+platform_principal_table = sa.Table(
+    "platform_principal",
+    METADATA,
+    sa.Column("principal_id", sa.Text, primary_key=True),
+    sa.Column("username", sa.Text, nullable=False),
+    sa.Column("password_hash", sa.Text, nullable=False),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("tenant_scope", sa.JSON, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.UniqueConstraint("username", name="platform_principal_username_key"),
+)
+
+#: Export jobs served by the platform statistics surface, which writes this
+#: table; only aggregate rows and the artifact key are stored.
+usage_export_table = sa.Table(
+    "usage_export",
+    METADATA,
+    sa.Column("export_id", sa.Text, primary_key=True),
+    sa.Column("principal_id", sa.Text, nullable=False),
+    sa.Column("format", sa.Text, nullable=False),
+    sa.Column("tenant_filter", sa.JSON, nullable=False),
+    sa.Column("metric_version", sa.Text, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("artifact_key", sa.Text, nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("usage_export_principal_idx", "principal_id", "created_at"),
+)
+
 __all__ = [
     "METADATA",
+    "admin_audit_table",
     "event_table",
     "favorite_table",
     "interaction_fact_table",
@@ -339,12 +408,15 @@ __all__ = [
     "mes_call_fact_table",
     "mes_operation_category_table",
     "message_table",
+    "platform_principal_table",
     "push_delivery_table",
     "query_history_table",
     "scope_violation_table",
+    "tenant_registry_table",
     "tenant_usage_daily_table",
     "tenant_usage_hourly_table",
     "usage_event_table",
+    "usage_export_table",
     "user_mapping_table",
     "user_preference_table",
 ]

@@ -6,14 +6,12 @@ ownership-filtered by the trusted ``(tenant_id, user_id)`` pair. Quick
 questions are role-aware: the role is the authoritative token role.
 """
 
-
-
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from factory_agent.api.identity import resolve_credential
+from factory_agent.api.identity import require_tenant_enabled, resolve_credential
 from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.application.personal import (
     FavoriteNotFoundError,
@@ -24,7 +22,9 @@ from factory_agent.domain import CapabilityId
 from factory_agent.ports import InteractionOwner, TrustedCredential
 from factory_agent.ports.personal import Favorite
 
-personal_router = APIRouter(prefix="/v1", tags=["personal"])
+personal_router = APIRouter(
+    prefix="/v1", tags=["personal"], dependencies=[Depends(require_tenant_enabled)]
+)
 
 
 def _owner(credential: TrustedCredential) -> InteractionOwner:

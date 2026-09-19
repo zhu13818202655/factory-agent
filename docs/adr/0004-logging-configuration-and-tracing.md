@@ -47,11 +47,12 @@ logger.info("mes_call_completed", operation_id=operation_id, status="ok")
 
 > **Implementation note (2026-09):** the package-boundary test
 > (`tests/security/test_package_boundaries.py`) allows `application`,
-> `persistence`, and `data_api` to depend on `observability`, so application
-> modules bind their logger through `get_logger(...)` as shown above. The
-> `usage-admin` service mirrors the facade under `usage_admin/logging.py`.
-> Tests assert on log content through `caplog`; the root `tests/conftest.py`
-> bridges Loguru records back into stdlib `logging` so `caplog` keeps working.
+> `persistence`, `data_api`, and `statistics` to depend on `observability`, so
+> application modules bind their logger through `get_logger(...)` as shown above.
+> The statistics surface uses the same single facade — it has no logging module
+> of its own. Tests assert on log content through `caplog`; the root
+> `tests/conftest.py` bridges Loguru records back into stdlib `logging` so
+> `caplog` keeps working.
 
 The adapter owns:
 
@@ -70,7 +71,7 @@ Every application log event should include these fields when available:
 | :--- | :--- |
 | `timestamp` | UTC ISO timestamp from the logger sink |
 | `level` | Log level |
-| `service` | `factory-agent` or `usage-admin` |
+| `service` | `factory-agent` |
 | `environment` | `development`, `test`, or `production` |
 | `component` | Logical package or adapter name |
 | `event` | Stable event name, not free-form prose |
@@ -114,16 +115,18 @@ Logs must never contain:
 | `FACTORY_AGENT_LOG_INCLUDE_BACKTRACE` | `false` | Keep Loguru backtrace/diagnose disabled outside local debugging |
 | `FACTORY_AGENT_LOG_SAMPLE_RATE` | `1.0` | Optional sampling for high-volume INFO logs |
 
-`usage-admin` should mirror these with its own prefix: `USAGE_ADMIN_LOG_*`.
+The statistics surface has no logging variables of its own: it logs through the same facade and
+the same `FACTORY_AGENT_LOG_*` settings.
 
 ## Runtime Configuration Design
 
 ### Settings Pattern
 
-Each service keeps a typed settings object:
+The application keeps typed settings objects, one per bounded concern:
 
 - `FactoryAgentSettings` under `src/factory_agent/config.py`;
-- `UsageAdminSettings` under `usage-admin/src/usage_admin/config.py`.
+- `StatisticsSettings` under `src/factory_agent/statistics/config.py`, with the
+  `FACTORY_AGENT_STATISTICS_` prefix.
 
 All settings use `BaseSettings` and an explicit env prefix. Values are read once through an
 `lru_cache` getter and injected into the composition root. Tests should pass settings or dependency
@@ -231,8 +234,8 @@ on OTel.
 ## Implementation Status
 
 - Loguru with typed settings, centralized sinks, and standard-library interception is implemented
-  under `src/factory_agent/observability/` (`get_logger` facade; usage-admin mirrors it under
-  `usage_admin/logging.py`).
+  under `src/factory_agent/observability/`. There is exactly one facade (`get_logger`), used by the
+  business packages and by `statistics` alike.
 - Request middleware binds validated `request_id`, authorized tenant context, and `interaction_id`
   via `contextvars`.
 - Sensitive-canary tests prove the values never appear in logs, errors, or snapshots.

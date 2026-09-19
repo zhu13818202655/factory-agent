@@ -187,19 +187,40 @@ def interaction_started_event(
     context: UsageContext,
     *,
     occurred_at: datetime,
-    capability: CapabilityId | None,
     entrypoint: Entrypoint,
     role: Role,
 ) -> UsageEvent:
-    """The authoritative token role, recorded as a metering category.
+    """The question was accepted; nothing is known about its capability yet.
 
-    Role gates capability availability in the permission matrix; here it is
-    archived for usage reporting only.
+    Deliberately capability-free. This event is written before the parse call and
+    must survive a crash mid-routing (it is also the question count), so the
+    capability belongs to ``interaction_routed_event`` instead. Role gates
+    capability availability in the permission matrix; here it is archived for
+    usage reporting only.
     """
     payload = context.envelope("interaction_started", occurred_at)
-    payload["capability"] = str(capability) if capability is not None else None
     payload["entrypoint"] = entrypoint
     payload["role_category"] = role.value
+    return _wrap(context, payload, occurred_at)
+
+
+def interaction_routed_event(
+    context: UsageContext,
+    *,
+    occurred_at: datetime,
+    capability: CapabilityId | None,
+) -> UsageEvent:
+    """The routing verdict: which capability this question was handed to.
+
+    A separate event because the capability is only known *after* the parse call:
+    folding it into the start event would date a decision before it was made, and
+    updating the fact row afterwards would break the immutable stream the rollup
+    replays from. ``capability`` is ``None`` for a question that reached routing
+    and matched nothing — the event still exists, so "never routed" and "routed,
+    nothing matched" stay distinguishable without a second event type.
+    """
+    payload = context.envelope("interaction_routed", occurred_at)
+    payload["capability"] = str(capability) if capability is not None else None
     return _wrap(context, payload, occurred_at)
 
 
@@ -335,6 +356,7 @@ __all__ = [
     "current_usage_context",
     "drain_mes_events",
     "interaction_completed_event",
+    "interaction_routed_event",
     "interaction_started_event",
     "llm_call_event",
     "mes_call_completed_event",

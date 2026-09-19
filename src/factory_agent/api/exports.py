@@ -13,9 +13,9 @@ never the row detail.
 from typing import cast
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from factory_agent.api.identity import resolve_credential
+from factory_agent.api.identity import require_tenant_enabled, resolve_credential
 from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.bootstrap import ApplicationContainer
 from factory_agent.observability.audit import (
@@ -27,7 +27,9 @@ from factory_agent.observability.audit import (
 )
 from factory_agent.ports.session import InteractionOwner
 
-export_router = APIRouter(prefix="/v1", tags=["artifacts"])
+export_router = APIRouter(
+    prefix="/v1", tags=["artifacts"], dependencies=[Depends(require_tenant_enabled)]
+)
 
 #: Exports are served as an attachment; browsers download the stream directly
 #: and App clients save it to local storage.

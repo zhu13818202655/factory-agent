@@ -32,7 +32,9 @@ from factory_agent.ports import UsageEvent
 _LOGGER = get_logger("factory_agent.persistence.metering")
 
 #: Event types that carry a derived fact row in the same write.
-_INTERACTION_EVENT_TYPES = frozenset({"interaction_started", "interaction_completed"})
+_INTERACTION_EVENT_TYPES = frozenset(
+    {"interaction_started", "interaction_routed", "interaction_completed"}
+)
 _LLM_EVENT_TYPES = frozenset({"llm_call_completed"})
 _MES_EVENT_TYPES = frozenset({"mes_call_completed"})
 

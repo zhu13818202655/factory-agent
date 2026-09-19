@@ -1,7 +1,6 @@
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from usage_admin.api.server import create_app as create_usage_admin_app
 
 from factory_agent.api.server import create_app as create_factory_app
 
@@ -17,5 +16,10 @@ async def assert_service_liveness(app: FastAPI, service: str) -> None:
 
 @pytest.mark.asyncio
 async def test_services_are_live() -> None:
-    await assert_service_liveness(create_factory_app(), "factory-agent")
-    await assert_service_liveness(create_usage_admin_app(), "usage-admin")
+    """One application process serves both the business and the statistics routes."""
+    app = create_factory_app()
+    await assert_service_liveness(app, "factory-agent")
+
+    paths = app.openapi()["paths"]
+    assert "/health/live" in paths
+    assert any(path.startswith("/v1/statistics") for path in paths)

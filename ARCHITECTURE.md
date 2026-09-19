@@ -119,7 +119,7 @@ business formulas remain replaceable configuration or Adapter concerns.
 | Concern | Choice | Boundary |
 | :--- | :--- | :--- |
 | Runtime and API | Python 3.12, FastAPI, Uvicorn, Pydantic v2 | HTTP and framework types stop at `api/` |
-| Package and quality | uv workspace, Hatchling, Ruff, Pyright strict, pytest, Bandit, pip-audit | One lockfile; root and usage-admin remain separate packages |
+| Package and quality | uv workspace, Hatchling, Ruff, Pyright strict, pytest, Bandit, pip-audit | One lockfile, one installable package; the statistics surface stays separable through a package-boundary test |
 | MES integration | HTTPX async client, OpenAPI 3.1, JSON Schema | Only `data_api/` knows URLs, auth transport, or customer payloads |
 | Durable application data | PostgreSQL 16, Psycopg 3, Alembic | Sessions, messages, interactions, audit metadata, favorites, and artifact metadata only |
 | Interaction processing | One in-memory DuckDB connection per interaction | Validated authorized rows only; no persistence or external/file access |
@@ -158,17 +158,22 @@ new parallel architectures.
 
 ## Repository Shape
 
-The root builds `src/factory_agent`. `usage-admin/` is a separately built production uv workspace
-member for authorized multi-tenant usage aggregation, operational APIs, and reports. Each service
-owns its package, tests, Dockerfile, migrations, and configuration. No service imports another;
-metering facts are written by factory-agent directly into the shared PostgreSQL in a separate
-transaction after its business commit, and usage-admin reads them — there
-is no HTTP usage-event contract between the services, and either could be split into separate
-repositories later. Every shared table has
-exactly one owner: usage-admin owns and writes `tenant_registry` (which factory-agent reads
-read-only to resolve the AppKey for MES calls, ADR-0003 §4.3), `admin_audit`,
-`platform_principal`, and `usage_export`; factory-agent owns and writes all business and metering
-tables that usage-admin only reads.
+The root builds one application package, `src/factory_agent`. The platform statistics surface —
+authorized multi-tenant usage aggregation, tenant lifecycle, operational APIs, and reports — lives
+inside it under `src/factory_agent/statistics/`, mounted at `/v1/statistics`, and is deliberately
+kept free of any dependency on the business domain so a package-boundary test can prove it is still
+separable. A single process therefore serves both surfaces, but they share no engine: the
+statistics store opens its own short-lived connections with a separate pool profile,
+`statement_timeout`, and read-only read transactions, so a platform-wide aggregate cannot starve
+business traffic, and the business pipeline never imports the statistics store.
+
+Metering facts are written by factory-agent directly into PostgreSQL in a separate transaction
+after its business commit; the statistics surface reads them read-only. There is no HTTP
+usage-event contract, and the statistics subpackage could still be split into its own service later.
+Every shared table has exactly one owner: the statistics surface owns and writes `tenant_registry`
+(which business code reads read-only to resolve the AppKey for MES calls and to reject a suspended
+tenant, ADR-0003 §4.3), `admin_audit`, `platform_principal`, and `usage_export`; the business side
+owns and writes all business and metering tables that the statistics surface only reads.
 
 ## Request Invariants
 

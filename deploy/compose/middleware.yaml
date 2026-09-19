@@ -52,7 +52,7 @@ services:
     environment:
       AWS_ACCESS_KEY_ID: ${FACTORY_AGENT_S3_ACCESS_KEY:-factory_agent}
       AWS_SECRET_ACCESS_KEY: ${FACTORY_AGENT_S3_SECRET_KEY:-factory_agent_dev}
-      S3_BUCKET: ${FACTORY_AGENT_S3_BUCKET:-factory-agent-exports},${USAGE_ADMIN_S3_BUCKET:-usage-admin-exports}
+      S3_BUCKET: ${FACTORY_AGENT_S3_BUCKET:-factory-agent-exports},${FACTORY_AGENT_STATISTICS_S3_BUCKET:-factory-agent-statistics-exports}
     # 只绑回环：宿主机调试与集成测试用；容器间走服务名 seaweedfs:8333
     ports:
       - "127.0.0.1:${SEAWEEDFS_S3_PORT:-8333}:8333"

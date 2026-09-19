@@ -6,7 +6,7 @@ suite. It creates and drops its own schema and never touches customer data.
 
 import os
 from collections.abc import AsyncIterator, Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,7 @@ from factory_agent.persistence.tables import (
     usage_event_table,
 )
 from factory_agent.ports import UsageEvent
+from factory_agent.statistics.partitions import UsagePartitionMaintainer
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("FACTORY_AGENT_TEST_POSTGRES_URL")
@@ -57,14 +58,6 @@ def alembic_config() -> Config:
     return config
 
 
-def usage_admin_alembic_config() -> Config:
-    assert DATABASE_URL is not None
-    config = Config()
-    config.set_main_option("script_location", str(REPOSITORY_ROOT / "usage-admin" / "migrations"))
-    config.set_main_option("sqlalchemy.url", normalize_dsn(DATABASE_URL))
-    return config
-
-
 def current_head(config: Config) -> str:
     head = ScriptDirectory.from_config(config).get_current_head()
     assert head is not None
@@ -79,18 +72,12 @@ def clean_database() -> Iterator[sa.Engine]:
     def drop_everything() -> None:
         with engine.begin() as connection:
             METADATA.drop_all(connection)
-            # usage-admin-owned tables are outside this service's METADATA.
-            for table in (
-                "tenant_registry",
-                "admin_audit",
-                "platform_principal",
-                "usage_export",
-            ):
-                connection.execute(sa.text(f"DROP TABLE IF EXISTS {table}"))
-            for table in ("alembic_version", "alembic_version_usage_admin"):
+            # ``METADATA`` covers every table in the single baseline, platform
+            # tables included; only the version table needs dropping by hand.
+            for table in ("alembic_version",):
                 connection.execute(sa.text(f"DROP TABLE IF EXISTS {table}"))
             # Stale partition helpers from an interrupted previous run would
-            # block re-running the migrations as a different role (6.6).
+            # block re-running the migrations as a different role.
             connection.execute(
                 sa.text("DROP FUNCTION IF EXISTS factory_agent_create_partition(DATE)")
             )
@@ -107,6 +94,12 @@ def clean_database() -> Iterator[sa.Engine]:
 async def engine(clean_database: sa.Engine) -> AsyncIterator[AsyncEngine]:
     assert DATABASE_URL is not None
     command.upgrade(alembic_config(), "head")
+    # The baseline seeds by execution time, so the month this suite writes into
+    # is only present when it happens to be the current one. Ask the maintainer
+    # for it explicitly: a partitioned table has no default partition, and a
+    # missing month is a hard insert failure rather than a silent one.
+    maintainer = UsagePartitionMaintainer(str(DATABASE_URL), clock=lambda: NOW.date())
+    await maintainer.ensure(NOW.date())
     created = create_async_engine(async_url(DATABASE_URL), poolclass=sa.pool.NullPool)
     try:
         yield created
@@ -149,7 +142,7 @@ def mes_event(
 
 async def test_direct_write_then_rollup_then_readable(engine: AsyncEngine) -> None:
     """6.2: one interaction with N MES calls -> usage_event + mes_call_fact ->
-    idempotency -> rollup -> read via a usage-admin-style query."""
+    idempotency -> rollup -> read via the statistics surface's query."""
     store = SqlMeteringStore(engine)
     events = (
         mes_event("e-1", "YskQuery", status="completed", occurred_at=NOW),
@@ -177,7 +170,7 @@ async def test_direct_write_then_rollup_then_readable(engine: AsyncEngine) -> No
         ("YskQuery", "completed"),
     ]
 
-    # Rollup produces MES category metrics, then the usage-admin read path
+    # Rollup produces MES category metrics, then the statistics read path
     # (a plain select on the rollup table) sees them.
     rollup_store = SqlRollupStore(engine)
     categories = await rollup_store.list_mes_categories()
@@ -308,64 +301,35 @@ async def test_failure_isolation_preserves_business_and_rollup(engine: AsyncEngi
     assert len(messages.items) == 1
 
 
-async def test_migration_coexistence_both_orders(clean_database: sa.Engine) -> None:
-    """6.6: factory-agent and usage-admin migrations succeed in either order."""
-    # Order A: factory-agent first, then usage-admin.
-    command.upgrade(alembic_config(), "head")
-    command.upgrade(usage_admin_alembic_config(), "head")
-    agent_head = current_head(alembic_config())
-    admin_head = current_head(usage_admin_alembic_config())
+async def test_single_baseline_builds_metering_and_platform_tables(
+    clean_database: sa.Engine,
+) -> None:
+    """One revision builds the whole database, platform tables included."""
+    config = alembic_config()
+    command.upgrade(config, "head")
+
+    head = ScriptDirectory.from_config(config).get_current_head()
     with clean_database.connect() as connection:
-        agent_versions = {
+        versions = {
             str(row[0])
             for row in connection.execute(sa.text("SELECT version_num FROM alembic_version"))
         }
-        admin_versions = {
-            str(row[0])
-            for row in connection.execute(
-                sa.text("SELECT version_num FROM alembic_version_usage_admin")
-            )
-        }
-        names = set(
+        names = {
             str(row[0])
             for row in connection.execute(
                 sa.text(
                     "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
                 )
             )
-        )
-    # Separate Alembic version tables: each service records exactly its own
-    # current head in the shared database. The heads are read back from the
-    # script directories so this assertion tracks the migration chain instead
-    # of pinning a development baseline.
-    assert agent_versions == {agent_head}
-    assert admin_versions == {admin_head}
+        }
+    assert versions == {head}
     assert "usage_event" in names
     assert "tenant_registry" in names
-
-    # Order B: usage-admin first, then factory-agent (fresh database).
-    with clean_database.begin() as connection:
-        METADATA.drop_all(connection)
-        for table in (
-            "tenant_registry",
-            "admin_audit",
-            "platform_principal",
-            "usage_export",
-            "alembic_version",
-            "alembic_version_usage_admin",
-        ):
-            connection.execute(sa.text(f"DROP TABLE IF EXISTS {table}"))
-    command.upgrade(usage_admin_alembic_config(), "head")
-    command.upgrade(alembic_config(), "head")
-    with clean_database.connect() as connection:
-        usage_event_exists = connection.execute(
-            sa.text("SELECT to_regclass('public.usage_event')")
-        ).scalar_one()
-        tenant_registry_exists = connection.execute(
-            sa.text("SELECT to_regclass('public.tenant_registry')")
-        ).scalar_one()
-    assert usage_event_exists is not None
-    assert tenant_registry_exists is not None
+    assert "admin_audit" in names
+    assert "platform_principal" in names
+    assert "usage_export" in names
+    # The retired artifact table must not come back through a downgrade path.
+    assert "agent_artifact" not in names
 
 
 async def test_tenant_registry_seed_classification_matches_catalog(engine: AsyncEngine) -> None:
@@ -432,3 +396,157 @@ async def test_mes_category_metrics_are_versioned(engine: AsyncEngine) -> None:
             )
         ).all()
     assert [float(row[0]) for row in rows] == [2.0]
+
+
+# --- usage_event partition maintenance (D-9) --------------------------------
+
+
+async def test_baseline_seeds_the_current_and_following_month(
+    clean_database: sa.Engine,
+) -> None:
+    """The migration seeds by execution time, not by a hard-coded calendar.
+
+    A written-in seed silently drops every write once the window is passed, and
+    because metering failures are alerted rather than fatal, that shows up as
+    missing billing rows and nothing else.
+    """
+    command.upgrade(alembic_config(), "head")
+
+    with clean_database.connect() as connection:
+        current = connection.execute(
+            sa.text(
+                "SELECT to_regclass("
+                "'public.usage_event_' || to_char(date_trunc('month', now()), 'YYYYMM'))"
+            )
+        ).scalar_one()
+        following = connection.execute(
+            sa.text(
+                "SELECT to_regclass("
+                "'public.usage_event_' || to_char("
+                "date_trunc('month', now()) + interval '1 month', 'YYYYMM'))"
+            )
+        ).scalar_one()
+
+    assert current is not None
+    assert following is not None
+
+
+async def test_ensure_creates_the_requested_months_and_accepts_writes(
+    clean_database: sa.Engine,
+) -> None:
+    """Acceptance: ``ensure(date(2026, 11, 1))`` -> 202611 / 202612 + a write."""
+
+    command.upgrade(alembic_config(), "head")
+
+    maintainer = UsagePartitionMaintainer(str(DATABASE_URL), clock=lambda: date(2026, 11, 1))
+    run = await maintainer.ensure(date(2026, 11, 1))
+
+    assert [target.name for target in run.failed] == []
+    assert [target.name for target in run.ensured] == ["usage_event_202611", "usage_event_202612"]
+
+    with clean_database.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO usage_event (event_id, schema_version, event_type, tenant_id,"
+                " occurred_at, received_at, user_subject_id, session_id, interaction_id,"
+                " trace_id, payload)"
+                " VALUES ('p-1', '1.0', 'mes_call_completed', :tenant,"
+                " TIMESTAMPTZ '2026-11-05 09:00:00+08', TIMESTAMPTZ '2026-11-05 09:00:01+08',"
+                " 'u1', 's-1', 'i-1', :trace, '{}'::jsonb)"
+            ),
+            {"tenant": TENANT, "trace": "0" * 32},
+        )
+        routed = connection.execute(
+            sa.text("SELECT tableoid::regclass::text FROM usage_event WHERE event_id = 'p-1'")
+        ).scalar_one()
+
+    assert routed == "usage_event_202611"
+
+
+async def test_ensure_is_idempotent_and_repairs_a_dropped_partition(
+    clean_database: sa.Engine,
+) -> None:
+    """A partition dropped by hand comes back on the next pass."""
+
+    command.upgrade(alembic_config(), "head")
+    maintainer = UsagePartitionMaintainer(str(DATABASE_URL), clock=lambda: date(2026, 11, 1))
+    await maintainer.ensure(date(2026, 11, 1))
+
+    # Re-running changes nothing (the helper is CREATE TABLE IF NOT EXISTS).
+    again = await maintainer.ensure(date(2026, 11, 1))
+    assert [target.name for target in again.failed] == []
+
+    with clean_database.begin() as connection:
+        connection.execute(sa.text("DROP TABLE usage_event_202611"))
+    dropped = await maintainer.ensure(date(2026, 11, 1))
+
+    assert [target.name for target in dropped.ensured] == [
+        "usage_event_202611",
+        "usage_event_202612",
+    ]
+    with clean_database.connect() as connection:
+        repaired = connection.execute(
+            sa.text("SELECT to_regclass('public.usage_event_202611')")
+        ).scalar_one()
+    assert repaired is not None
+
+
+async def test_a_failed_maintenance_pass_reports_and_alerts(
+    clean_database: sa.Engine,
+) -> None:
+    """A read-only connection cannot create the partition: report, never raise.
+
+    This is the failure path the cross-month guarantee depends on. A maintenance
+    failure must never reach the caller (the API lifespan) as an exception, but it
+    must never be silent either: every failed month comes back in the run report
+    and raises an alert carrying the exact repair month.
+    """
+    command.upgrade(alembic_config(), "head")
+    with clean_database.begin() as connection:
+        connection.execute(sa.text("DROP TABLE IF EXISTS usage_event_202611"))
+        connection.execute(sa.text("DROP TABLE IF EXISTS usage_event_202612"))
+
+    alerted: list[tuple[str, dict[str, object]]] = []
+
+    class Alerts:
+        async def alert(self, kind: str, detail: dict[str, object]) -> None:
+            alerted.append((kind, detail))
+
+    maintainer = UsagePartitionMaintainer(
+        read_only_dsn(str(DATABASE_URL)),
+        alerts=Alerts(),
+        clock=lambda: date(2026, 11, 1),
+    )
+
+    run = await maintainer.ensure(date(2026, 11, 1))
+
+    assert [target.name for target in run.ensured] == []
+    assert [target.name for target in run.failed] == [
+        "usage_event_202611",
+        "usage_event_202612",
+    ]
+    assert [kind for kind, _ in alerted] == [
+        "usage.partition.ensure_failed",
+        "usage.partition.ensure_failed",
+    ]
+    for _, detail in alerted:
+        assert detail["reason"] == "create_failed"
+        assert detail["month"] in {"2026-11-01", "2026-12-01"}
+    with clean_database.connect() as connection:
+        assert (
+            connection.execute(
+                sa.text("SELECT to_regclass('public.usage_event_202611')")
+            ).scalar_one()
+            is None
+        )
+
+
+def read_only_dsn(url: str) -> str:
+    """The same DSN with a read-only default transaction.
+
+    ``options`` is a libpq startup parameter, so the read-only mode is in force
+    from the very first statement — issuing ``SET TRANSACTION READ ONLY`` first
+    would leave the DDL free to run.
+    """
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}options=-c%20default_transaction_read_only%3Don"

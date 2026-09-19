@@ -10,11 +10,16 @@ degraded header fallback used only when no gateway is configured.
 from collections.abc import AsyncIterator
 from typing import cast
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from factory_agent.api.identity import TENANT_HEADER, USER_HEADER, resolve_credential
+from factory_agent.api.identity import (
+    TENANT_HEADER,
+    USER_HEADER,
+    require_tenant_enabled,
+    resolve_credential,
+)
 from factory_agent.api.sse import encode_event, parse_last_event_id
 from factory_agent.application.authorization import IdentityRejectionError
 from factory_agent.application.session import (
@@ -33,7 +38,9 @@ _SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
-session_router = APIRouter(prefix="/v1", tags=["sessions"])
+session_router = APIRouter(
+    prefix="/v1", tags=["sessions"], dependencies=[Depends(require_tenant_enabled)]
+)
 
 
 class StartInteractionRequest(BaseModel):

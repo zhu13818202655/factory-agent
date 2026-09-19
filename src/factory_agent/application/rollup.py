@@ -11,8 +11,7 @@ separate. Call counts come from fact row counts; ``page_count`` is never summed
 (D6).
 """
 
-
-
+import asyncio
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,7 +30,9 @@ _LOGGER = get_logger("factory_agent.application.rollup")
 
 #: Bumped whenever the metric set changes so old windows are recomputed under a
 #: new version instead of being silently overwritten.
-ROLLUP_VERSION = "rollup-v2"
+#: v3: ``valid_questions`` moved from the start event to the routed event (the
+#: capability is only known after routing), so v2 windows must be recomputed.
+ROLLUP_VERSION = "rollup-v3"
 
 #: Billing categories from ``mes_operation_category`` / ``apis.yaml`` (D5).
 MES_CATEGORIES: tuple[str, ...] = ("output", "payroll", "order", "other")
@@ -112,8 +113,10 @@ def compute_bucket_metrics(
         key = _bucket_key(fact.occurred_at, granularity)
         if fact.event_type == "interaction_started":
             buckets[key]["questions"] += 1
-            if fact.capability_id is not None:
-                buckets[key]["valid_questions"] += 1
+        elif fact.event_type == "interaction_routed" and fact.capability_id is not None:
+            # 有效提问 = 路由阶段真的解析出了能力。未识别的提问记进 questions 但
+            # 不进 valid_questions，于是两者的差就是「没被理解的提问」。
+            buckets[key]["valid_questions"] += 1
         if fact.user_subject_id:
             users[key].add(fact.user_subject_id)
         status = fact.status
@@ -156,8 +159,21 @@ class RollupRun:
     daily_rows: int
 
 
+class RollupAlertSink(Protocol):
+    """Structural twin of ``statistics.alerts.AlertSink``.
+
+    ``application`` may not import ``statistics`` (package boundaries), so the
+    worker declares the only shape it uses and the composition root passes a
+    real sink. Alerts carry metadata only — never fact payloads.
+    """
+
+    async def alert(self, kind: str, detail: dict[str, object]) -> None: ...
+
+
 class RollupStore(Protocol):
     """Durable side of the rollup engine; implemented by ``SqlRollupStore``."""
+
+    async def list_tenant_ids(self, start: datetime, end: datetime) -> frozenset[str]: ...
 
     async def list_facts(
         self,
@@ -184,6 +200,15 @@ class RollupEngine:
         self._store = store
         self._clock = clock
         self._version = version
+
+    async def discover_tenants(self, start: datetime, end: datetime) -> frozenset[str]:
+        """Tenants that produced facts in the window.
+
+        A worker with no configured tenant list asks the store instead of being
+        handed one: a fixed list silently stops covering a tenant that starts
+        sending traffic later, which is every factory that is onboarded.
+        """
+        return await self._store.list_tenant_ids(start, end)
 
     async def rollup_range(
         self, tenant_ids: frozenset[str], start: datetime, end: datetime
@@ -253,35 +278,55 @@ class RollupWorker:
         poll_seconds: float = 60.0,
         window_hours: int = 24,
         sleep: Callable[[float], Any] | None = None,
+        alerts: RollupAlertSink | None = None,
     ) -> None:
         self._engine = engine
         self._tenant_ids = tenant_ids
         self._poll_seconds = poll_seconds
         self._window_hours = window_hours
         self._sleep = sleep or _default_sleep
+        self._alerts = alerts
 
     async def run_once(self, now: datetime) -> RollupRun:
         start = now - timedelta(hours=self._window_hours)
-        return await self._engine.rollup_range(self._tenant_ids, start, now)
+        tenant_ids = self._tenant_ids or await self._engine.discover_tenants(start, now)
+        return await self._engine.rollup_range(tenant_ids, start, now)
 
     async def run_forever(self, stop: Any | None = None) -> None:
         while stop is None or not stop.is_set():
             try:
                 await self.run_once(datetime.now(timezone.utc))
+            except asyncio.CancelledError:
+                raise
             except Exception:  # noqa: BLE001 - the worker must survive transient faults
                 _LOGGER.exception("usage.rollup.cycle_failed")
+                await self._alert_failure()
             await self._sleep(self._poll_seconds)
+
+    async def _alert_failure(self) -> None:
+        """A rollup that keeps failing is invisible in the product: it reads as
+        zero traffic. Alert so a stuck job is noticed without an operator
+        squinting at a dashboard.
+        """
+        if self._alerts is None:
+            return
+        try:
+            await self._alerts.alert(
+                "usage.rollup.cycle_failed",
+                {"window_hours": self._window_hours, "reason": "cycle_failed"},
+            )
+        except Exception:  # noqa: BLE001 - alerting is best effort
+            _LOGGER.exception("usage.rollup.alert_failed")
 
 
 async def _default_sleep(seconds: float) -> None:
-    import asyncio
-
     await asyncio.sleep(seconds)
 
 
 __all__ = [
     "MES_CATEGORIES",
     "ROLLUP_VERSION",
+    "RollupAlertSink",
     "RollupEngine",
     "RollupRun",
     "RollupStore",
