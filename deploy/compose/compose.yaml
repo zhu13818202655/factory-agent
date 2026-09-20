@@ -19,6 +19,17 @@ services:
       context: ../..
       dockerfile: Dockerfile
     image: factory-agent:dev
+    # `.env` is injected wholesale, so tuning a knob (for example
+    # FACTORY_AGENT_MES_TIMEOUT_SECONDS) is a one-line edit to that file and
+    # needs no change here. Compose also reads the same file for the `${...}`
+    # interpolation used below. An explicit entry under `environment:` wins over
+    # `env_file:`, which is what keeps `FACTORY_AGENT_ENVIRONMENT`, `_HOST` and
+    # `_PORT` container-only: those three are plain literals and are therefore
+    # not reachable from `.env`. `required: false` keeps the file additive, so a
+    # deployment that exports the variables into the shell still starts.
+    env_file:
+      - path: .env
+        required: false
     environment:
       FACTORY_AGENT_ENVIRONMENT: production
       FACTORY_AGENT_HOST: 0.0.0.0

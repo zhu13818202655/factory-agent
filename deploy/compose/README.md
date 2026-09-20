@@ -93,6 +93,12 @@ API key) in `deploy/compose/.env`; with an empty key every model deployment is
 dropped at startup and chat interactions fail fast with
 `gateway_not_configured`.
 
+`agent-api` loads the whole of `deploy/compose/.env` through `env_file`, so any setting that is
+not listed under `environment:` — MES timeout, MES page sizes, fan-out concurrency, session
+budgets, time-parse and scope-guard modes — is tuned by editing that one file and restarting the
+service. Entries under `environment:` win over the file, which is what keeps
+`FACTORY_AGENT_ENVIRONMENT`, `FACTORY_AGENT_HOST` and `FACTORY_AGENT_PORT` container-only.
+
 `compose.yaml` is a local development topology; production deployments use the
 customer MES gateway instead of any local simulator.
 
