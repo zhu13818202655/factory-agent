@@ -11,11 +11,17 @@ that removes a consumed value still fails closed (see
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 
 import pytest
 from pydantic import ValidationError
 
-from factory_agent.data_api.schemas import _WARNED_MISSING_FIELDS, _CustomerRow
+# 直接引用模块私有名是刻意的：本文件测的就是 ``_CustomerRow`` 的宽松校验语义与
+# ``_WARNED_MISSING_FIELDS`` 的去重状态，而该模块没有可供断言的公开接缝。
+from factory_agent.data_api.schemas import (
+    _WARNED_MISSING_FIELDS,  # pyright: ignore[reportPrivateUsage]
+    _CustomerRow,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 class _DriftRow(_CustomerRow):
@@ -25,7 +31,8 @@ class _DriftRow(_CustomerRow):
 
 
 @pytest.fixture(autouse=True)
-def _reset_warned_fields() -> None:
+def _reset_warned_fields() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """每个用例前清空告警去重状态（fixture 由 pytest 收集，故 pyright 视为未使用）。"""
     _WARNED_MISSING_FIELDS.clear()
     yield
     _WARNED_MISSING_FIELDS.clear()

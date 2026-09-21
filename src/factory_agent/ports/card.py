@@ -192,7 +192,7 @@ def build_card(
     capability_id: str,
     title: str,
     columns: Sequence[CardColumn],
-    rows: tuple[dict[str, object], ...],
+    rows: tuple[Mapping[str, object], ...],
     totals: Mapping[str, Decimal],
     incomplete: bool = False,
     incomplete_reason: str | None = None,
@@ -245,7 +245,7 @@ def build_card(
 def _metrics_payload(
     names: Sequence[str],
     by_name: Mapping[str, CardColumn],
-    rows: tuple[dict[str, object], ...],
+    rows: tuple[Mapping[str, object], ...],
     totals: Mapping[str, Decimal],
 ) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
@@ -267,7 +267,7 @@ def _metrics_payload(
 def _metric_value(
     name: str,
     column: CardColumn,
-    rows: tuple[dict[str, object], ...],
+    rows: tuple[Mapping[str, object], ...],
     totals: Mapping[str, Decimal],
 ) -> str | None:
     """Resolve one KPI number: totals first, then the single result row."""
@@ -320,7 +320,7 @@ def _totals_payload(
 def _unavailable_titles(
     names: Sequence[str],
     by_name: Mapping[str, CardColumn],
-    rows: tuple[dict[str, object], ...],
+    rows: tuple[Mapping[str, object], ...],
     totals: Mapping[str, Decimal],
 ) -> list[str]:
     titles: list[str] = []
@@ -334,7 +334,7 @@ def _unavailable_titles(
 def _table_payload(
     spec: CardTableSpec,
     by_name: Mapping[str, CardColumn],
-    rows: tuple[dict[str, object], ...],
+    rows: tuple[Mapping[str, object], ...],
 ) -> dict[str, object]:
     names = list(by_name)
     total_rows = len(rows)
@@ -376,7 +376,7 @@ def _table_payload(
 def _grouped_rows(
     spec: CardTableSpec,
     by_name: Mapping[str, CardColumn],
-    rows: tuple[dict[str, object], ...],
+    rows: tuple[Mapping[str, object], ...],
 ) -> tuple[list[list[object]], list[dict[str, object]], int]:
     """Slice contiguous same-group runs, capping rows per group and group count.
 

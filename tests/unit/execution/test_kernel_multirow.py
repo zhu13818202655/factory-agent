@@ -21,6 +21,7 @@ from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import UNAVAILABLE_VALUE, default_metric_registry
 from factory_agent.ports.contracts import ResourceFetchResult
 from factory_agent.ports.session import CapabilityRunRequest
+from tests.support.payload import as_dict, as_list
 
 #: 缝制生产进度流程卡行（ScjdQuery）：``bbreed`` 是款号，``wcl`` 是包完工率。
 _SCJD_ROWS: tuple[dict[str, Any], ...] = (
@@ -667,7 +668,7 @@ async def test_fr011_groups_payroll_by_dept_with_confirmed_headcount() -> None:
     assert a2["avg_wage"] == Decimal("3.75")
     # 全厂级单值 KPI 走 aux 输出（卡片专属，不进主表）。
     assert result.card is not None
-    kpis = {item["label"]: item for item in result.card["metrics"]}
+    kpis = {item["label"]: item for item in as_list(result.card["metrics"])}
     assert kpis["工资总额"]["value"] == "23.75"
     assert kpis["在册人数"]["value"] == "3"
     assert kpis["人均工资"]["value"] == "7.92"  # 23.75 ÷ 3，保留两位
@@ -822,14 +823,15 @@ async def test_fr013_dashboard_combines_ranking_kpis_and_daily_chart() -> None:
     card = result.card
     assert card is not None
     # aux KPI（D-2 口径：wcl<100% 的制单去重 = DH-1 一单）。
-    kpis = {item["label"]: item for item in card["metrics"]}
+    kpis = {item["label"]: item for item in as_list(card["metrics"])}
     assert kpis["总产量"]["value"] == "12"
     assert kpis["在产订单"]["value"] == "1"
     assert kpis["人均月产"]["value"] == "4"
     # 日序列 chart：按 inputtime 归日，62 点内保持日粒度。
-    assert card["chart"]["type"] == "bar"
-    assert card["chart"]["granularity"] == "day"
-    assert card["chart"]["points"] == [
+    chart = as_dict(card["chart"])
+    assert chart["type"] == "bar"
+    assert chart["granularity"] == "day"
+    assert chart["points"] == [
         {"label": "07-02", "value": "9"},
         {"label": "07-03", "value": "3"},
     ]

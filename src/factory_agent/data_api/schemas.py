@@ -134,7 +134,12 @@ class _CustomerRow(BaseModel):
     @field_validator("*", mode="before")
     @classmethod
     def _coerce_scalars(cls, value: object, info: ValidationInfo) -> object:
-        field = cls.model_fields.get(info.field_name)
+        # ``field_name`` is optional in the validator signature (``None`` only
+        # for model-level validators), so guard it rather than assuming: a
+        # field validator always carries one, and the absent case degrades to
+        # "not a str field" exactly as before.
+        name = info.field_name
+        field = cls.model_fields.get(name) if name is not None else None
         is_str_field = field is not None and field.annotation is str
         # str-declared fields are normalised: null -> "" (nullable upstream
         # timestamps like inputtime_raw) and numbers -> str (amounts/counts/ids).

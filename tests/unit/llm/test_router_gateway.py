@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import litellm
 import pytest
+from litellm.exceptions import Timeout
 
 from factory_agent.llm.registry import ModelRegistry, ResolvedDeployment
 from factory_agent.llm.router_gateway import (
@@ -585,7 +586,10 @@ async def test_deliberation_wins_over_content_within_one_chunk() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_maps_a_provider_failure_to_a_category() -> None:
-    router = StreamingRouter(error=litellm.Timeout(message="boom", model="m", llm_provider="p"))
+    # ``litellm.exceptions.Timeout`` is the same class the package re-exports as
+    # ``litellm.Timeout``; importing it from its home module is what pyright can
+    # resolve (the re-export is invisible to it).
+    router = StreamingRouter(error=Timeout(message="boom", model="m", llm_provider="p"))
 
     with pytest.raises(ModelGatewayError) as caught:
         await collect(streaming_gateway(router))

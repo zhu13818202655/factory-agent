@@ -3,6 +3,7 @@
 from decimal import Decimal
 
 from factory_agent.ports.card import CardAlertSpec, CardColumn, CardTableSpec, build_card
+from tests.support.payload import as_dict, as_list
 
 _WAGE_COLUMNS = (
     CardColumn("gross_total", title="计件工资合计", column_type="money", unit="元"),
@@ -28,7 +29,7 @@ def test_kpi_card_resolves_values_from_totals_and_rows() -> None:
     )
 
     assert card["kind"] == "kpi"
-    metrics = card["metrics"]
+    metrics = as_list(card["metrics"])
     assert metrics[0] == {"label": "计件工资合计", "unit": "元", "value": "21.65"}
     # totals take precedence over the row value; a formatted string cell is fine
     assert metrics[2] == {"label": "日均工资", "unit": "元", "value": "0.35"}
@@ -51,7 +52,7 @@ def test_kpi_metric_without_data_source_is_explicit_not_zero() -> None:
         totals={"gross_total": Decimal("21.65")},
     )
 
-    metrics = card["metrics"]
+    metrics = as_list(card["metrics"])
     assert metrics[2]["unavailable"] is True
     assert card["unavailable_columns"] == ["日均工资"]
 
@@ -71,7 +72,7 @@ def test_table_card_truncates_preview_rows() -> None:
         totals={},
     )
 
-    table = card["table"]
+    table = as_dict(card["table"])
     assert table["columns"] == ["rq", "je"]
     assert table["column_titles"] == {"rq": "日期", "je": "小计金额"}
     assert table["total_rows"] == 5
@@ -113,7 +114,7 @@ def test_grouped_card_keeps_group_runs_contiguous_and_caps_rows_per_group() -> N
         totals={"gross": Decimal("340")},
     )
 
-    table = card["table"]
+    table = as_dict(card["table"])
     assert table["group_by"] == "dept"
     assert table["groups_total"] == 2
     # flat rows stay sliced by group in groups[] order — the client never re-groups
@@ -149,7 +150,7 @@ def test_grouped_card_drops_groups_beyond_the_group_cap() -> None:
         totals={},
     )
 
-    table = card["table"]
+    table = as_dict(card["table"])
     assert len(table["groups"]) == 2
     assert table["groups_total"] == 4
     assert table["truncated"] is True
@@ -173,7 +174,7 @@ def test_alert_marker_is_passed_through_as_semantics_only() -> None:
         totals={},
     )
 
-    assert card["table"]["alert_marker"] == {"column": "delivery_warning", "equals": "1"}
+    assert as_dict(card["table"])["alert_marker"] == {"column": "delivery_warning", "equals": "1"}
 
 
 def test_unavailable_cells_render_as_null_and_incomplete_adds_a_note() -> None:
@@ -193,8 +194,8 @@ def test_unavailable_cells_render_as_null_and_incomplete_adds_a_note() -> None:
         warnings=("分页拉取未完整：total_drift",),
     )
 
-    assert card["table"]["rows"] == [["DD001", None]]
-    notes = card["notes"]
+    assert as_dict(card["table"])["rows"] == [["DD001", None]]
+    notes = as_list(card["notes"])
     assert "分页拉取未完整：total_drift" in notes
     assert any("不完整" in note for note in notes)
 
@@ -220,7 +221,7 @@ def test_table_card_emits_the_pagination_triplet_in_preview_mode() -> None:
         totals={},
     )
 
-    table = card["table"]
+    table = as_dict(card["table"])
     assert table["page"] == 1
     assert table["page_size"] == 2
     assert table["has_more"] is True
@@ -236,7 +237,7 @@ def test_table_card_without_truncation_reports_has_more_false() -> None:
         rows=({"rq": "2026-09-01"},),
         totals={},
     )
-    table = card["table"]
+    table = as_dict(card["table"])
     assert table["truncated"] is False
     assert table["has_more"] is False
 
@@ -268,7 +269,7 @@ def test_group_name_is_taken_from_the_declared_column() -> None:
         totals={},
     )
 
-    groups = card["table"]["groups"]
+    groups = as_list(as_dict(card["table"])["groups"])
     assert groups[0] == {
         "group": "001",
         "name": "缝纫一组",
@@ -327,7 +328,7 @@ def test_aux_metrics_render_values_and_explicit_unavailable() -> None:
         ),
     )
 
-    metrics = card["metrics"]
+    metrics = as_list(card["metrics"])
     assert metrics[0] == {"label": "工资总额", "unit": "元", "value": "23.75"}
     assert metrics[1] == {"label": "人均工资", "unit": "元", "unavailable": True}
     assert metrics[2] == {"label": "在册人数", "unit": "人", "unavailable": True}

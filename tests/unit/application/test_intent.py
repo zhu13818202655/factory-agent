@@ -88,6 +88,7 @@ async def test_bare_month_expression_fills_the_time_range_without_clarification(
     assert outcome.intent.needs_clarification is False
     assert outcome.clarification is None
     assert outcome.intent.slots.time_range_start is not None
+    assert outcome.intent.slots.time_range_end is not None
     assert outcome.intent.slots.time_range_start.isoformat() == "2026-06-30T16:00:00+00:00"
     assert outcome.intent.slots.time_range_end.isoformat() == "2026-07-31T16:00:00+00:00"
 

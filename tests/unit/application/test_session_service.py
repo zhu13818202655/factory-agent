@@ -62,6 +62,7 @@ from tests.support.authorization import (
     FakeOrganizationSource,
     membership,
 )
+from tests.support.payload import as_dict, as_list
 from tests.support.session import (
     FrozenClock,
     InMemoryInteractionStore,
@@ -477,15 +478,14 @@ async def test_result_event_carries_column_titles() -> None:
     events = await drain(service, record.interaction_id)
 
     result_event = next(event for event in events if event.name == INTERACTION_RESULT)
-    titles = result_event.data["column_titles"]
-    assert isinstance(titles, list)
-    assert len(titles) == len(result_event.data["columns"])
+    titles = as_list(result_event.data["column_titles"])
+    assert len(titles) == len(as_list(result_event.data["columns"]))
 
 
 @pytest.mark.asyncio
 async def test_result_event_and_message_carry_the_same_card_payload() -> None:
     """The card dict is identical on the SSE event and the persisted message."""
-    card = {
+    card: dict[str, object] = {
         "kind": "kpi",
         "title": "个人工资汇总",
         "metrics": [{"label": "计件工资合计", "unit": "元", "value": "8650"}],
@@ -497,8 +497,7 @@ async def test_result_event_and_message_carry_the_same_card_payload() -> None:
     events = await drain(service, record.interaction_id)
 
     result_event = next(event for event in events if event.name == INTERACTION_RESULT)
-    event_card = result_event.data["card"]
-    assert isinstance(event_card, dict)
+    event_card = as_dict(result_event.data["card"])
     table_message = next(
         m
         for m in store.messages
@@ -511,9 +510,9 @@ async def test_result_event_and_message_carry_the_same_card_payload() -> None:
     for key, value in card.items():
         assert event_card[key] == value
     assert event_card["time_range"] == result_event.data["time_range"]
-    # ``event_card`` is a ``dict`` of unknown values, so the window's shape is
-    # declared here and then asserted by the reads below.
-    window: dict[str, object] = event_card["time_range"]
+    # ``event_card`` is a ``dict`` of unknown values, so the window is narrowed
+    # (with a runtime check) rather than declared; the reads below then assert it.
+    window = as_dict(event_card["time_range"])
     assert window["expression"] == "上个月"
     assert window["start"] and window["end"] and window["label"]
 
@@ -1092,6 +1091,7 @@ async def test_rewritten_follow_up_is_echoed_back_on_clarification() -> None:
 
     clarification = next(event for event in events if event.name == INTERACTION_CLARIFICATION)
     question = clarification.data["question"]
+    assert isinstance(question, str)
     assert "查询我这个月的工资明细" in question
     assert store.interactions[str(record.interaction_id)].clarification_rounds == 1
 
@@ -1116,8 +1116,10 @@ async def test_scope_guard_denies_out_of_range_request_before_any_business_call(
     failed = [event for event in events if event.name == INTERACTION_FAILED]
     assert len(failed) == 1
     assert failed[0].data["error_category"] == "scope_forbidden"
-    assert "全组的工资明细" in failed[0].data["message"]
-    assert "本人" in failed[0].data["message"]
+    message = failed[0].data["message"]
+    assert isinstance(message, str)
+    assert "全组的工资明细" in message
+    assert "本人" in message
     # No business-data call ever happened.
     assert runner.requests == []
     stored = store.interactions[str(record.interaction_id)]

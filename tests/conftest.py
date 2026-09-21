@@ -20,7 +20,12 @@ from typing import Any
 import pytest
 
 try:
-    import litellm as _litellm  # noqa: F401  (import 副作用：触发一次 .env 注入)
+    # 只为副作用导入：litellm 在 import 时把仓库根 .env 注入 os.environ。
+    # 用 importlib 显式表达「触发导入」，避免留一个没人读取的 import 绑定
+    # （ruff 与 pyright 都会把它报成未使用导入，再靠抑制注释盖掉）。
+    from importlib import import_module as _import_module
+
+    _import_module("litellm")
 except Exception:  # pragma: no cover - 环境缺 litellm 时无需清理
     pass
 _KEEP = frozenset(
