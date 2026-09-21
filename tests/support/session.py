@@ -1,12 +1,13 @@
 import asyncio
 import itertools
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from factory_agent.domain import (
     CapabilityId,
+    ConversationRecord,
     InteractionId,
     InteractionRecord,
     InteractionStatus,
@@ -21,6 +22,9 @@ from factory_agent.domain import (
 from factory_agent.ports import (
     CapabilityRunRequest,
     CapabilityRunResult,
+    ConversationCreation,
+    ConversationPage,
+    ConversationSummary,
     InteractionCommit,
     InteractionOwner,
     InteractionPage,
@@ -42,6 +46,7 @@ class InMemoryInteractionStore:
     messages: list[MessageRecord] = field(default_factory=lambda: [])
     events: dict[str, list[SessionEvent]] = field(default_factory=lambda: {})
     usage_events: list[UsageEvent] = field(default_factory=lambda: [])
+    conversations: dict[str, ConversationRecord] = field(default_factory=lambda: {})
     commits: int = 0
 
     async def commit(self, commit: InteractionCommit) -> None:
@@ -49,6 +54,9 @@ class InMemoryInteractionStore:
         record = commit.interaction
         if commit.lifecycle:
             self.interactions[str(record.interaction_id)] = record
+            # Mirror the SQL store: the conversation row is created (or its
+            # recency moved) in the same commit as the interaction it belongs to.
+            self._refresh_conversation(record)
         else:
             # Informational commit: mirror the SQL store by advancing only the
             # bookkeeping, so an in-flight progress event cannot resurrect a
@@ -205,11 +213,13 @@ class InMemoryInteractionStore:
         session_id: SessionId,
         limit: int,
         cursor: str | None = None,
+        exclude_kinds: frozenset[MessageKind] = frozenset(),
     ) -> MessagePage:
         owned = [
             message
             for message in sorted(self.messages, key=lambda item: str(item.message_id))
             if message.session_id == session_id
+            and message.kind not in exclude_kinds
             and self._owns(owner, message.tenant_id, message.user_id)
         ]
         start = int(cursor) if cursor else 0
@@ -254,6 +264,108 @@ class InMemoryInteractionStore:
         page = owned[start : start + limit]
         next_cursor = str(start + limit) if len(owned) > start + limit else None
         return InteractionPage(items=tuple(page), next_cursor=next_cursor)
+
+    async def list_conversations(
+        self,
+        owner: InteractionOwner,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage:
+        owned = [
+            record
+            for record in sorted(
+                self.conversations.values(),
+                key=lambda item: (item.updated_at, str(item.session_id)),
+                reverse=True,
+            )
+            if self._owns(owner, record.tenant_id, record.user_id)
+        ]
+        start = int(cursor) if cursor else 0
+        page = owned[start : start + limit]
+        next_cursor = str(start + limit) if len(owned) > start + limit else None
+        summaries = tuple(self._summarise(record) for record in page)
+        return ConversationPage(items=summaries, next_cursor=next_cursor)
+
+    async def get_conversation(
+        self, owner: InteractionOwner, session_id: SessionId
+    ) -> ConversationSummary | None:
+        record = self.conversations.get(str(session_id))
+        if record is None or not self._owns(owner, record.tenant_id, record.user_id):
+            return None
+        return self._summarise(record)
+
+    async def count_conversations(self, owner: InteractionOwner) -> int:
+        return sum(
+            1
+            for record in self.conversations.values()
+            if self._owns(owner, record.tenant_id, record.user_id)
+        )
+
+    async def create_conversation(
+        self, owner: InteractionOwner, session_id: SessionId, now: datetime
+    ) -> ConversationCreation:
+        existing = await self.get_conversation(owner, session_id)
+        if existing is not None:
+            return ConversationCreation(summary=existing, created=False)
+        record = ConversationRecord(
+            session_id=session_id,
+            tenant_id=owner.tenant_id,
+            user_id=owner.user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.conversations[str(session_id)] = record
+        return ConversationCreation(summary=self._summarise(record), created=True)
+
+    def _refresh_conversation(self, record: InteractionRecord) -> None:
+        key = str(record.session_id)
+        existing = self.conversations.get(key)
+        if existing is None:
+            self.conversations[key] = ConversationRecord(
+                session_id=record.session_id,
+                tenant_id=record.tenant_id,
+                user_id=record.user_id,
+                created_at=record.created_at,
+                updated_at=record.updated_at,
+            )
+            return
+        if record.updated_at > existing.updated_at:
+            self.conversations[key] = replace(existing, updated_at=record.updated_at)
+
+    def _summarise(self, record: ConversationRecord) -> ConversationSummary:
+        session_id = record.session_id
+        readable = [
+            message
+            for message in self.messages
+            if message.session_id == session_id and message.kind is not MessageKind.PHASE
+        ]
+        turns = [
+            turn for turn in self.interactions.values() if turn.session_id == session_id
+        ]
+        questions = [
+            message
+            for message in self.messages
+            if message.session_id == session_id
+            and message.role.value == "user"
+            and message.kind is MessageKind.PLAIN_TEXT
+        ]
+        newest_message = max(
+            readable, key=lambda item: (item.created_at, str(item.message_id)), default=None
+        )
+        newest_turn = max(
+            turns, key=lambda item: (item.created_at, str(item.interaction_id)), default=None
+        )
+        earliest_question = min(
+            questions, key=lambda item: (item.created_at, str(item.message_id)), default=None
+        )
+        return ConversationSummary(
+            conversation=record,
+            interaction_count=len(turns),
+            message_count=len(readable),
+            last_message=newest_message,
+            last_status=newest_turn.status if newest_turn is not None else None,
+            title_source=earliest_question.text if earliest_question is not None else None,
+        )
 
     async def delete_session(self, owner: InteractionOwner, session_id: SessionId) -> bool:
         doomed = [
@@ -367,7 +479,7 @@ class SequentialIds:
     """Deterministic identifier factory for reproducible snapshots."""
 
     prefix: str = "id"
-    counter: itertools.count = field(default_factory=lambda: itertools.count(1))
+    counter: Iterator[int] = field(default_factory=lambda: itertools.count(1))
 
     def __call__(self) -> str:
         return f"{self.prefix}-{next(self.counter)}"

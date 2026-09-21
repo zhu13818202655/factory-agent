@@ -14,7 +14,9 @@ from typing import Any, cast
 import sqlalchemy as sa
 from sqlalchemy.sql import Select
 
+from factory_agent.domain import MessageKind, MessageRole
 from factory_agent.persistence.tables import (
+    conversation_table,
     event_table,
     interaction_table,
     message_table,
@@ -79,11 +81,20 @@ def select_messages(
     session_id: str,
     limit: int,
     cursor: tuple[datetime, str] | None = None,
+    exclude_kinds: tuple[str, ...] = (),
 ) -> Select[Any]:
+    """Forward-paged messages of one owned session.
+
+    ``exclude_kinds`` is a pure subtraction applied in SQL rather than after
+    paging, so a page stays dense (a post-filter would return short pages while
+    still advertising a next cursor).
+    """
     statement = sa.select(message_table).where(
         _owned(message_table, tenant_id, user_id),
         message_table.c.session_id == session_id,
     )
+    if exclude_kinds:
+        statement = statement.where(message_table.c.kind.not_in(exclude_kinds))
     if cursor is not None:
         created_at, message_id = cursor
         statement = statement.where(
@@ -139,6 +150,198 @@ def select_interactions(
     return statement.order_by(
         interaction_table.c.created_at.asc(), interaction_table.c.interaction_id.asc()
     ).limit(limit + 1)
+
+
+def select_conversations(
+    tenant_id: str,
+    user_id: str,
+    limit: int,
+    cursor: tuple[datetime, str] | None = None,
+) -> Select[Any]:
+    """One recency-ordered page of an owner's conversations.
+
+    Ordering is ``updated_at DESC, session_id DESC`` — the newest activity
+    first, which is what the history panel shows — and the cursor predicate is
+    therefore strictly *before* the last seen key.
+    """
+    statement = sa.select(conversation_table).where(
+        _owned(conversation_table, tenant_id, user_id)
+    )
+    if cursor is not None:
+        updated_at, session_id = cursor
+        statement = statement.where(
+            sa.tuple_(conversation_table.c.updated_at, conversation_table.c.session_id)
+            < sa.tuple_(sa.literal(updated_at), sa.literal(session_id))
+        )
+    return statement.order_by(
+        conversation_table.c.updated_at.desc(), conversation_table.c.session_id.desc()
+    ).limit(limit + 1)
+
+
+def select_conversation(tenant_id: str, user_id: str, session_id: str) -> Select[Any]:
+    return sa.select(conversation_table).where(
+        _owned(conversation_table, tenant_id, user_id),
+        conversation_table.c.session_id == session_id,
+    )
+
+
+def count_conversations(tenant_id: str, user_id: str) -> Select[Any]:
+    """An owner's conversation count, used to enforce the per-user cap."""
+    return sa.select(sa.func.count()).select_from(conversation_table).where(
+        _owned(conversation_table, tenant_id, user_id)
+    )
+
+
+def insert_conversation(
+    tenant_id: str, user_id: str, session_id: str, *, created_at: datetime
+) -> sa.Insert:
+    """Create a conversation unless it already exists (idempotent).
+
+    ``ON CONFLICT DO NOTHING`` on the ownership-complete primary key is what
+    makes a repeated create-call safe under concurrency: two racing callers
+    cannot produce two rows, and neither gets an error.
+
+    ``RETURNING`` is how the caller learns whether it won: a cursor's
+    ``rowcount`` is not dependable for a conflicting insert (drivers report it
+    as zero even when the row was written), whereas an empty result set means
+    unambiguously "someone else already had it".
+
+    The row is written with the caller's *trusted* ownership pair — it carries no
+    ownership predicate because an insert has no rows to filter, which is why it
+    is deliberately not listed in ``OWNERSHIP_SCOPED_BUILDERS``; a dedicated test
+    proves the values come from the trusted pair instead.
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    return (
+        pg_insert(conversation_table)
+        .values(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[
+                conversation_table.c.tenant_id,
+                conversation_table.c.user_id,
+                conversation_table.c.session_id,
+            ]
+        )
+        .returning(conversation_table.c.session_id)
+    )
+
+
+def touch_conversation(
+    tenant_id: str, user_id: str, session_id: str, *, now: datetime
+) -> sa.Update:
+    """Move a conversation's recency forward, never backward.
+
+    ``GREATEST`` keeps the ordering monotonic: a late commit belonging to an
+    older interaction must not demote a conversation another turn already moved
+    to the top. Missing rows are left alone (the caller inserts instead).
+    """
+    return (
+        sa.update(conversation_table)
+        .where(
+            _owned(conversation_table, tenant_id, user_id),
+            conversation_table.c.session_id == session_id,
+        )
+        .values(
+            updated_at=sa.case(
+                (
+                    conversation_table.c.updated_at > now,
+                    conversation_table.c.updated_at,
+                ),
+                else_=now,
+            )
+        )
+    )
+
+
+def select_conversation_messages(
+    tenant_id: str, user_id: str, session_ids: tuple[str, ...]
+) -> Select[Any]:
+    """Per session: the newest readable message *and* the readable count.
+
+    ``DISTINCT ON (session_id)`` with a descending order yields the newest row
+    of each session; the window count is evaluated over the same phase-filtered
+    partition, so one statement hydrates the whole page's previews and counts.
+    ``phase`` rows are excluded from both: they are stage-progress lines with no
+    value in a history preview, and the frontend already drops them when
+    rendering.
+    """
+    return (
+        sa.select(
+            message_table,
+            sa.func.count().over(partition_by=message_table.c.session_id).label("message_count"),
+        )
+        .distinct(message_table.c.session_id)
+        .where(
+            _owned(message_table, tenant_id, user_id),
+            message_table.c.session_id.in_(session_ids),
+            message_table.c.kind != MessageKind.PHASE.value,
+        )
+        .order_by(
+            message_table.c.session_id,
+            message_table.c.created_at.desc(),
+            message_table.c.message_id.desc(),
+        )
+    )
+
+
+def select_conversation_first_questions(
+    tenant_id: str, user_id: str, session_ids: tuple[str, ...]
+) -> Select[Any]:
+    """Per session: the text of its earliest user question (the title source).
+
+    The earliest row needs the opposite ordering from
+    :func:`select_conversation_messages`, so it cannot share that statement.
+    """
+    return (
+        sa.select(message_table.c.session_id, message_table.c.text)
+        .distinct(message_table.c.session_id)
+        .where(
+            _owned(message_table, tenant_id, user_id),
+            message_table.c.session_id.in_(session_ids),
+            message_table.c.role == MessageRole.USER.value,
+            message_table.c.kind == MessageKind.PLAIN_TEXT.value,
+        )
+        .order_by(
+            message_table.c.session_id,
+            message_table.c.created_at.asc(),
+            message_table.c.message_id.asc(),
+        )
+    )
+
+
+def select_conversation_interactions(
+    tenant_id: str, user_id: str, session_ids: tuple[str, ...]
+) -> Select[Any]:
+    """Per session: the newest interaction *and* the interaction count.
+
+    Same one-statement shape as :func:`select_conversation_messages`; the newest
+    row supplies ``last_status`` for the list preview.
+    """
+    return (
+        sa.select(
+            interaction_table,
+            sa.func.count()
+            .over(partition_by=interaction_table.c.session_id)
+            .label("interaction_count"),
+        )
+        .distinct(interaction_table.c.session_id)
+        .where(
+            _owned(interaction_table, tenant_id, user_id),
+            interaction_table.c.session_id.in_(session_ids),
+        )
+        .order_by(
+            interaction_table.c.session_id,
+            interaction_table.c.created_at.desc(),
+            interaction_table.c.interaction_id.desc(),
+        )
+    )
 
 
 def claim_interaction_run(
@@ -293,12 +496,21 @@ def delete_session(tenant_id: str, user_id: str, session_id: str) -> sa.Delete:
 
 
 #: Statement builders that must always carry the ownership predicate.
+#: ``insert_conversation`` is deliberately absent: an insert has no rows to
+#: filter, it writes the trusted ownership pair as values (see its docstring).
 OWNERSHIP_SCOPED_BUILDERS: tuple[str, ...] = (
     "select_interaction",
     "select_events",
     "select_messages",
     "select_latest_message",
     "select_interactions",
+    "select_conversations",
+    "select_conversation",
+    "count_conversations",
+    "select_conversation_messages",
+    "select_conversation_first_questions",
+    "select_conversation_interactions",
+    "touch_conversation",
     "claim_interaction_run",
     "fail_stale_interaction_run",
     "delete_session",
@@ -309,13 +521,21 @@ __all__ = [
     "OWNERSHIP_SCOPED_BUILDERS",
     "CursorError",
     "claim_interaction_run",
+    "count_conversations",
     "decode_cursor",
     "delete_session",
     "encode_cursor",
     "fail_abandoned_interaction_runs",
     "fail_stale_interaction_runs",
+    "insert_conversation",
+    "select_conversation",
+    "select_conversation_first_questions",
+    "select_conversation_interactions",
+    "select_conversation_messages",
+    "select_conversations",
     "select_events",
     "select_interaction",
     "select_interactions",
     "select_messages",
+    "touch_conversation",
 ]

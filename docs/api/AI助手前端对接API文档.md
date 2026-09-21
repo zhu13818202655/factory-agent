@@ -1,8 +1,8 @@
 # AI 助手前端对接 API 文档
 
 本文档面向工厂 MES 智能问答助手的前端接入（PC 端悬浮小助手 + App 端双入口），描述
-`factory-agent` 对前端提供的全部 HTTP 接口：问答与 SSE 流式返回、历史消息、快捷问题、
-历史/收藏/一键复问、导出下载与健康检查。
+`factory-agent` 对前端提供的全部 HTTP 接口：会话管理（列表 / 新建 / 详情）、问答与 SSE
+流式返回、历史消息、快捷问题、历史/收藏/一键复问、导出下载与健康检查。
 
 文档分界：本文档只描述智能体对前端的 API。智能体调用客户 MES 的接口契约见
 `docs/product/AI问答对外接口-整理.md`；平台统计与租户管理相关接口见
@@ -41,7 +41,8 @@
    `GET /v1/favorites` 展示收藏入口。
 2. 用户提问（或点击快捷问题）时，调用
    `POST /v1/sessions/{session_id}/interactions`，请求体为 `text`（卡片下钻时另带可选
-   `drill`，见 §4.2），返回 201 与 `interaction_id`。`session_id` 由前端生成并维护（见 §3.1）。
+   `drill`，见 §4.2），返回 201 与 `interaction_id`。`session_id` 建议先由
+   `POST /v1/conversations` 创建取得（§4.14），也可由前端自行生成后在首轮建档（见 §3.1）。
 3. 用返回的 `interaction_id` 调用 `GET /v1/interactions/{interaction_id}/stream`
    订阅 SSE 事件流，按 §5 渲染阶段、追问与结果。
 4. 收到终态事件（`interaction.completed` / `interaction.failed` /
@@ -50,8 +51,10 @@
    `GET /v1/artifacts/{artifact_id}/download`，把响应作为文件直接下载/保存（落盘保留，
    保留期内可重复下载）。
 6. SSE 意外断开时，用 `Last-Event-ID` 重连断点续传（§5.1），**不要**重新发起提问。
-7. 刷新页面 / 重新打开面板后，用 `GET /v1/sessions/{session_id}/messages` 恢复聊天内容；
-   跨会话的历史查询入口用 `GET /v1/history`。
+7. 刷新页面 / 重新打开面板后，用 `GET /v1/conversations` 取回自己的历史会话列表，
+   再用 `GET /v1/conversations/{session_id}` 恢复该会话的完整会话流（§4.13 / §4.15）；
+   已知 `session_id` 时也可继续用 `GET /v1/sessions/{session_id}/messages`（§4.5）。
+   跨会话的历史**查询意图**入口用 `GET /v1/history`（与会话列表不是同一概念）。
 8. 收藏的一键复问：`POST /v1/favorites/{favorite_id}/re-ask` 取回保存的查询意图，由前端
    转成自然语言问题后回到第 2 步重新执行。
 
@@ -59,13 +62,21 @@
 
 ### 3.1 Session
 
-一次多轮对话。**服务端没有会话创建、会话列表、会话快照接口**：会话经 interaction 建档，
-`session_id` 是前端生成并传入的路径参数（非空字符串即可，建议 UUID），服务端按
-`(租户, 用户)` 归属记录其下的 interaction 与消息。
+一次多轮对话，服务端按 `(租户, 用户)` 归属记录其下的 interaction 与消息。
 
-- 前端应自行保存使用过的 `session_id`（如本地存储），用于刷新后调用历史消息接口恢复。
-- 会话上下文恢复路径：`GET /v1/sessions/{session_id}/messages`（已知 session_id 时）+
-  `GET /v1/history`（按用户维度的查询历史）。
+会话已成为**一等实体**：会话列表 / 新建会话 / 会话详情由 §4.13–§4.15 提供
+（面向前端的完整交付文档见 `docs/api/会话接口-前端对接.md`）。
+`session_id` 有两种取得方式：① 由 `POST /v1/conversations` 创建并返回（**推荐**）；
+② 老客户端仍可自行生成（非空字符串即可，建议 UUID）并在首轮提问时由服务端自动建档——
+因此**未改造的老前端不需要任何改动，其会话同样会出现在会话列表里**。
+
+- 会话上下文恢复路径：`GET /v1/conversations`（列出自己的历史会话）→
+  `GET /v1/conversations/{session_id}`（取回该会话的完整会话流）；已知 `session_id` 时
+  也可继续用 `GET /v1/sessions/{session_id}/messages`（§4.5）。
+- 前端**不再需要**把 `session_id` 存本地才能恢复历史；本地存储仅可用于记住
+  「上次打开的是哪个会话」这类 UI 记忆。
+- `GET /v1/history`（§4.7）是按用户维度的**查询意图**历史，不含会话维度与原始问句，
+  与会话列表不是同一概念，两者不能互相替代。
 
 ### 3.2 Interaction
 
@@ -105,10 +116,12 @@
 ```json
 {
   "message_id": "msg_xxx",
+  "interaction_id": "it_xxx",
   "role": "assistant",
   "kind": "result_table",
   "sequence": 6,
   "text": "已返回 12 行结果。",
+  "created_at": "2026-09-21T02:15:33+00:00",
   "payload": {
     "capability_id": "fr001_personal_output",
     "columns": ["rq", "huohao", "worktype", "output_qty"],
@@ -138,6 +151,10 @@
 | `error` | 错误/拒绝/取消提示，`text` 为可直接展示的友好文案 | 错误提示气泡 |
 
 `sequence` 为该消息在轮内的单调递增序号，与 SSE 的 `id:` 同源。
+
+`interaction_id` 为该消息所属**轮次**，与 `interactions[]` / SSE 的 `interaction_id` 一一对应；
+`created_at` 为消息创建时间。两者是 2026-09-21 的加法式新增字段（旧前端忽略即可），
+拿到它们才能把消息归回「轮」并按轮展示收尾状态与时间戳（§4.5 / §4.15）。
 
 `payload`（可选，仅 `result_table` 消息返回）：结果卡片元数据，与 `interaction.result`
 事件的字段一致（`capability_id` / `columns` / `row_count` / `incomplete` /
@@ -303,25 +320,37 @@ Query：
   "items": [
     {
       "message_id": "msg_1",
+      "interaction_id": "it_1",
       "role": "user",
       "kind": "plain_text",
       "sequence": 1,
-      "text": "我这个月的工资是多少？"
+      "text": "我这个月的工资是多少？",
+      "created_at": "2026-09-21T02:15:31+00:00"
     },
     {
       "message_id": "msg_2",
+      "interaction_id": "it_1",
       "role": "assistant",
       "kind": "result_table",
       "sequence": 6,
-      "text": "已返回 1 行结果。"
+      "text": "已返回 1 行结果。",
+      "created_at": "2026-09-21T02:15:33+00:00"
     }
   ],
   "next_cursor": null
 }
 ```
 
-- 消息按 `(interaction, sequence)` 归属过滤：只能看到当前身份自己的会话消息；
-  访问他人会话返回 403。
+- 消息按 `(interaction, sequence)` 归属过滤：**只能看到当前身份自己的会话消息**。
+  已认证但**非该会话所有者**的用户拿到的是 `200` + 空列表（`{"items": []}`），
+  既不报错、也不暴露该会话是否存在；只有**凭据本身被拒**（非本厂成员、租户被停用等）才返回
+  `403`（§6.1）。
+- 消息新增 `interaction_id`（所属轮次）与 `created_at`（创建时间）两个字段
+  （加法式变更，旧前端可忽略，定义见 §3.3）。
+- 本接口的响应用 `exclude_none` 序列化：`next_cursor` 为 `null` 时**该键不存在**
+  （会话接口 §4.13 / §4.15 则始终返回该键）。
+- 本接口**保持可用**，但新前端**推荐改用 §4.15 的会话详情**：它是本接口的超集，
+  另含会话元信息与轮次列表，且响应形状固定。
 
 ### 4.6 角色化快捷问题
 
@@ -516,6 +545,96 @@ Query：`limit`（默认 50，上限 200）。响应：`Favorite[]`（结构同�
 - 摘要内容即用户有权查看的数据；投递记录只保留信封（摘要哈希/行数），不留全文。
 - 无真实推送通道前以"按需生成 + 站内/通道记录"交付；真实通道与无人值守 08:00 推送需
   客户确认通道与任务凭据机制后接入。
+
+### 4.13 历史会话列表
+
+`GET /v1/conversations?limit=20&cursor=<opaque>`
+
+- `limit` 默认 20，服务端夹紧到 1–100；`cursor` 取上一页的 `next_cursor`，原样回传
+  （不透明字符串，不要解析或构造）。
+- 排序：`updated_at DESC, session_id DESC`（最近有活动的会话在前）。
+- 响应：`{ "items": [ConversationSummary], "next_cursor": string | null }`。
+  `items: []` 是合法的「该用户还没有历史会话」，**不是错误**（不会 404）。
+- 当前身份**全部**会话都在列表内，包含**从未提问的空会话**（`interaction_count = 0`），
+  并且**不按角色过滤**（角色由凭据决定且相对稳定，会话归属只看「租户 + 用户」）。
+- 列表**不返回消息正文**（只有一行预览），避免一次拉回全部历史；正文按需走 §4.15。
+
+`ConversationSummary`：
+
+```json
+{
+  "session_id": "sess_2f1c9b748a3e4d6f9c216c1f0a7b5e10",
+  "title": "我这个月的工资是多少",
+  "created_at": "2026-09-21T02:15:31+00:00",
+  "updated_at": "2026-09-21T02:18:04+00:00",
+  "message_count": 7,
+  "interaction_count": 2,
+  "last_message": {
+    "role": "assistant",
+    "kind": "result_table",
+    "text": "已返回 1 行结果。",
+    "created_at": "2026-09-21T02:18:04+00:00"
+  },
+  "last_status": "completed"
+}
+```
+
+- `title`：服务端**确定性派生**（取会话最早的 `role=user`/`kind=plain_text` 问句，折叠空白后
+  截断 30 个字符 + `…`），**不可编辑、不调用模型**；无可用消息时为 `null`，
+  前端显示「新对话」。
+- `message_count` **不含 `kind="phase"`**（与前端渲染口径一致）。
+- `last_message`：会话里**最新一条非 `phase` 消息**（`role` / `kind` / `text` / `created_at`），
+  空会话为 `null`。它的 `kind` 可能是 `thinking`（该轮推理原文），列表预览时应改用
+  「思考过程」类占位文案，不要把推理原文当摘要展示。
+  `last_message.text` 是预览文本，最长 200 字符（超出截断补 `…`），完整正文见 §4.15。
+- `last_status`：最近一轮的 `status`（§3.2），空会话为 `null`。
+
+### 4.14 新建会话
+
+`POST /v1/conversations`
+
+请求体**可选**：`{"session_id": "2f1c9b74-..."}`
+（1–128 字符，仅 `[A-Za-z0-9_-]`；**不传则由服务端生成**并返回）。
+
+- 首次创建返回 **`201`**；**幂等**：同一身份下 `session_id` 已存在时返回 **`200`** 与
+  **该会话当前的完整详情**——不新建、不报错、不清空已有消息。连点「新对话」或网络重试都安全。
+- 响应体就是 §4.15 的 `ConversationDetail`，因此**「新建并展示整个会话流」一次请求即可完成**，
+  前端拿到响应后不需要再调 §4.15。
+- 单用户会话数上限 **500**（含空会话）：超出时**不新建**，返回
+  `400 {"detail": "conversation limit reached"}`。上限只在**建档时**校验，
+  **不影响既有会话继续提问**。本期无删除接口，提示文案不要写「请删除旧会话」。
+- 只写会话元数据，**不调用客户 MES、不调用模型、不产生用量计量**。
+
+### 4.15 会话详情（整个会话流）
+
+`GET /v1/conversations/{session_id}?limit=50&cursor=<opaque>&exclude_kinds=phase`
+
+- `limit` 默认 50、上限 200；`exclude_kinds` 为逗号分隔的**排除**列表（只做减法，
+  如 `phase` 或 `phase,thinking`），出现未知取值返回 `400`（`unknown message kind: ...`）。
+- 响应：
+
+```json
+{
+  "conversation": { "...": "ConversationSummary（§4.13）" },
+  "interactions": [ { "...": "ConversationTurn" } ],
+  "messages": [ { "...": "MessageView（§3.3）" } ],
+  "next_cursor": null
+}
+```
+
+- `interactions` 按时间**升序**且**不分页**；`messages` 按 `(created_at, message_id)` 升序，
+  `next_cursor` **只表示 `messages` 还有下一页**（翻页仍用本接口的 `limit` / `cursor`）。
+- `ConversationTurn`：`interaction_id` / `status`（§3.2）/ `state` /
+  `capability_id`（未命中能力时为 `null`）/ `created_at` /
+  `completed_at`（**非终态时为 `null`**）/ `error_category`（非失败为 `null`）。
+- `exclude_kinds` **只影响 `messages`**；`conversation.message_count` 口径不变，不会漂移。
+- 会话不存在**或不属于当前身份** → `404 {"detail": "conversation not found"}`（两者刻意不可区分）。
+- 本接口是 §4.5 的**超集**：§4.5 保持可用且行为不变（仅新增 §3.3 的两个消息字段），
+  但新前端推荐统一使用本接口，避免两套读取路径的渲染差异。
+- C1 / C2 / C3 的响应**稳定返回所有键**（`null` 也显式返回），可直接按固定 TS 类型消费。
+
+> 面向前端的完整交付文档（TS 类型、调用封装、推荐接入流程、联调自查清单）：
+> `docs/api/会话接口-前端对接.md`。
 
 ## 5. SSE 事件
 
@@ -960,11 +1079,11 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 
 | 状态 | 场景 | `detail` 示例 |
 | --- | --- | --- |
-| `400` | 请求错误：文本为空/超长、参数非法 | `interaction text is not acceptable` |
+| `400` | 请求错误：文本为空/超长、参数非法；会话数达上限（§4.14）；`exclude_kinds` 取值非法（§4.15） | `interaction text is not acceptable` / `conversation limit reached` / `unknown message kind: phase_typo` |
 | `422` | 请求体结构校验失败：`drill` 只给了 `time_range_start` 而未给 `time_range_end` 等**成对字段只给一半** | `time_range_start and time_range_end must be sent together` |
 | `401` | 凭据缺失、被拒绝或非法；降级模式下身份头缺失/非法 | `credential header is missing` / `credential was rejected` / `credential is invalid` |
 | `403` | 身份解析拒绝（租户/用户不存在或不可用等） | `unauthenticated` / `not_found` / `forbidden` / `invalid_request` / `internal_error` |
-| `404` | interaction / artifact / history / favorite 不存在，**或属于其他身份**（两者刻意不可区分） | `interaction not found` / `artifact not found` / `not found` |
+| `404` | interaction / conversation / artifact / history / favorite 不存在，**或属于其他身份**（两者刻意不可区分） | `interaction not found` / `conversation not found` / `artifact not found` / `not found` |
 | `502` | token 网关不可用，凭据换取失败 | `token exchange is unavailable` |
 | `503` | 依赖服务未配置或下载失败 | `session service is not configured` / `artifact download failed` |
 
@@ -994,8 +1113,9 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 
 - 请求体永远只有业务内容（问答只有 `text`）；任何身份、租户、范围字段都不要放进
   body 或 query——放了也会被忽略。
-- `session_id` 前端生成并自行保存；服务端不提供会话列表/快照接口，刷新恢复依赖
-  messages + history（§3.1）。
+- `session_id` 建议由 `POST /v1/conversations` 创建取得（§4.14）；也可由前端自行生成并在首轮
+  提问时由服务端自动建档。刷新恢复走会话列表 + 会话详情（§4.13 / §4.15），
+  **不再依赖本地存储**；本地存储仅用于记住「上次打开的是哪个会话」（§3.1）。
 - SSE 的 `id` 必须持久记录到前端状态，作为重连的 `Last-Event-ID`。
 - 按 `kind` 分组件渲染消息；`error` 类消息的 `text` 是可直接展示的友好文案（含权限
   不足时的可查范围说明），不要替换成通用错误话术。

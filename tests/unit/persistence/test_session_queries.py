@@ -11,6 +11,7 @@ DIALECT = postgresql.dialect()
 NOW = datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc)
 TENANT = "tenant-a"
 USER = "user-a"
+SESSIONS = ("s-1", "s-2")
 
 # ``ClauseElement`` rather than ``Executable``: only the former exposes ``compile``.
 Statement = sa.sql.ClauseElement
@@ -28,6 +29,19 @@ OWNERSHIP_STATEMENTS: dict[str, Statement] = {
         TENANT, USER, "s-1", ("result_table",)
     ),
     "select_interactions": queries.select_interactions(TENANT, USER, "s-1", 50),
+    "select_conversations": queries.select_conversations(TENANT, USER, 20),
+    "select_conversation": queries.select_conversation(TENANT, USER, "s-1"),
+    "count_conversations": queries.count_conversations(TENANT, USER),
+    "select_conversation_messages": queries.select_conversation_messages(
+        TENANT, USER, SESSIONS
+    ),
+    "select_conversation_first_questions": queries.select_conversation_first_questions(
+        TENANT, USER, SESSIONS
+    ),
+    "select_conversation_interactions": queries.select_conversation_interactions(
+        TENANT, USER, SESSIONS
+    ),
+    "touch_conversation": queries.touch_conversation(TENANT, USER, "s-1", now=NOW),
     "claim_interaction_run": queries.claim_interaction_run(TENANT, USER, "i-1", NOW),
     "fail_stale_interaction_run": queries.fail_stale_interaction_run(
         TENANT, USER, "i-1", stale_before=NOW, now=NOW, category="executor_lost"
@@ -155,3 +169,81 @@ def test_latest_message_reads_newest_first_one_row_within_the_given_kinds() -> N
     assert "message_id DESC" in sql
     assert "LIMIT 1" in sql
     assert "kind IN ('error', 'result_table')" in sql
+
+
+def test_conversation_page_is_newest_first_with_a_one_row_over_fetch() -> None:
+    sql = compiled(queries.select_conversations(TENANT, USER, 20))
+
+    assert "updated_at DESC" in sql
+    assert "session_id DESC" in sql
+    assert "LIMIT 21" in sql
+
+
+def test_conversation_cursor_walks_strictly_before_the_last_seen_key() -> None:
+    """倒序翻页的游标谓词必须是 `<`，用 `>` 会跳过整页并把首页重复一遍."""
+    sql = compiled(queries.select_conversations(TENANT, USER, 20, (NOW, "s-9")))
+
+    assert "< ('2026-08-24 06:00:00+00:00', 's-9')" in sql
+    assert f"tenant_id = '{TENANT}'" in sql
+
+
+def test_conversation_hydration_is_one_statement_per_source_table() -> None:
+    """列表水合必须是按 session 分组的聚合，不能每个会话查一次（N+1）."""
+    messages = compiled(queries.select_conversation_messages(TENANT, USER, SESSIONS))
+    turns = compiled(queries.select_conversation_interactions(TENANT, USER, SESSIONS))
+
+    # DISTINCT ON 取每会话最新一行，窗口计数在同一语句里给出该会话的条数。
+    assert "DISTINCT ON (agent_message.session_id)" in messages
+    assert "count(*) OVER (PARTITION BY agent_message.session_id)" in messages
+    assert "session_id IN ('s-1', 's-2')" in messages
+    assert "DISTINCT ON (agent_interaction.session_id)" in turns
+    assert "count(*) OVER (PARTITION BY agent_interaction.session_id)" in turns
+
+
+def test_conversation_preview_and_counts_skip_phase_rows() -> None:
+    """过程行不进预览也不计数：它在历史里没有回看价值."""
+    messages = compiled(queries.select_conversation_messages(TENANT, USER, SESSIONS))
+
+    assert "kind != 'phase'" in messages
+
+
+def test_title_source_is_the_earliest_user_question_not_the_newest() -> None:
+    sql = compiled(queries.select_conversation_first_questions(TENANT, USER, SESSIONS))
+
+    assert "created_at ASC" in sql
+    assert "message_id ASC" in sql
+    assert "role = 'user'" in sql
+    assert "kind = 'plain_text'" in sql
+
+
+def test_touch_conversation_never_moves_recency_backwards() -> None:
+    """迟到的提交不能把会话从列表顶部挤下去，所以是 CASE 取较大值."""
+    sql = compiled(queries.touch_conversation(TENANT, USER, "s-1", now=NOW))
+
+    assert "CASE WHEN" in sql
+    assert "updated_at >" in sql
+
+
+def test_message_exclusion_is_applied_in_sql_and_keeps_ownership() -> None:
+    sql = compiled(queries.select_messages(TENANT, USER, "s-1", 50, None, ("phase",)))
+
+    assert "kind NOT IN ('phase')" in sql
+    assert f"tenant_id = '{TENANT}'" in sql
+    assert f"user_id = '{USER}'" in sql
+
+
+def test_insert_conversation_writes_the_trusted_ownership_pair() -> None:
+    """插入语句没有 WHERE 谓词可守，所以单独证明它写入的是可信归属对.
+
+    它因此**不**登记在 ``OWNERSHIP_SCOPED_BUILDERS`` 里（见下一条测试）。
+    """
+    sql = compiled(queries.insert_conversation(TENANT, USER, "s-1", created_at=NOW))
+
+    assert "INSERT INTO agent_conversation" in sql
+    assert f"('{TENANT}', '{USER}', 's-1'" in sql
+    assert "ON CONFLICT (tenant_id, user_id, session_id) DO NOTHING" in sql
+
+
+def test_insert_conversation_is_deliberately_not_ownership_scoped() -> None:
+    """插入写值而不是过滤行，把它登记为 scoped 会让那条不变量名不副实."""
+    assert "insert_conversation" not in queries.OWNERSHIP_SCOPED_BUILDERS

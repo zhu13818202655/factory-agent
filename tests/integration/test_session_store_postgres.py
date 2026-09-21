@@ -10,6 +10,7 @@ Set ``FACTORY_AGENT_TEST_POSTGRES_URL`` to a disposable database to enable it.
 The suite creates and drops its own schema and never touches customer data.
 """
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -462,3 +463,239 @@ async def test_abandoned_sweep_fails_only_unclaimed_pending_once(
         )
         == ()
     )
+
+
+# --- Conversations ---------------------------------------------------------
+
+
+def conversation_message(
+    message_id: str,
+    interaction_id: str,
+    sequence: int,
+    *,
+    session_id: SessionId = SESSION,
+    text: str = "上个月我的产量",
+    role: MessageRole = MessageRole.USER,
+    kind: MessageKind = MessageKind.PLAIN_TEXT,
+    created_at: datetime = NOW,
+    owner: InteractionOwner = OWNER,
+) -> MessageRecord:
+    """A message with a caller-chosen kind, unlike the shared ``message`` helper."""
+    return MessageRecord(
+        message_id=MessageId(message_id),
+        interaction_id=InteractionId(interaction_id),
+        session_id=session_id,
+        tenant_id=owner.tenant_id,
+        user_id=owner.user_id,
+        role=role,
+        kind=kind,
+        sequence=sequence,
+        text=text,
+        payload={},
+        created_at=created_at,
+    )
+
+
+async def test_the_first_commit_creates_the_conversation(store: SqlInteractionStore) -> None:
+    """向后兼容：老前端不调建档接口，只提问，会话也必须出现在列表里."""
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-1"),
+            messages=(conversation_message("m-1", "i-1", 1),),
+        )
+    )
+
+    page = await store.list_conversations(OWNER, limit=10)
+
+    assert len(page.items) == 1
+    summary = page.items[0]
+    assert str(summary.conversation.session_id) == "s-1"
+    assert summary.conversation.created_at == NOW
+    assert summary.interaction_count == 1
+    assert summary.message_count == 1
+    assert summary.title_source == "上个月我的产量"
+    assert summary.last_message is not None
+    assert summary.last_message.kind is MessageKind.PLAIN_TEXT
+    assert summary.last_status is InteractionStatus.PENDING
+
+
+async def test_conversation_aggregates_skip_phase_and_pick_the_newest_rows(
+    store: SqlInteractionStore,
+) -> None:
+    """一次列表水合要给出：非过程行计数、最新消息、最新轮次状态、最早问句."""
+    later = NOW + timedelta(minutes=5)
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-1", last_event_sequence=2),
+            messages=(
+                conversation_message("m-1", "i-1", 1, text="最早的问题"),
+                conversation_message(
+                    "m-2",
+                    "i-1",
+                    2,
+                    role=MessageRole.ASSISTANT,
+                    kind=MessageKind.PHASE,
+                    text="正在取数",
+                    created_at=NOW + timedelta(seconds=1),
+                ),
+                conversation_message(
+                    "m-3",
+                    "i-1",
+                    3,
+                    role=MessageRole.ASSISTANT,
+                    kind=MessageKind.RESULT_TABLE,
+                    text="已返回 1 行结果。",
+                    created_at=NOW + timedelta(seconds=2),
+                ),
+            ),
+        )
+    )
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction(
+                "i-2",
+                status=InteractionStatus.COMPLETED,
+                state=SessionState.ANSWERED,
+                created_at=later,
+            ),
+            messages=(
+                conversation_message("m-4", "i-2", 1, text="第二个问题", created_at=later),
+            ),
+        )
+    )
+
+    summary = await store.get_conversation(OWNER, SESSION)
+
+    assert summary is not None
+    assert summary.interaction_count == 2
+    # 过程行不计入，且不参与「最新消息」的竞争。
+    assert summary.message_count == 3
+    assert summary.last_message is not None
+    assert str(summary.last_message.message_id) == "m-4"
+    assert summary.last_status is InteractionStatus.COMPLETED
+    assert summary.title_source == "最早的问题"
+    assert summary.conversation.updated_at == later
+
+
+async def test_conversation_recency_never_moves_backwards(store: SqlInteractionStore) -> None:
+    """迟到的提交不能把会话从列表顶部挤下去（GREATEST 语义）."""
+    newer = NOW + timedelta(minutes=10)
+    await store.commit(InteractionCommit(interaction=interaction("i-1", created_at=newer)))
+    await store.commit(InteractionCommit(interaction=interaction("i-2", created_at=NOW)))
+
+    summary = await store.get_conversation(OWNER, SESSION)
+
+    assert summary is not None
+    assert summary.conversation.updated_at == newer
+
+
+async def test_conversation_page_is_newest_first_and_never_repeats_a_row(
+    store: SqlInteractionStore,
+) -> None:
+    """游标是「严格早于上一页最后一键」，所以不重不漏地走完整页集合."""
+    for index, minutes in enumerate((30, 20, 10)):
+        await store.commit(
+            InteractionCommit(
+                interaction=interaction(
+                    f"i-{index}",
+                    session_id=SessionId(f"s-{index}"),
+                    created_at=NOW + timedelta(minutes=minutes),
+                )
+            )
+        )
+
+    seen: list[str] = []
+    cursor: str | None = None
+    while True:
+        page = await store.list_conversations(OWNER, limit=2, cursor=cursor)
+        seen.extend(str(summary.conversation.session_id) for summary in page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+
+    assert seen == ["s-0", "s-1", "s-2"]
+
+
+async def test_create_conversation_is_idempotent_and_keeps_messages(
+    store: SqlInteractionStore,
+) -> None:
+    first = await store.create_conversation(OWNER, SESSION, NOW)
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-1"),
+            messages=(conversation_message("m-1", "i-1", 1),),
+        )
+    )
+    again = await store.create_conversation(OWNER, SESSION, NOW + timedelta(minutes=1))
+
+    assert first.created is True
+    assert again.created is False
+    assert again.summary.conversation.created_at == NOW
+    assert again.summary.message_count == 1
+    assert await store.count_conversations(OWNER) == 1
+
+
+async def test_an_empty_conversation_is_listed_before_its_first_question(
+    store: SqlInteractionStore,
+) -> None:
+    created = await store.create_conversation(OWNER, SessionId("s-empty"), NOW)
+
+    page = await store.list_conversations(OWNER, limit=10)
+
+    assert created.summary.interaction_count == 0
+    assert created.summary.last_message is None
+    assert created.summary.last_status is None
+    assert created.summary.title_source is None
+    assert [str(summary.conversation.session_id) for summary in page.items] == ["s-empty"]
+
+
+async def test_conversations_are_invisible_to_other_owners(
+    store: SqlInteractionStore,
+) -> None:
+    await store.commit(InteractionCommit(interaction=interaction("i-1")))
+
+    assert (await store.list_conversations(INTRUDER, limit=10)).items == ()
+    assert await store.get_conversation(INTRUDER, SESSION) is None
+    assert await store.count_conversations(INTRUDER) == 0
+    assert (await store.list_conversations(OTHER_TENANT, limit=10)).items == ()
+    # 归属对也是主键：别人的会话与不存在的会话在详情上不可区分。
+    assert await store.count_conversations(OWNER) == 1
+
+
+async def test_concurrency_creates_exactly_one_conversation_row(
+    store: SqlInteractionStore,
+) -> None:
+    """并发建档靠主键 + ON CONFLICT，而不是「先查后插」."""
+    results = await asyncio.gather(
+        *(store.create_conversation(OWNER, SessionId("s-race"), NOW) for _ in range(5))
+    )
+
+    assert sum(1 for result in results if result.created) == 1
+    assert await store.count_conversations(OWNER) == 1
+
+
+async def test_message_exclusion_is_pushed_into_sql(store: SqlInteractionStore) -> None:
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-1"),
+            messages=(
+                conversation_message("m-1", "i-1", 1),
+                conversation_message(
+                    "m-2",
+                    "i-1",
+                    2,
+                    role=MessageRole.ASSISTANT,
+                    kind=MessageKind.PHASE,
+                    text="正在取数",
+                ),
+            ),
+        )
+    )
+
+    excluded = await store.list_messages(
+        OWNER, SESSION, limit=10, exclude_kinds=frozenset({MessageKind.PHASE})
+    )
+    everything = await store.list_messages(OWNER, SESSION, limit=10)
+
+    assert [str(record.message_id) for record in excluded.items] == ["m-1"]
+    assert [str(record.message_id) for record in everything.items] == ["m-1", "m-2"]

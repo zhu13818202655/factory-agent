@@ -74,6 +74,28 @@ message_table = sa.Table(
     ),
 )
 
+#: One row per conversation, so a conversation exists before its first
+#: question. ``(tenant_id, user_id, session_id)`` is the primary key: the
+#: ownership pair is part of the identity, so no query can address a
+#: conversation without it. ``updated_at`` drives the history-panel ordering and
+#: is indexed descending with the session id to keep the cursor page cheap.
+conversation_table = sa.Table(
+    "agent_conversation",
+    METADATA,
+    sa.Column("tenant_id", sa.Text, primary_key=True),
+    sa.Column("user_id", sa.Text, primary_key=True),
+    sa.Column("session_id", sa.Text, primary_key=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index(
+        "agent_conversation_owner_idx",
+        "tenant_id",
+        "user_id",
+        sa.text("updated_at DESC"),
+        sa.text("session_id DESC"),
+    ),
+)
+
 event_table = sa.Table(
     "agent_interaction_event",
     METADATA,

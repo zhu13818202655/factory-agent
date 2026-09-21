@@ -13,8 +13,10 @@ from typing import Literal, Protocol
 
 from factory_agent.domain import (
     CapabilityId,
+    ConversationRecord,
     InteractionId,
     InteractionRecord,
+    InteractionStatus,
     MessageKind,
     MessageRecord,
     NarrowedFilters,
@@ -86,6 +88,43 @@ class MessagePage:
 class InteractionPage:
     items: tuple[InteractionRecord, ...]
     next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationSummary:
+    """One conversation row plus the aggregates the history panel renders.
+
+    ``title_source`` is the raw text of the conversation's earliest user
+    question — the store hands over the source, and the caller owns the display
+    policy (truncation), so no presentation rule leaks into persistence.
+    ``last_message`` and ``last_status`` describe the newest activity and are
+    ``None`` for a conversation that has never been used.
+    """
+
+    conversation: ConversationRecord
+    interaction_count: int
+    message_count: int
+    last_message: MessageRecord | None
+    last_status: InteractionStatus | None
+    title_source: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationPage:
+    items: tuple[ConversationSummary, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationCreation:
+    """Outcome of an idempotent create: the summary plus whether it was new.
+
+    ``created`` is ``False`` when the conversation already existed, which the
+    API edge turns into ``200`` instead of ``201``.
+    """
+
+    summary: ConversationSummary
+    created: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +241,7 @@ class InteractionStore(Protocol):
         session_id: SessionId,
         limit: int,
         cursor: str | None = None,
+        exclude_kinds: frozenset[MessageKind] = frozenset(),
     ) -> MessagePage: ...
 
     async def latest_message(
@@ -227,6 +267,44 @@ class InteractionStore(Protocol):
         limit: int,
         cursor: str | None = None,
     ) -> InteractionPage: ...
+
+    async def list_conversations(
+        self,
+        owner: InteractionOwner,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage:
+        """One recency-ordered page of an owner's conversations.
+
+        Newest activity first (``updated_at`` descending). A conversation that
+        was created but never used is part of the page — that is the whole point
+        of making it a durable row.
+        """
+        ...
+
+    async def get_conversation(
+        self, owner: InteractionOwner, session_id: SessionId
+    ) -> ConversationSummary | None:
+        """One owned conversation with its aggregates, or ``None``.
+
+        A conversation owned by another identity must be indistinguishable from
+        a missing one; implementations must never widen the ownership filter.
+        """
+        ...
+
+    async def count_conversations(self, owner: InteractionOwner) -> int:
+        """How many conversations this owner has, used to enforce the cap."""
+        ...
+
+    async def create_conversation(
+        self, owner: InteractionOwner, session_id: SessionId, now: datetime
+    ) -> ConversationCreation:
+        """Create the conversation unless it already exists (idempotent).
+
+        Repeated calls, including concurrent ones, must leave exactly one row
+        and never clear existing messages.
+        """
+        ...
 
     async def delete_session(self, owner: InteractionOwner, session_id: SessionId) -> bool: ...
 
@@ -287,6 +365,9 @@ __all__ = [
     "CapabilityRunRequest",
     "CapabilityRunResult",
     "CapabilityRunner",
+    "ConversationCreation",
+    "ConversationPage",
+    "ConversationSummary",
     "InteractionCommit",
     "InteractionOwner",
     "InteractionPage",

@@ -5,13 +5,18 @@ Identity never comes from the request body. The caller presents the encrypted
 at ``/api/system/token`` and yields the authoritative role and bound
 departments (customer contract §2). See ``factory_agent.api.identity`` for the
 degraded header fallback used only when no gateway is configured.
+
+The conversation endpoints (list / create / detail) resolve ownership the same
+way and never accept a tenant, user, or scope field: a conversation belongs to
+the ``(tenant_id, user_id)`` pair the credential resolves to.
 """
 
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Self, cast
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -30,14 +35,33 @@ from factory_agent.application.session import (
     StartRequest,
 )
 from factory_agent.bootstrap import ApplicationContainer
-from factory_agent.domain import InteractionId, SessionId
-from factory_agent.ports import InteractionOwner
+from factory_agent.domain import (
+    InteractionId,
+    InteractionRecord,
+    MessageKind,
+    MessageRecord,
+    SessionId,
+)
+from factory_agent.ports import ConversationSummary, InteractionOwner, InteractionStore
 
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
+
+#: Conversation title budget, counted in Unicode code points so a truncation can
+#: never split a Chinese character in half.
+_TITLE_MAX_CHARS = 30
+#: Per-user conversation cap. A guard against an unbounded row count from a
+#: client that re-creates a conversation on every click, not a real product
+#: limit: 500 is far above any plausible history a worker accumulates.
+_MAX_CONVERSATIONS_PER_USER = 500
+#: Turn pages collected for one conversation detail. Turns are never paginated
+#: in the response (a session holds a handful of them), but the walk is bounded
+#: so a pathological session cannot spin the request forever.
+_MAX_TURN_PAGES = 50
+_TURN_PAGE_SIZE = 200
 
 session_router = APIRouter(
     prefix="/v1", tags=["sessions"], dependencies=[Depends(require_tenant_enabled)]
@@ -101,6 +125,11 @@ class MessageView(BaseModel):
     kind: str
     sequence: int
     text: str
+    #: The turn this message belongs to. Without it a client can only
+    #: concatenate messages linearly and cannot recover each turn's terminal
+    #: status, which is what renders a failed or cancelled turn.
+    interaction_id: str | None = None
+    created_at: str | None = None
     # Result-card metadata for kind=result_table (columns/row_count/artifact_id/
     # incomplete...), so clients can re-render the card after a page reload.
     # Absent for every other kind; omitted when the stored message has none.
@@ -110,6 +139,58 @@ class MessageView(BaseModel):
 class MessagePageView(BaseModel):
     items: list[MessageView]
     next_cursor: str | None = None
+
+
+class ConversationMessagePreviewView(BaseModel):
+    """The newest readable message, used as the list's one-line preview."""
+
+    role: str
+    kind: str
+    text: str
+    created_at: str
+
+
+class ConversationSummaryView(BaseModel):
+    session_id: str
+    #: Derived from the conversation's earliest user question; ``null`` until
+    #: the first question exists. Never user-editable.
+    title: str | None = None
+    created_at: str
+    updated_at: str
+    message_count: int
+    interaction_count: int
+    last_message: ConversationMessagePreviewView | None = None
+    last_status: str | None = None
+
+
+class ConversationPageView(BaseModel):
+    items: list[ConversationSummaryView]
+    next_cursor: str | None = None
+
+
+class ConversationTurnView(BaseModel):
+    """One question-and-answer turn inside a conversation."""
+
+    interaction_id: str
+    status: str
+    state: str
+    capability_id: str | None = None
+    created_at: str
+    completed_at: str | None = None
+    error_category: str | None = None
+
+
+class ConversationDetailView(BaseModel):
+    conversation: ConversationSummaryView
+    interactions: list[ConversationTurnView]
+    messages: list[MessageView]
+    next_cursor: str | None = None
+
+
+class CreateConversationRequest(BaseModel):
+    """Optional client-supplied identifier; nothing else is accepted."""
+
+    session_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def _container(request: Request) -> ApplicationContainer:
@@ -126,9 +207,177 @@ def _service(request: Request) -> SessionService:
     return service
 
 
+def _store(request: Request) -> InteractionStore:
+    store = _container(request).interactions
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="session store is not configured",
+        )
+    return store
+
+
+async def _owner(request: Request) -> InteractionOwner:
+    """The trusted ownership pair for this request, from the credential only."""
+    container = _container(request)
+    credential, _ = await resolve_credential(request)
+    try:
+        authorization = await container.authorization.authorize(credential, container.clock.now())
+    except IdentityRejectionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.code.value) from exc
+    context = authorization.tenant_context
+    return InteractionOwner(tenant_id=context.tenant_id, user_id=context.user_id)
+
+
+def _conversation_not_found() -> HTTPException:
+    """A missing conversation and one owned by another identity are the same."""
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conversation not found")
+
+
 def _not_found() -> HTTPException:
     """Unauthorized access is indistinguishable from a missing interaction."""
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="interaction not found")
+
+
+def _title(source: str | None) -> str | None:
+    """Derive a conversation title without touching a model.
+
+    Titles are cosmetic metadata, and the project's red line is that sensitive
+    business fields never reach an LLM prompt — so the title is the caller's own
+    first question, collapsed and truncated. The text is already persisted
+    verbatim as that user's own ``plain_text`` message, so deriving it exposes
+    nothing new.
+    """
+    if source is None:
+        return None
+    collapsed = " ".join(source.split())
+    if not collapsed:
+        return None
+    if len(collapsed) <= _TITLE_MAX_CHARS:
+        return collapsed
+    return f"{collapsed[:_TITLE_MAX_CHARS]}…"
+
+
+def _message_view(message: MessageRecord) -> MessageView:
+    return MessageView(
+        message_id=str(message.message_id),
+        role=message.role.value,
+        kind=message.kind.value,
+        sequence=message.sequence,
+        text=message.text,
+        interaction_id=str(message.interaction_id),
+        created_at=message.created_at.isoformat(),
+        payload=message.payload or None,
+    )
+
+
+def _turn_view(record: InteractionRecord) -> ConversationTurnView:
+    capability = record.capability_id
+    return ConversationTurnView(
+        interaction_id=str(record.interaction_id),
+        status=record.status.value,
+        state=record.state.value,
+        capability_id=str(capability) if capability is not None else None,
+        created_at=record.created_at.isoformat(),
+        completed_at=record.completed_at.isoformat() if record.completed_at is not None else None,
+        error_category=record.error_category,
+    )
+
+
+def _summary_view(summary: ConversationSummary) -> ConversationSummaryView:
+    record = summary.conversation
+    preview = summary.last_message
+    return ConversationSummaryView(
+        session_id=str(record.session_id),
+        title=_title(summary.title_source),
+        created_at=record.created_at.isoformat(),
+        updated_at=record.updated_at.isoformat(),
+        message_count=summary.message_count,
+        interaction_count=summary.interaction_count,
+        last_message=(
+            ConversationMessagePreviewView(
+                role=preview.role.value,
+                kind=preview.kind.value,
+                # The preview is a one-line list affordance; the full text is
+                # always available from the conversation detail.
+                text=preview.text if len(preview.text) <= 200 else f"{preview.text[:200]}…",
+                created_at=preview.created_at.isoformat(),
+            )
+            if preview is not None
+            else None
+        ),
+        last_status=summary.last_status.value if summary.last_status is not None else None,
+    )
+
+
+def _parse_exclude_kinds(raw: str | None) -> frozenset[MessageKind]:
+    """Turn a comma-separated exclusion list into a validated kind set.
+
+    An unknown kind is a client bug and is rejected rather than ignored: a typo
+    would otherwise silently return the rows the caller asked to hide.
+    """
+    if raw is None:
+        return frozenset()
+    requested = {item.strip() for item in raw.split(",") if item.strip()}
+    known = {kind.value for kind in MessageKind}
+    unknown = sorted(requested - known)
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unknown message kind: {', '.join(unknown)}",
+        )
+    return frozenset(MessageKind(value) for value in requested)
+
+
+async def _conversation_turns(
+    store: InteractionStore, owner: InteractionOwner, session_id: SessionId
+) -> list[InteractionRecord]:
+    """Every turn of one conversation, oldest first.
+
+    The detail response carries turns unpaginated (a session holds a handful),
+    so this walks the paginated store read to completion under a hard bound.
+    """
+    turns: list[InteractionRecord] = []
+    cursor: str | None = None
+    for _ in range(_MAX_TURN_PAGES):
+        page = await store.list_interactions(owner, session_id, _TURN_PAGE_SIZE, cursor)
+        turns.extend(page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    return turns
+
+
+async def _conversation_detail(
+    store: InteractionStore,
+    owner: InteractionOwner,
+    session_id: SessionId,
+    *,
+    limit: int,
+    cursor: str | None,
+    exclude_kinds: frozenset[MessageKind],
+) -> ConversationDetailView:
+    summary = await store.get_conversation(owner, session_id)
+    if summary is None:
+        raise _conversation_not_found()
+    messages = await store.list_messages(owner, session_id, limit, cursor, exclude_kinds)
+    turns = await _conversation_turns(store, owner, session_id)
+    return ConversationDetailView(
+        conversation=_summary_view(summary),
+        interactions=[_turn_view(turn) for turn in turns],
+        messages=[_message_view(message) for message in messages.items],
+        next_cursor=messages.next_cursor,
+    )
+
+
+def _clamp(value: int, lower: int, upper: int) -> int:
+    """Server-side clamp: the client's limit is a preference, never a bound."""
+    return min(max(value, lower), upper)
+
+
+def _new_session_id() -> str:
+    """Server-generated conversation identifier (the client may supply its own)."""
+    return f"sess_{uuid4().hex}"
 
 
 @session_router.post(
@@ -218,36 +467,107 @@ async def list_messages(
     limit: int = 50,
     cursor: str | None = None,
 ) -> MessagePageView:
-    container = _container(request)
-    store = container.interactions
-    if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="session store is not configured",
-        )
-    credential, _ = await resolve_credential(request)
-    try:
-        authorization = await container.authorization.authorize(credential, container.clock.now())
-    except IdentityRejectionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.code.value) from exc
-    owner = InteractionOwner(
-        tenant_id=authorization.tenant_context.tenant_id,
-        user_id=authorization.tenant_context.user_id,
-    )
-    page = await store.list_messages(owner, SessionId(session_id), min(max(1, limit), 200), cursor)
+    store = _store(request)
+    owner = await _owner(request)
+    page = await store.list_messages(owner, SessionId(session_id), _clamp(limit, 1, 200), cursor)
     return MessagePageView(
-        items=[
-            MessageView(
-                message_id=str(message.message_id),
-                role=message.role.value,
-                kind=message.kind.value,
-                sequence=message.sequence,
-                text=message.text,
-                payload=message.payload or None,
-            )
-            for message in page.items
-        ],
+        items=[_message_view(message) for message in page.items],
         next_cursor=page.next_cursor,
+    )
+
+
+@session_router.get("/conversations", response_model=ConversationPageView)
+async def list_conversations(
+    request: Request,
+    limit: int = Query(default=20),
+    cursor: str | None = Query(default=None),
+) -> ConversationPageView:
+    """One recency-ordered page of the caller's own conversations.
+
+    Ownership comes from the credential alone; there is deliberately no
+    parameter for another user's conversations, and none for a role filter
+    (a conversation belongs to a person, not to a role).
+    """
+    store = _store(request)
+    owner = await _owner(request)
+    page = await store.list_conversations(owner, _clamp(limit, 1, 100), cursor)
+    return ConversationPageView(
+        items=[_summary_view(summary) for summary in page.items],
+        next_cursor=page.next_cursor,
+    )
+
+
+@session_router.post(
+    "/conversations",
+    response_model=ConversationDetailView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_conversation(
+    request: Request,
+    response: Response,
+    body: CreateConversationRequest | None = None,
+) -> ConversationDetailView:
+    """Create a conversation, or replay an existing one.
+
+    Idempotent on purpose: a repeated click or a retried request returns the
+    conversation as it actually is (``200``) instead of erroring or, worse,
+    starting an empty duplicate that hides the existing history. The response
+    already carries the whole conversation flow, so a client needs no follow-up
+    read after creating one.
+    """
+    store = _store(request)
+    owner = await _owner(request)
+    requested = body.session_id if body is not None else None
+    session_id = SessionId(requested) if requested is not None else SessionId(_new_session_id())
+    existing = await store.get_conversation(owner, session_id)
+    if existing is not None:
+        response.status_code = status.HTTP_200_OK
+        return await _conversation_detail(
+            store, owner, session_id, limit=50, cursor=None, exclude_kinds=frozenset()
+        )
+    if await store.count_conversations(owner) >= _MAX_CONVERSATIONS_PER_USER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="conversation limit reached",
+        )
+    created = await store.create_conversation(
+        owner, session_id, _container(request).clock.now()
+    )
+    if not created.created:
+        # Lost a race with a concurrent create: the winner's conversation is the
+        # real one, so report it as an existing conversation.
+        response.status_code = status.HTTP_200_OK
+    return await _conversation_detail(
+        store, owner, session_id, limit=50, cursor=None, exclude_kinds=frozenset()
+    )
+
+
+@session_router.get(
+    "/conversations/{session_id}",
+    response_model=ConversationDetailView,
+)
+async def get_conversation(
+    session_id: str,
+    request: Request,
+    limit: int = Query(default=50),
+    cursor: str | None = Query(default=None),
+    exclude_kinds: str | None = Query(default=None),
+) -> ConversationDetailView:
+    """The whole conversation flow: metadata, every turn, and its messages.
+
+    Unlike the message-only route, nulls are sent explicitly (``title: null``,
+    ``last_message: null``, ``payload: null``) so the response has one stable
+    shape a client can type directly.
+    """
+    store = _store(request)
+    owner = await _owner(request)
+    return await _conversation_detail(
+        store,
+        owner,
+        SessionId(session_id),
+        limit=_clamp(limit, 1, 200),
+        cursor=cursor,
+        exclude_kinds=_parse_exclude_kinds(exclude_kinds),
     )
 
 

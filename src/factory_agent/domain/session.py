@@ -213,6 +213,27 @@ class MessageRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationRecord:
+    """Durable conversation row; ownership fields come from trusted context only.
+
+    A conversation used to be implicit: the first ``interaction`` row of a
+    ``session_id`` was its only proof of existence, so a conversation created
+    before its first question could not be listed. This row makes it a
+    first-class entity, which is what the history panel needs (a stable title
+    source, recency ordering, and a deletion/archival anchor later on).
+
+    It carries no business payload: message counts, the newest message, and the
+    last interaction status are derived at read time from their own tables.
+    """
+
+    session_id: SessionId
+    tenant_id: TenantId
+    user_id: UserId
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class SessionEvent:
     """One SSE event with a durable, monotonically increasing sequence."""
 
@@ -332,6 +353,7 @@ __all__ = [
     "TERMINAL_INTERACTION_STATUSES",
     "TERMINAL_STATES",
     "CapabilityIntent",
+    "ConversationRecord",
     "IntentSlots",
     "InteractionRecord",
     "InteractionStatus",
