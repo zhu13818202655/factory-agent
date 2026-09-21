@@ -14,7 +14,15 @@ from factory_agent.ports.contracts import (
     SessionRepository,
     TrustedCredential,
 )
+from factory_agent.ports.mes_progress import (
+    MesFetchProgress,
+    MesFetchProgressSink,
+    publish_mes_fetch_progress,
+    report_mes_fetch_progress,
+)
 from factory_agent.ports.model import (
+    ModelDelta,
+    ModelDeltaKind,
     ModelErrorCategory,
     ModelGateway,
     ModelGatewayError,
@@ -23,6 +31,7 @@ from factory_agent.ports.model import (
     ModelResponse,
     ModelRole,
     ModelStage,
+    ModelStreamGateway,
     ModelUsage,
 )
 from factory_agent.ports.session import (
@@ -61,7 +70,11 @@ __all__ = [
     "MesCallRecord",
     "MesCallRecorder",
     "MesDataSource",
+    "MesFetchProgress",
+    "MesFetchProgressSink",
     "MessagePage",
+    "ModelDelta",
+    "ModelDeltaKind",
     "ModelErrorCategory",
     "ModelGateway",
     "ModelGatewayError",
@@ -70,6 +83,7 @@ __all__ = [
     "ModelResponse",
     "ModelRole",
     "ModelStage",
+    "ModelStreamGateway",
     "ModelUsage",
     "ResolvedPrincipal",
     "SessionRecord",
@@ -78,4 +92,6 @@ __all__ = [
     "TenantRegistryRecord",
     "TrustedCredential",
     "UsageEvent",
+    "publish_mes_fetch_progress",
+    "report_mes_fetch_progress",
 ]

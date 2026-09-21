@@ -119,3 +119,32 @@ def test_no_filters_pass_scope_through_unchanged() -> None:
 
     assert narrowed.employee_ids == scope.employee_ids
     assert narrowed.dept_ids == scope.dept_ids
+
+
+def owner_scope() -> DataScope:
+    """99 老板：本地只持有最小可证范围，全厂范围由 MES 行级过滤给出."""
+    return DataScope(
+        tenant_id=TenantId("tenant-a"),
+        employee_ids=employees("e-owner"),
+        dept_ids=depts("g-own"),
+        evaluated_at=AS_OF,
+        scope_version=ScopeVersion("v1"),
+        mes_filtered=True,
+    )
+
+
+def test_owner_factory_wide_dept_filter_is_not_intersected() -> None:
+    """老板点任意车间下钻：请求部门原样作为收窄条件下发，不做交集判定."""
+    narrowed = FilterNarrower().narrow(owner_scope(), dept_ids=depts("001"))
+
+    assert narrowed.dept_ids == depts("001")
+    assert narrowed.requested_dept_ids == depts("001")
+
+
+def test_manager_dept_filter_outside_bound_set_is_still_rejected() -> None:
+    """同一请求对 02 管理仍必须拒绝：绑定部门之外不可查（本地子集校验不变）."""
+    scope = scoped_scope()
+    assert scope.mes_filtered is False
+
+    with pytest.raises(FilterRejectionError):
+        FilterNarrower().narrow(scope, dept_ids=depts("g99"))

@@ -40,8 +40,8 @@
 1. 打开助手面板时，调用 `GET /v1/quick-questions` 拉取当前角色的快捷问题按钮；可选调用
    `GET /v1/favorites` 展示收藏入口。
 2. 用户提问（或点击快捷问题）时，调用
-   `POST /v1/sessions/{session_id}/interactions`，请求体只有 `text` 一个字段，返回 201
-   与 `interaction_id`。`session_id` 由前端生成并维护（见 §3.1）。
+   `POST /v1/sessions/{session_id}/interactions`，请求体为 `text`（卡片下钻时另带可选
+   `drill`，见 §4.2），返回 201 与 `interaction_id`。`session_id` 由前端生成并维护（见 §3.1）。
 3. 用返回的 `interaction_id` 调用 `GET /v1/interactions/{interaction_id}/stream`
    订阅 SSE 事件流，按 §5 渲染阶段、追问与结果。
 4. 收到终态事件（`interaction.completed` / `interaction.failed` /
@@ -95,7 +95,8 @@
 `parsing`（解析）→ `clarifying`（追问）/ `authorizing`（鉴权）→ `executing`（取数）→
 `composing`（计算）→ `answered`（已回答）；终态另有 `cancelled`、`failed`、`archived`。
 前端可将 `state` 与阶段文案的映射用于进度展示：阶段**变化**以 `interaction.phase` 为准，
-阶段**进行中**以 `interaction.progress` 为准（§5.2）。
+阶段**进行中**以 `interaction.progress` 为准（§5.2），思考过程以 `interaction.thinking`
+为准（§5.2）。
 
 ### 3.3 Message
 
@@ -116,6 +117,7 @@
     "incomplete": false,
     "incomplete_reason": null,
     "artifact_id": "art_xxx",
+    "time_range": { "start": "2026-09-14T16:00:00+00:00", "end": "2026-09-18T16:00:00+00:00", "label": "2026-09-15 至 2026-09-18" },
     "consistency": null
   }
 }
@@ -131,6 +133,7 @@
 | `chat` | 闲聊应答文本（问候/闲聊/常识问答等非业务轮，`role=assistant`，`text` 为可直接展示的回复） | 普通气泡，按 assistant 展示 |
 | `clarification` | 助手追问（缺时间、款号等条件时） | 追问气泡，引导用户补充 |
 | `phase` | 阶段变化记录 | 可折叠的过程信息 |
+| `thinking` | 本轮推理原文（思考过程）**全文**，`role=assistant`，`payload.elapsed_ms` 为本轮累计思考耗时 | 折叠块「思考过程 · Ns」，默认收起，展开显示 `text` |
 | `result_table` | 结果卡片消息，`text` 为结果摘要（如"已返回 N 行结果。"） | 结果卡片 |
 | `error` | 错误/拒绝/取消提示，`text` 为可直接展示的友好文案 | 错误提示气泡 |
 
@@ -138,12 +141,13 @@
 
 `payload`（可选，仅 `result_table` 消息返回）：结果卡片元数据，与 `interaction.result`
 事件的字段一致（`capability_id` / `columns` / `row_count` / `incomplete` /
-`incomplete_reason` / `artifact_id` / `consistency`，并同样携带可选的 `card`
+`incomplete_reason` / `artifact_id` / `consistency` / `time_range`，并同样携带可选的 `card`
 结构化卡片，见 §5.3）。前端可用它**重建结果卡片**：渲染卡片/KPI/预览行、列名、
 行数与完整性标记，并凭 `artifact_id` 提供导出入口；消息无 payload（如早期
 版本写入的记录）时该字段省略，前端回退为仅展示 `text` 摘要。SSE 事件不含 `payload`
 字段，两者互不影响。**`payload.card` 与该轮 `interaction.result` 的 `data.card`
-是同一份数据**，实时、断线重放与历史消息三路渲染结果完全一致。
+是同一份数据**，实时、断线重放与历史消息三路渲染结果完全一致；`payload.time_range`
+同样如此，因此**刷新页面后从历史点击下钻依然能拿到原窗口**（§4.2）。
 
 ### 3.4 Artifact（导出产物）
 
@@ -200,8 +204,9 @@
 - 请求体除 `text` 外仅有一个可选字段 `drill`（结构化下钻，见下）；**不要携带任何身份、租户、范围字段**。
 - `session_id` 由前端生成，首轮即视为建档该会话。
 
-**可选字段 `drill`（结构化下钻，2026-09-16 拍板）**：用户点击结果卡片上的下钻入口
-（`card.actions`，§5.3.1）时，前端把被点行的列值填入槽位发起本轮请求：
+**可选字段 `drill`（结构化下钻，2026-09-16 拍板；时间窗口于 2026-09-20 补齐，D-7）**：
+用户点击结果卡片上的下钻入口（`card.actions`，§5.3.1）时，前端把被点行的列值填入槽位，
+并把**该卡回显的时间窗口**原样带上，发起本轮请求：
 
 ```json
 {
@@ -209,7 +214,8 @@
   "drill": {
     "capability_id": "fr008_payroll_ranking",
     "dept_ids": ["001"],
-    "time_expression": "本月"
+    "time_range_start": "2026-09-14T16:00:00+00:00",
+    "time_range_end": "2026-09-18T16:00:00+00:00"
   }
 }
 ```
@@ -219,7 +225,13 @@
 | `drill.capability_id` | 必填，下钻目标能力（与 `card.actions[].capability_id` 一致）；未登记的能力返回 400 |
 | `drill.dept_ids` | 可选，目标车间/小组编号数组（来自被点行的 `bind_from` 映射列）；最多 20 个 |
 | `drill.employee_uid` | 可选，目标员工工号（成员工资条下钻，fr012） |
-| `drill.time_expression` | 可选，时间范围表述（如 `本月`）；缺席时默认当月 |
+| `drill.time_range_start` / `drill.time_range_end` | **可选，但必须成对**：值原样取自上一轮结果的 `card.time_range.start` / `card.time_range.end`（§5.3.1），ISO 8601 带时区（UTC 半开区间，`end` 为排他上界）。只给一半返回 **422**（客户端缺陷，服务端不猜边界）。**强烈建议前端总是回传**，否则下钻可能落到另一个窗口 |
+| `drill.time_expression` | 可选，时间范围表述（如 `本月`）；**当 `time_range_start/end` 同时存在时它只是展示标签**，不参与取数窗口决策 |
+
+**时间窗口择优顺序（服务端）**：`time_range_start/end` 回显窗口 → `time_expression` →
+**同会话最近一次结果的窗口**（用户没提时间时自动继承，如「那后道车间呢？」）→ 当月兜底。
+回传窗口同样过取数红线（单窗上限 / 不晚于明天 / 起止非倒置），违规以
+`interaction.failed`（`error_category = drill_invalid_time`）终结，**零业务调用**。
 
 服务端在下钻轮次上**跳过 LLM 意图路由**（确定性执行、零模型开销），并对槽位做三道校验：
 能力在角色矩阵内、槽位键白名单、值只收窄（部门/员工必须在调用者可查范围内）。越界时本轮
@@ -237,7 +249,8 @@
 }
 ```
 
-错误：`400`（文本为空/超长）、`401`（凭据缺失/无效）、`403`（身份解析拒绝）、
+错误：`400`（文本为空/超长、`capability_id` 未登记）、`422`（请求体结构校验失败，如 `drill`
+只给了 `time_range_start` 而未给 `time_range_end`）、`401`（凭据缺失/无效）、`403`（身份解析拒绝）、
 `502`（token 网关不可用）、`503`（会话服务未配置）。
 
 ### 4.3 订阅事件流（SSE）
@@ -532,6 +545,7 @@ data: {JSON}
 | `interaction.started` | 本轮开始 | 否 |
 | `interaction.phase` | 阶段**完成**推进（`status` 为 `ok`） | 否 |
 | `interaction.progress` | 某阶段**进行中**（`status` 为 `running`），用于填充长耗时阶段的等待 | 否 |
+| `interaction.thinking` | 推理原文分片（思考过程增量），按到达顺序拼接 | 否 |
 | `interaction.clarification` | 追问补全参数 | 否 |
 | `interaction.answer` | 闲聊应答全文（问候/闲聊/常识问答） | 否 |
 | `interaction.result` | 结果卡片数据 | 否 |
@@ -594,6 +608,56 @@ data: {"state":"parsing","reason":"parse_started","stage":"解析中","status":"
 - 闲聊与追问轮次只会出现 `解析中`：这两条路径没有任何业务取数。
 - 随后照常收到 `interaction.phase`（`stage` 为 `鉴权`/`取数`/`计算`），表示对应阶段已结束。
 
+`interaction.thinking`（推理原文，实时思考过程）：
+
+```text
+id: 3
+event: interaction.thinking
+data: {"text":"正在理解您的问题，确认要查询的内容。","seq":1,"done":false,"elapsed_ms":180}
+
+id: 4
+event: interaction.thinking
+data: {"text":"\n本次查询：个人产量统计。","seq":2,"done":false,"elapsed_ms":640}
+
+id: 8
+event: interaction.thinking
+data: {"text":"","seq":6,"done":true,"elapsed_ms":12400}
+```
+
+用户提问后到结果卡片之间的等待，分为两种：**模型正在判断**（意图解析、权限校验）和
+**工厂系统正在返回数据**（取数）。两者都不产生其他过程事件，用户在十几秒内看不到任何变化。
+`interaction.thinking` 用**旁白**填满这段等待：内容是对当前正在做什么的实时描述，随生成
+逐片下发，前端拼接后即为完整思考原文。分片可能来自模型（措辞自由，事实受限），也可能来自
+服务端已确定的事实（阶段名、查询标题、时间范围、可查询范围、取数分页进度），两者拼在同一条
+`text` 里。
+
+字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `text` | `string` | 非最后一片必填 | 本片**增量**（delta），非全量。前端按**到达顺序拼接**，勿按 `seq` 重排。单帧 ≤200 字符，整轮累计 ≤8000 字符。换行已转义为 `\n` |
+| `seq` | `integer` | 是 | 分片序号。同一轮内从 **1** 开始、严格递增、不跳号不重复。前端据此去重（重复 `seq` 只保留首次） |
+| `done` | `boolean` | 最后一片必须为 `true` | 是否为本轮推理的最后一片 |
+| `elapsed_ms` | `integer` | 否 | 自本轮开始至今的**累计**思考耗时（毫秒），不是与上一片的间隔 |
+| `truncated` | `boolean` | 否 | 仅最后一片可能为 `true`：累计长度达上限被截断，此时建议提示「推理过程已截断」 |
+
+前端处理要点：
+
+- **默认收起**，折叠态只显示一行「思考过程 · Ns」（`Ns` 由 `elapsed_ms` 换算）；收到
+  `done:true` 或 `interaction.result` 后自动收起。点击展开/收起，**所有角色一致，不做权限区分**。
+- 流式期间可自动展开并滚动到底部；建议按约 **80ms** 合并分片批量刷新，不必逐帧重绘。
+- 三种合法组合：非空 `text` + 无/`false` `done` → 拼接；空 `text` + `true` → 标记结束；
+  非空 `text` + `true` → 拼接后结束。**空 `text` 且 `done` 不为 `true` 的帧请忽略**，不要新建消息。
+- 帧的 `id:` 单调递增**先于** `interaction.result` 的 `id`；本轮结束后不会再收到该轮的
+  `interaction.thinking`。刷新页面后，完整原文来自 §4.5 历史消息中 `kind="thinking"` 的消息
+  （§3.3），默认同样收起。
+- 该事件**不进 xlsx 导出**，与结果卡片无关。默认**每一轮都会发**（含闲聊与追问轮）；仅当服务端
+  关闭该功能时才完全不出现，因此前端应把它当作**可选**事件处理，不能在缺少它时阻塞渲染。
+
+> **关闭开关**：服务端配置 `session_thinking_enabled=false` 时整轮不再下发
+> `interaction.thinking`，也不会写入 `kind="thinking"` 消息。前端无需感知，按上述「无则忽略」
+> 处理即可。
+
 `interaction.clarification`（缺时间、款号、小组等条件时的追问）：
 
 ```text
@@ -627,6 +691,7 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","s
 | `incomplete_reason` | 不完整原因（如 `pagination_*`、`metric_unavailable:*`），`null` 表示完整 |
 | `artifact_id` | 导出产物 ID；为 `null` 表示本次未生成导出，不展示导出按钮 |
 | `answer` | 由模型结合用户问题与结果元数据生成的一句自然语言回答，可直接展示在结果卡片上方；**空结果（`row_count=0` 且 `incomplete=false`）表示该时间范围内没有查询到相关记录，属正常结果，前端不应展示"不完整"样式**。字段不出现或为空时按旧形态兼容处理 |
+| `time_range` | **本轮真实取数窗口**（2026-09-20 D-7 新增，可缺席）：`{start, end, label, expression?}`。`start`/`end` 是服务端**执行时实际使用**的规范半开 UTC 区间（ISO 8601 带时区，`end` 为排他上界）；`label` 为工厂本地包含式展示对（如 `2026-09-15 至 2026-09-18`），**建议直接显示在卡片标题旁**；`expression` 仅在窗口由受审时间短语解析而来时出现（如 `上个月`）。**下钻时前端应把 `start`/`end` 原样回传给 `drill.time_range_start` / `drill.time_range_end`（§4.2）**，否则下钻会落到另一个窗口。空结果轮次同样带此字段（供同会话后续轮次继承） |
 
 事件携带结果元数据（列定义、行数、完整性、导出入口），并可选携带结构化卡片 `card`
 （§5.3.1，含 KPI 区与预览行）；预览行以外的行级明细数据在导出文件中。持久化的
@@ -678,6 +743,7 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","s
   "actions": [
     { "type": "drill", "label": "查看该成员的工资", "capability_id": "fr012_employee_payroll", "bind_from": { "employee_uid": "uid" } }
   ],
+  "time_range": { "start": "2026-09-14T16:00:00+00:00", "end": "2026-09-18T16:00:00+00:00", "label": "2026-09-15 至 2026-09-18" },
   "totals": [ { "label": "工资金额", "unit": "元", "value": "321000" } ],
   "unavailable_columns": ["日均工资"],
   "notes": ["本次结果不完整（pagination_total_drift），以导出文件为准。"]
@@ -697,6 +763,7 @@ data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","s
 | `table.page` / `page_size` / `has_more` | **分页三字段**（总是同时下发）：预览模式下固定 `page=1`，`page_size` = 预览行上限，`has_more` 派生自 `truncated`；完整行走导出文件 |
 | `chart` | **图表区**（可缺席）：`type` 本期仅 `"bar"`（枚举位预留）；`granularity` 为 `day`/`week`——日粒度点数超过 62 时服务端自动降为周粒度（`label` 为周起始日），**前端零聚合逻辑**；`points[]` 每项 `{label, value}`，`label` 为原始日期（`MM-DD`），本地化展示由前端负责；`points` 已按服务端排好序；无数据时整个 `chart` 区块缺席（不下发空数组） |
 | `actions` | **卡片级下钻声明**（可缺席）：`{type: "drill", label, capability_id, bind_from}`；`bind_from` 为「下钻槽位键 → 结果列名」映射（如 `{"dept_ids": "dept"}`、`{"employee_uid": "uid"}`）——用户点击某行时，前端从该行取对应列值填入 `drill` 载荷（§4.2）发起新一轮请求。**纯提示性字段**：前端忽略它零行为变化；无权角色不会收到对应入口（服务端按角色裁剪） |
+| `time_range` | **本轮真实取数窗口**（2026-09-20 D-7 新增，可缺席）：与同一轮的 `interaction.result` 顶层 `time_range` **是同一份数据**（`{start, end, label, expression?}`，见 §5.3）。前端点击下钻时应把它原样回传给 `drill.time_range_start` / `drill.time_range_end`（§4.2）——这是「下钻进用户看到的那一个窗口」的唯一依据，`expression` 只是展示标签，服务端不会用它重新解算窗口 |
 | `table.alert_marker` | 语义高亮：`{column, equals}`——行内该列值等于 `equals` 时整行标红。**当前无能力使用**（原 FR-009 交期预警随生产计划接口弃用而取消，2026-09-15）；字段保留以便将来有新的预警列时复用 |
 | `totals` | 合计区（卡片底部），结构同 `metrics` |
 | `unavailable_columns` | 无数据源的 KPI 列中文名列表 |
@@ -755,8 +822,9 @@ data: {"text":"你好呀！我是工厂助手，有什么可以帮你的吗？"}
 - `text`：可直接展示的回复全文。涉及实时或无法核实的信息（如今天的天气、实时行情）时，
   回复会说明"无法获取实时数据"，不会编造，也不会查询任何工厂数据。
 - 闲聊轮事件序列：`interaction.started` → `interaction.progress`（仅 `解析中`）→
-  `interaction.answer` → `interaction.completed`（`status` 为 `"completed"`），既无
-  `interaction.phase` 也无 `interaction.result`；不占用追问轮次，不进入查询历史/收藏。
+  [`interaction.thinking`（若服务端开启，§5.2）] → `interaction.answer` →
+  `interaction.completed`（`status` 为 `"completed"`），既无 `interaction.phase` 也无
+  `interaction.result`；不占用追问轮次，不进入查询历史/收藏。
 - 回复同时以 `role=assistant`、`kind=chat` 消息持久化，历史消息接口（§4.5）可取回。
 
 ### 5.5 失败与取消事件
@@ -783,8 +851,9 @@ data: {"interaction_id":"it_xxx","error_category":"forbidden"}
 | `forbidden` | 能力不在当前角色可用范围（能力-角色矩阵拒绝，附友好提示与可查范围） |
 | `forbidden_*` | 执行层范围规则拒绝（如查询范围超出当前角色可查范围、越权绑定部门/员工等） |
 | `filter_*` | 订单号/款号/小组等业务条件解析失败或超出可查范围 |
-| `time_range_missing` | 缺少时间条件且无法追问补全 |
+| `time_range_missing` | 缺少时间条件，且**同会话也没有可继承的窗口**（只有在没有任何前序结果可参照时才追问/终止） |
 | `time_range_exceeds_limit` | 时间范围超过近一年上限（友好终止，不发起取数） |
+| `drill_invalid_time` | 结构化下钻携带的时间窗口不可用（起止倒置 / 超上限 / 落在未来）；零业务调用，文案「下钻时间范围无法识别，请重新发起查询。」 |
 | `clarification_exhausted` | 追问轮次用尽 |
 | `capability_unresolved` / `capability_unregistered` | 意图无法落到已注册能力 |
 | `gateway_*` / `model_output_invalid` | 模型调用失败或输出校验失败 |
@@ -811,36 +880,79 @@ event: interaction.progress
 data: {"state":"parsing","reason":"parse_started","stage":"解析中","status":"running","duration_ms":12}
 
 id: 3
-event: interaction.progress
-data: {"state":"parsing","reason":"authorize_started","stage":"权限检查中","status":"running","duration_ms":1180}
+event: interaction.thinking
+data: {"text":"正在理解您的问题，确认要查询的内容。","seq":1,"done":false,"elapsed_ms":15}
 
 id: 4
 event: interaction.progress
-data: {"state":"parsing","reason":"scope_resolution_started","stage":"核对数据范围","status":"running","duration_ms":1590}
+data: {"state":"parsing","reason":"authorize_started","stage":"权限检查中","status":"running","duration_ms":1180}
 
 id: 5
+event: interaction.thinking
+data: {"text":"\n正在核对权限与可查询范围。","seq":2,"done":false,"elapsed_ms":1200}
+
+id: 6
+event: interaction.progress
+data: {"state":"parsing","reason":"scope_resolution_started","stage":"核对数据范围","status":"running","duration_ms":1590}
+
+id: 7
+event: interaction.thinking
+data: {"text":"\n本次查询：全厂订单进度。","seq":3,"done":false,"elapsed_ms":1620}
+
+id: 8
+event: interaction.thinking
+data: {"text":"\n时间范围：2026-09-01 至 2026-09-18。","seq":4,"done":false,"elapsed_ms":1630}
+
+id: 9
+event: interaction.thinking
+data: {"text":"\n正在向工厂系统取数，数据量大时会逐页取回。","seq":5,"done":false,"elapsed_ms":1650}
+
+id: 10
 event: interaction.phase
 data: {"state":"authorizing","reason":"intent_complete","stage":"鉴权","status":"ok","duration_ms":1880}
 
-id: 6
+id: 11
 event: interaction.phase
 data: {"state":"executing","reason":"authorized","stage":"取数","status":"ok","duration_ms":1895}
 
-id: 7
+id: 12
+event: interaction.thinking
+data: {"text":"\n正在逐页取回数据：已取回 2,000 行，共 12,000 行（第 1 页）","seq":6,"done":false,"elapsed_ms":2600}
+
+id: 13
+event: interaction.thinking
+data: {"text":"\n正在逐页取回数据：已取回 8,000 行，共 12,000 行（第 3 页）","seq":7,"done":false,"elapsed_ms":3200}
+
+id: 14
+event: interaction.heartbeat
+data: {"interaction_id":"it_xxx"}
+
+id: 15
 event: interaction.phase
 data: {"state":"composing","reason":"execution_complete","stage":"计算","status":"ok","duration_ms":3600}
 
-id: 8
+id: 16
+event: interaction.thinking
+data: {"text":"\n正在汇总本次结果并生成答复。","seq":8,"done":false,"elapsed_ms":3620}
+
+id: 17
+event: interaction.thinking
+data: {"text":"","seq":9,"done":true,"elapsed_ms":3650}
+
+id: 18
 event: interaction.result
 data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","style_code","product_name","bed_code","cut_date","package_count","cut_qty","finished_packages","progress_ratio","worktype_count","finish_state"],"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx"}
 
-id: 9
+id: 19
 event: interaction.completed
 data: {"interaction_id":"it_xxx","status":"completed"}
 ```
 
 顺序要点：`interaction.progress` 永远出现在它所描述的耗时工作**之前**，
 `interaction.phase` 出现在该阶段**结束**时；两者成对理解，不要把 `progress` 当成阶段完成。
+`interaction.thinking` 分片穿插在这两段等待中，**全部**早于 `interaction.result`（最后一片
+`done:true` 之后不再有本轮分片）；`seq` 只在本轮内递增，与帧的 `id:` 不是同一个计数器
+（例：`seq=9` 对应 `id: 17`）。`interaction.heartbeat` 可出现在任意位置，前端忽略即可。
 
 ## 6. 错误码约定
 
@@ -849,6 +961,7 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 | 状态 | 场景 | `detail` 示例 |
 | --- | --- | --- |
 | `400` | 请求错误：文本为空/超长、参数非法 | `interaction text is not acceptable` |
+| `422` | 请求体结构校验失败：`drill` 只给了 `time_range_start` 而未给 `time_range_end` 等**成对字段只给一半** | `time_range_start and time_range_end must be sent together` |
 | `401` | 凭据缺失、被拒绝或非法；降级模式下身份头缺失/非法 | `credential header is missing` / `credential was rejected` / `credential is invalid` |
 | `403` | 身份解析拒绝（租户/用户不存在或不可用等） | `unauthenticated` / `not_found` / `forbidden` / `invalid_request` / `internal_error` |
 | `404` | interaction / artifact / history / favorite 不存在，**或属于其他身份**（两者刻意不可区分） | `interaction not found` / `artifact not found` / `not found` |
@@ -873,7 +986,9 @@ data: {"interaction_id":"it_xxx","status":"completed"}
   也无需为进度事件另设超时。
 - `401` 出现时引导用户重新进入（凭据由宿主系统刷新）；`502` 可提示稍后重试。
 - 时间范围约束：查询上限为**近一年**（366 天），超范围请求不会取数，直接以友好提示
-  终止（§5.5 `time_range_exceeds_limit`）。
+  终止（§5.5 `time_range_exceeds_limit`）。**下钻回传的窗口（`drill.time_range_start/end`）同样受此约束**
+  （起止倒置 / 超上限 / 落在未来一律拒绝，以 `drill_invalid_time` 终结），因此回传时应原样转发服务端
+  给出的窗口，不要在前端做日期换算或"顺手修正"。
 
 ## 7. 前端实现注意事项
 
@@ -890,6 +1005,10 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 - 异常高亮（「异常数据自动高亮」）依赖结果里的标记字段 + `card.table.alert_marker`：
   后端只下发标记，前端自行渲染样式。**当前没有能力下发标记字段**（原订单进度交期预警随生产计划
   接口弃用而取消，2026-09-15），待客户提供交期字段后再恢复。
+- **卡片下钻的时间窗口（§4.2 / §5.3.1）**：点击卡片行下钻时，除用 `bind_from` 从该行取槽位值外，
+  还要把该卡的 `card.time_range`（或同轮 `interaction.result.time_range`）原样回传为
+  `drill.time_range_start` / `drill.time_range_end`，否则下钻会落到与卡片不同的窗口（退回当月）。
+  两个字段必须成对发送；后端未回显该字段时（旧版本）忽略即可，**不要自行编造窗口**。
 - 导出落盘保留（默认 90 天，重启后保留期内仍可下载）：点击导出时调
   `GET /v1/artifacts/{artifact_id}/download`，把响应当作文件直接下载/保存；收到 404
   （已过期/被清理）时走历史/收藏一键复问重新生成。

@@ -163,6 +163,24 @@ class FactoryAgentSettings(BaseSettings):
     #: the periodic sweep; the startup sweep always runs.
     session_sweep_interval_seconds: float = Field(default=300.0, ge=0.0)
 
+    # Reasoning transcript (``interaction.thinking``): the running narration that
+    # covers the windows a slow answer would otherwise spend in silence.
+    # Distinct from ``llm_thinking_enabled`` above, which is the *model's* own
+    # reasoning-mode policy; this group governs what the caller is shown.
+    session_thinking_enabled: bool = True
+    session_thinking_timeout_seconds: float = Field(default=20.0, gt=0.0)
+    #: Poll interval of the interleaving loop: how often the pipeline looks at
+    #: the accumulated transcript and at the pager's counters while a step is
+    #: still in flight. Bounds how late a landed page can appear, and costs one
+    #: wakeup per tick when nothing has changed.
+    session_thinking_tick_seconds: float = Field(default=0.25, gt=0.0)
+    session_thinking_max_output_tokens: int = Field(default=160, gt=0)
+    #: Alias the narration call runs on. ``factory-fast`` rather than the
+    #: summary alias on purpose: narration runs in parallel with the real work,
+    #: so it must not queue behind — or contend for a deployment with — the call
+    #: it is describing.
+    llm_thinking_stream_alias: str = "factory-fast"
+
     #: ``usage_event`` is range-partitioned by month, so a write can only land in
     #: a partition that already exists. This job keeps the current and the
     #: following month present (startup + every interval), so crossing a month

@@ -22,6 +22,7 @@ from factory_agent.domain import (
     DeptId,
     EmployeeId,
     Identity,
+    Role,
     ScopeVersion,
     TenantContext,
     TenantId,
@@ -105,8 +106,9 @@ class AuthorizationService:
 
     The computed scope is the minimal provable range: the caller's own
     employee ID plus their current departments. Wider visibility comes only
-    from MES-side row filtering, recorded as ``mes_filtered`` at the adapter
-    boundary — never claimed here.
+    from MES-side row filtering, recorded as ``mes_filtered`` — set here from
+    the authoritative token role (99 老板 = whole tenant), never claimed as a
+    locally proven range.
     """
 
     def __init__(
@@ -140,13 +142,19 @@ class AuthorizationService:
         bind_tenant_id(str(tenant_context.tenant_id))
         dept_ids = await self._current_depts(membership)
         version = self._versions.new_version()
+        # 99 老板是最高权限：他的可见范围就是整个工厂，而这个范围不可能在本地被
+        # "证明"——基础数据接口对任何角色都返回全量（客户确认结论 4），真正决定
+        # 可见行的始终是 MES 自身的行级过滤。``mes_filtered`` 记录的正是这份信任：
+        # 本地只持有最小可证范围（本人 + 绑定部门），更宽的部分留给 MES，本地既
+        # 不声称持有它，也不会因此取到 MES 不放行的行（取数仍由 MES 决定）。标记
+        # 只由权威 token 角色推出，用户输入与模型输出都无法触及。
         data_scope = DataScope(
             tenant_id=membership.tenant_id,
             employee_ids=frozenset({membership.employee_id}),
             dept_ids=frozenset(dept_ids),
             evaluated_at=as_of,
             scope_version=version,
-            mes_filtered=False,
+            mes_filtered=membership.role is Role.OWNER,
         )
         return ResolvedAuthorization(
             identity=identity,

@@ -5,11 +5,10 @@ logical aliases. Provider URLs, provider credentials, network retries, and
 provider fallback chains belong to LiteLLM and never appear in this contract.
 """
 
-
-
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 ModelRole = Literal["system", "user", "assistant"]
 
@@ -24,6 +23,10 @@ class ModelStage(StrEnum):
     CHAT = "chat"
     REPAIR = "repair"
     SCOPE_GUARD = "scope_guard"
+    #: The streaming narration call that feeds ``interaction.thinking``. Its
+    #: output is shown to the user verbatim, so it is metered like any other
+    #: model spend but never feeds a business decision.
+    THINKING = "thinking"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +105,50 @@ class ModelGateway(Protocol):
     async def complete(self, request: ModelRequest) -> ModelResponse: ...
 
 
+class ModelDeltaKind(StrEnum):
+    """Which stream a delta came from.
+
+    Deployments differ in whether they expose the model's own deliberation:
+    families that do (DeepSeek, vLLM-served Qwen with the reasoning channel
+    enabled) send it on ``REASONING``, everything else only ever sends
+    ``CONTENT``. Consumers surface both as the same user-visible text; the
+    distinction exists so a deployment that returns deliberation is never
+    silently mixed into the answer stream.
+    """
+
+    REASONING = "reasoning"
+    CONTENT = "content"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDelta:
+    """One incremental piece of a streamed model reply."""
+
+    text: str
+    kind: ModelDeltaKind = ModelDeltaKind.CONTENT
+
+
+@runtime_checkable
+class ModelStreamGateway(Protocol):
+    """Incremental model output, kept separate from ``ModelGateway``.
+
+    Deliberately a distinct port rather than a second method on
+    ``ModelGateway``: streaming serves exactly one presentational feature, and
+    a deployment that cannot stream must degrade to "no narration" instead of
+    forcing every gateway double in the codebase to grow a method it has no
+    use for.
+
+    ``runtime_checkable`` because the composition root has to ask a gateway it
+    only knows as a ``ModelGateway`` whether it can stream at all; the check is
+    the method-presence one, which is exactly the question being asked.
+    """
+
+    def stream(self, request: ModelRequest) -> AsyncIterator[ModelDelta]: ...
+
+
 __all__ = [
+    "ModelDelta",
+    "ModelDeltaKind",
     "ModelErrorCategory",
     "ModelGateway",
     "ModelGatewayError",
@@ -111,5 +157,6 @@ __all__ = [
     "ModelResponse",
     "ModelRole",
     "ModelStage",
+    "ModelStreamGateway",
     "ModelUsage",
 ]

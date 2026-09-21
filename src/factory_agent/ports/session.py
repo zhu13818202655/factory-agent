@@ -15,6 +15,7 @@ from factory_agent.domain import (
     CapabilityId,
     InteractionId,
     InteractionRecord,
+    MessageKind,
     MessageRecord,
     NarrowedFilters,
     Role,
@@ -202,6 +203,22 @@ class InteractionStore(Protocol):
         limit: int,
         cursor: str | None = None,
     ) -> MessagePage: ...
+
+    async def latest_message(
+        self,
+        owner: InteractionOwner,
+        session_id: SessionId,
+        *,
+        kinds: frozenset[MessageKind],
+    ) -> MessageRecord | None:
+        """Newest session message whose kind is in ``kinds``, or ``None``.
+
+        A single-row, ownership-scoped read used for conversational
+        continuity — ``list_messages`` pages forward from the oldest row, so
+        the newest match of a long session is not reachable in one call.
+        Implementations must never widen the ownership filter.
+        """
+        ...
 
     async def list_interactions(
         self,

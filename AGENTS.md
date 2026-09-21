@@ -57,6 +57,9 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 - `configs/knowledge/`: reviewed API catalog, metrics, and L1 DAGs.
 - `tests/support/`: in-process fakes and pytest-managed test processes, not services.
 - `data/`: ignored runtime output only.
+- `frontend/`: a **third-party Git submodule**
+  (`git@codeup.aliyun.com:junerda/ai-fczs/ai-management-font.git`, registered in `.gitmodules`).
+  Another team owns it. It is **read-only for this repository's agents** — see below.
 
 `src/factory_agent/statistics/` must not depend on the business domain, and the business
 domain must not import it — the API edge reaches it only through ports

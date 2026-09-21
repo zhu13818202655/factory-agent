@@ -29,6 +29,12 @@ class FilterNarrower:
     ``employee_ids`` and ``dept_ids`` are intersected with the scope and an
     empty intersection is rejected before any business-data call.
 
+    Exception — whole-tenant scopes (``scope.mes_filtered``, i.e. 99 老板): the
+    local scope only carries the minimal provable range, so intersecting a
+    factory-wide request against it would report the owner's own visible range
+    as out of bounds. Such requests are passed through as narrow-only
+    conditions for MES-side row filtering to answer.
+
     Business filters (``order_codes`` / ``style_codes`` /
     ``plan_codes`` / ``material_ids`` and a user-requested department) are
     narrow-only: they are
@@ -76,7 +82,14 @@ class FilterNarrower:
 
         requested_depts: frozenset[DeptId] | None = None
         narrowed_depts: frozenset[DeptId] | None
-        if dept_ids is not None:
+        if dept_ids is not None and scope.mes_filtered:
+            # 99 老板：本地不持有部门全集（绑定部门只是最小可证范围），拿它做交集
+            # 判定只会把工厂级的可见范围误判成越界。请求的部门本身是收窄条件
+            # ——永不放大——所以原样交给 MES 行级过滤与配方本地 SQL 执行，
+            # 由 MES 决定最终可见行。01/02/00 走下面的交集校验，一字不改。
+            narrowed_depts = dept_ids
+            requested_depts = dept_ids
+        elif dept_ids is not None:
             narrowed_dept_scope = scope.narrow_to_depts(dept_ids)
             if narrowed_dept_scope is None:
                 raise FilterRejectionError(

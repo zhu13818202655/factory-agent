@@ -95,6 +95,30 @@ def select_messages(
     ).limit(limit + 1)
 
 
+def select_latest_message(
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    kinds: tuple[str, ...],
+) -> Select[Any]:
+    """Newest message of the given kinds inside one owned session.
+
+    Descending by ``(created_at, message_id)`` with ``LIMIT 1``: the caller
+    needs the most recent row, which ``select_messages`` (forward paging from
+    the oldest row) cannot reach without walking the whole session.
+    """
+    return (
+        sa.select(message_table)
+        .where(
+            _owned(message_table, tenant_id, user_id),
+            message_table.c.session_id == session_id,
+            message_table.c.kind.in_(kinds),
+        )
+        .order_by(message_table.c.created_at.desc(), message_table.c.message_id.desc())
+        .limit(1)
+    )
+
+
 def select_interactions(
     tenant_id: str,
     user_id: str,
@@ -273,6 +297,7 @@ OWNERSHIP_SCOPED_BUILDERS: tuple[str, ...] = (
     "select_interaction",
     "select_events",
     "select_messages",
+    "select_latest_message",
     "select_interactions",
     "claim_interaction_run",
     "fail_stale_interaction_run",

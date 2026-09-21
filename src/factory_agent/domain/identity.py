@@ -187,14 +187,16 @@ class DataScope:
 
     Row-level filtering beyond the caller's own record is performed by the
     customer MES; ``mes_filtered=True`` records this trust and never claims the
-    wider range itself. The flag can only be set at the adapter boundary — it
-    has no broadening API and cannot be set by user input or model output.
+    wider range itself. The flag is derived from the authoritative token role
+    at authorization time (99 老板 sees the whole factory) — it has no
+    broadening API and cannot be set by user input or model output.
 
     ``employee_ids`` currently contains only the caller's own work number;
     ``dept_ids`` comes from the token-returned binding (the caller's own
     department for employees, the bound group for group leaders, the bound
-    department/workshop set for managers, and the whole-tenant stance for the
-    boss role is expressed through MES-side filtering).
+    department/workshop set for managers; it stays the minimal provable set for
+    the boss role too, whose whole-tenant stance is carried by
+    ``mes_filtered`` instead).
     """
 
     tenant_id: TenantId

@@ -8,11 +8,12 @@ degraded header fallback used only when no gateway is configured.
 """
 
 from collections.abc import AsyncIterator
-from typing import cast
+from datetime import datetime
+from typing import Self, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from factory_agent.api.identity import (
     TENANT_HEADER,
@@ -62,6 +63,19 @@ class DrillSpec(BaseModel):
     dept_ids: list[str] = Field(default_factory=list, max_length=20)
     employee_uid: str | None = Field(default=None, max_length=64)
     time_expression: str | None = Field(default=None, max_length=64)
+    #: Absolute window echoed from ``card.time_range`` (D-7 拍板). Both halves
+    #: are required together: a half-supplied window is a client bug and is
+    #: rejected instead of being silently completed with a guessed boundary.
+    time_range_start: datetime | None = None
+    time_range_end: datetime | None = None
+
+    @model_validator(mode="after")
+    def _window_is_complete(self) -> Self:
+        start_set = self.time_range_start is not None
+        end_set = self.time_range_end is not None
+        if start_set != end_set:
+            raise ValueError("time_range_start and time_range_end must be sent together")
+        return self
 
     def to_payload(self) -> DrillPayload:
         return DrillPayload(
@@ -69,6 +83,8 @@ class DrillSpec(BaseModel):
             dept_ids=tuple(self.dept_ids),
             employee_uid=self.employee_uid,
             time_expression=self.time_expression,
+            time_range_start=self.time_range_start,
+            time_range_end=self.time_range_end,
         )
 
 

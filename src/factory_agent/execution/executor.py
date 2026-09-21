@@ -69,11 +69,20 @@ class ScopeVerifier(Protocol):
 
 
 class StrictScopeVerifier:
-    """Rejects any filter set not provably inside the active ``DataScope``."""
+    """Rejects any filter set not provably inside the active ``DataScope``.
+
+    Whole-tenant scopes (``scope.mes_filtered``, i.e. 99 老板) are the documented
+    exception: the owner's visible range is the factory and only MES row
+    filtering can answer it, so the local minimal-provable set is not a ceiling
+    for him. A requested employee/department stays narrow-only — MES decides the
+    rows actually returned — and the tenant check still applies to everyone.
+    """
 
     def verify(self, scope: DataScope, filters: NarrowedFilters) -> None:
         if filters.tenant_id != scope.tenant_id:
             raise ForbiddenError("filter tenant does not match the active tenant")
+        if scope.mes_filtered:
+            return
         if filters.employee_ids is not None and not filters.employee_ids <= scope.employee_ids:
             raise ForbiddenError("employee filters exceed the authorized scope")
         if filters.dept_ids is not None and not filters.dept_ids <= scope.dept_ids:

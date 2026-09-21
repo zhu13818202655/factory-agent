@@ -3,9 +3,11 @@
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from factory_agent.application.business_filters import ResolvedBusinessFilters
 from factory_agent.application.context import ConversationTurn
+from factory_agent.application.session.thinking import ThinkingTranscript
 from factory_agent.domain import (
     CapabilityIntent,
     InteractionRecord,
@@ -39,6 +41,21 @@ class SessionLimits:
     #: A ``pending`` interaction older than this never had a claiming stream;
     #: the recovery sweeps fail it durably with ``abandoned``.
     abandoned_pending_seconds: float = 600.0
+    #: Reasoning-transcript narration (``interaction.thinking``). On by
+    #: default: it exists to cover the windows the caller would otherwise
+    #: watch in silence, and those windows are ordinary rather than
+    #: exceptional. Disabling it removes the extra narration call entirely.
+    thinking_enabled: bool = True
+    #: Wall-clock ceiling on one narration call. A narration that outlives the
+    #: work it describes is abandoned rather than awaited — it must never be
+    #: the reason an answer is late.
+    thinking_timeout_seconds: float = 20.0
+    #: Poll interval of the interleaving loop: how often the pipeline looks at
+    #: the transcript and at the fetch counters while work is in flight.
+    thinking_tick_seconds: float = 0.25
+    #: Output cap for one narration call; short by design, since the transcript
+    #: describes the current step rather than the answer.
+    thinking_max_output_tokens: int = 160
 
 
 EMPTY_BUSINESS_FILTERS = ResolvedBusinessFilters(
@@ -71,9 +88,19 @@ class DrillPayload:
 
     Scope identifiers are absent by design: the drill only carries business
     narrowing values (a department id set and/or one target employee uid) and
-    an optional reviewed time expression (default 当月). Every value is
-    re-validated server-side against the active DataScope before any business
-    call — the drill can only narrow, never broaden.
+    the time window of the card the user clicked. Every value is re-validated
+    server-side against the active DataScope before any business call — the
+    drill can only narrow, never broaden.
+
+    Time is carried as an absolute echo (D-7 拍板): the result payload states
+    the window it actually resolved, the client sends ``time_range_start`` /
+    ``time_range_end`` back verbatim, and ``time_expression`` rides along as
+    the human label only. The absolute pair wins over the expression because
+    a reviewed expression can name a single day or month and can never express
+    the multi-day range the card actually answered; the expression is what the
+    composed answer and the export filename display. Both fields may be absent
+    (old client): the executor then inherits the newest window of the same
+    session and only falls back to the 当月 default when the session has none.
 
     The payload lives in-process only (single-worker deployment): if the
     process restarts before the interaction is claimed, the pending row is
@@ -85,6 +112,11 @@ class DrillPayload:
     dept_ids: tuple[str, ...] = ()
     employee_uid: str | None = None
     time_expression: str | None = None
+    #: Absolute half-open window echoed from the card payload. Naive datetimes
+    #: are read in the factory timezone; the same redline that judges a
+    #: model-proposed range judges this one.
+    time_range_start: datetime | None = None
+    time_range_end: datetime | None = None
 
 
 @dataclass
@@ -93,6 +125,12 @@ class RunState:
     sequence: int
     started_monotonic: float = 0.0
     last_intent: CapabilityIntent | None = None
+    #: This round's reasoning transcript, opened by the pipeline and closed by
+    #: whichever terminal path ends the round. It lives on the run state rather
+    #: than being threaded through the outcome emitters so that *every* terminal
+    #: closes it: a terminal that forgot to would ship the client a truncated
+    #: block with no ``done`` frame (契约 §7-8).
+    transcript: ThinkingTranscript | None = None
 
     def next_sequence(self) -> int:
         self.sequence += 1

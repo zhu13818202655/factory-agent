@@ -1,4 +1,6 @@
+import asyncio
 import itertools
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -8,6 +10,7 @@ from factory_agent.domain import (
     InteractionId,
     InteractionRecord,
     InteractionStatus,
+    MessageKind,
     MessageRecord,
     SessionEvent,
     SessionId,
@@ -22,6 +25,7 @@ from factory_agent.ports import (
     InteractionOwner,
     InteractionPage,
     MessagePage,
+    ModelDelta,
     ModelGatewayError,
     ModelRequest,
     ModelResponse,
@@ -213,6 +217,26 @@ class InMemoryInteractionStore:
         next_cursor = str(start + limit) if len(owned) > start + limit else None
         return MessagePage(items=tuple(page), next_cursor=next_cursor)
 
+    async def latest_message(
+        self,
+        owner: InteractionOwner,
+        session_id: SessionId,
+        *,
+        kinds: frozenset[MessageKind],
+    ) -> MessageRecord | None:
+        if not kinds:
+            return None
+        candidates = [
+            message
+            for message in self.messages
+            if message.session_id == session_id
+            and message.kind in kinds
+            and self._owns(owner, message.tenant_id, message.user_id)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: (item.created_at, str(item.message_id)))
+
     async def list_interactions(
         self,
         owner: InteractionOwner,
@@ -261,6 +285,10 @@ class RecordingCapabilityRunner:
     failure: Exception | None = None
     #: Optional card payload the fake kernel result carries (card-contract tests).
     card: dict[str, object] | None = None
+    #: Opaque parking spot for a recipe registry. Nothing reads it — the session
+    #: service never consults the runner's registry — but a drill test documents
+    #: which capabilities the round could route by setting it.
+    recipes: object | None = None
 
     async def run(self, request: CapabilityRunRequest) -> CapabilityRunResult:
         self.requests.append(request)
@@ -299,6 +327,39 @@ class ScriptedModelGateway:
             usage=ModelUsage(prompt_tokens=11, completion_tokens=5),
             duration_ms=3,
         )
+
+
+@dataclass
+class ScriptedModelStreamGateway:
+    """Streaming double for the narration call.
+
+    ``ModelStreamGateway`` is a separate port from ``ModelGateway``, so a double
+    that only completes can never exercise the narration path. ``scripts`` is a
+    list of delta sequences, one per call: a round that narrates twice (the
+    intent wait and the fetch wait) consumes two entries, and the last entry is
+    reused once the list runs out.
+
+    ``delay_seconds`` is what makes interleaving observable at all: narration
+    frames are only flushed from *inside* the wait, so with an instantaneous
+    stream the whole transcript would arrive in the single final sweep and the
+    test could not tell interleaving apart from buffering.
+    """
+
+    scripts: list[list[str]] = field(default_factory=lambda: [])
+    failures: list[Exception | None] = field(default_factory=lambda: [])
+    requests: list[ModelRequest] = field(default_factory=lambda: [])
+    delay_seconds: float = 0.0
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[ModelDelta]:
+        self.requests.append(request)
+        index = len(self.requests) - 1
+        if index < len(self.failures) and self.failures[index] is not None:
+            raise self.failures[index]  # pyright: ignore[reportGeneralTypeIssues]
+        script = self.scripts[min(index, len(self.scripts) - 1)] if self.scripts else []
+        for piece in script:
+            if self.delay_seconds:
+                await asyncio.sleep(self.delay_seconds)
+            yield ModelDelta(text=piece)
 
 
 @dataclass

@@ -2,10 +2,11 @@
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from factory_agent.application.authorization import ResolvedAuthorization
@@ -19,12 +20,15 @@ from factory_agent.application.consistency import ConsistencyVerdict, Validation
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.filters import FilterRejectionError, NarrowedFilters
 from factory_agent.application.intent import IntentParseOutcome
-from factory_agent.application.permission_matrix import Capability, authorize_capability
+from factory_agent.application.permission_matrix import (
+    ROLE_DATA_RANGE,
+    Capability,
+    authorize_capability,
+)
 from factory_agent.application.scope_guard import (
     ScopeClassification,
     scope_classification_payload,
 )
-from factory_agent.application.session.consistency import SessionConsistencyMixin
 from factory_agent.application.session.definitions import (
     EMPTY_BUSINESS_FILTERS,
     TERMINAL_STATUSES,
@@ -33,6 +37,12 @@ from factory_agent.application.session.definitions import (
     session_logger,
 )
 from factory_agent.application.session.executor import InteractionRunExecutor
+from factory_agent.application.session.narration import (
+    SessionNarrationMixin,
+    WorkSlot,
+    settled,
+)
+from factory_agent.application.session.thinking import FetchProgressWatch, ThinkingFacts
 from factory_agent.application.structured import StructuredOutputError
 from factory_agent.application.summary import fallback_result_answer, format_aggregate_value
 from factory_agent.application.time_expressions import (
@@ -61,6 +71,7 @@ from factory_agent.domain import (
     MessageRole,
     Role,
     SessionEvent,
+    SessionId,
     SessionState,
     TenantContext,
     TimeRange,
@@ -103,6 +114,80 @@ def time_range_label(time_range: TimeRange, zone: ZoneInfo) -> str:
     start_day = time_range.start.astimezone(zone).date()
     end_day = inclusive_end_day(time_range.end, zone)
     return f"{start_day.isoformat()}_{end_day.isoformat()}"
+
+
+def time_range_echo(
+    time_range: TimeRange, zone: ZoneInfo, expression: str | None
+) -> dict[str, object]:
+    """The resolved window echoed on the result payload (D-7 拍板).
+
+    ``start``/``end`` are the canonical half-open instants the MES call was
+    actually made with, so a drill can carry them back verbatim instead of
+    re-resolving a phrase and drifting to another window. ``label`` is the
+    factory-local inclusive display pair; ``expression`` is the caller's own
+    words when the window came from a reviewed phrase, and is absent for an
+    inherited or echoed absolute window.
+    """
+    start_day = time_range.start.astimezone(zone).date()
+    end_day = inclusive_end_day(time_range.end, zone)
+    payload: dict[str, object] = {
+        "start": time_range.start.isoformat(),
+        "end": time_range.end.isoformat(),
+        "label": f"{start_day.isoformat()} 至 {end_day.isoformat()}",
+    }
+    if expression:
+        payload["expression"] = expression
+    return payload
+
+
+def time_range_from_echo(value: object) -> TimeRange | None:
+    """Parse an echoed window back into a canonical range, or ``None``.
+
+    The echo is server-written, but it is read back from durable storage and is
+    therefore re-checked rather than trusted: a malformed, naive, or inverted
+    pair yields ``None`` so the caller falls back to its own default instead of
+    executing a window nobody asked for.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    # The echo is a JSON object this application wrote; ``isinstance`` cannot
+    # recover its key type from ``object``, so the shape is asserted once here
+    # rather than re-narrowed at every field read.
+    echo: Mapping[str, object] = cast("Mapping[str, object]", value)
+    start = _aware_datetime(echo.get("start"))
+    end = _aware_datetime(echo.get("end"))
+    if start is None or end is None or start >= end:
+        return None
+    return TimeRange(start=start, end=end)
+
+
+def _aware_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def intent_time_expression(state: RunState) -> str | None:
+    """The caller's own time words for this turn, when the parse produced any.
+
+    Absent for a turned-down or inherited window — the window is then displayed
+    by its dates rather than by words the user never said.
+    """
+    return state.last_intent.slots.time_expression if state.last_intent else None
+
+
+def factory_aware(value: datetime, zone: ZoneInfo) -> datetime:
+    """A client-echoed window half; a naive value is read as factory-local.
+
+    The server always echoes tz-aware ISO instants, so the tolerant branch only
+    fires for a hand-written client, and it resolves against the same factory
+    calendar the reviewed phrases use — never against the host's local zone.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=zone)
 
 
 def result_aggregates(result: CapabilityRunResult) -> list[tuple[str, str]]:
@@ -163,7 +248,7 @@ class _ExecutionPlan:
     time_range: TimeRange | None = None
 
 
-class SessionPipelineMixin(SessionConsistencyMixin):
+class SessionPipelineMixin(SessionNarrationMixin):
     """The bounded conversation pipeline from claim to durable terminal."""
 
     async def _run(
@@ -261,6 +346,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
 
     async def _authorize_request(
         self,
+        owner: InteractionOwner,
         authorization: ResolvedAuthorization,
         state: RunState,
         intent: CapabilityIntent,
@@ -355,6 +441,8 @@ class SessionPipelineMixin(SessionConsistencyMixin):
             # nothing, and announcing it would be a misleading front-end hint.
             if intent.slots.dept_names or intent.slots.employee_names:
                 yield await self._progress(state, "scope_resolution_started")
+                async for event in self._fact(state, "正在匹配您提到的车间与人员名称。"):
+                    yield event
             try:
                 resolved = await self._business_filters.resolve(scope, intent.slots)
             except DirectoryError as exc:
@@ -419,6 +507,20 @@ class SessionPipelineMixin(SessionConsistencyMixin):
 
         time_range = time_range_from_intent(intent)
         if time_range is None:
+            # The parse named no time at all (e.g. 「那后道车间呢？」): inherit the
+            # window this session already established instead of stopping the
+            # turn, so the user is never asked to restate context they already
+            # gave (D-7 拍板). A session with no answered turn yet has nothing to
+            # inherit and keeps the original ``time_range_missing`` outcome.
+            time_range = await self._session_time_range(owner, state.record.session_id)
+            if time_range is not None:
+                session_logger.info(
+                    "session.time_range.inherited",
+                    capability_id=capability_id,
+                    interaction_id=str(state.record.interaction_id),
+                    session_id=str(state.record.session_id),
+                )
+        if time_range is None:
             async for event in self._fail(state, "time_range_missing", usage_events):
                 yield event
             return
@@ -466,6 +568,9 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         """
         dept_ids: frozenset[DeptId] | None = None
         if drill.dept_ids:
+            # 99 老板带全厂范围（``scope.mes_filtered``）：本地部门集只是最小可证
+            # 范围，不能当作他的上限，槽位直接作为收窄条件下发，由 MES 行级过滤
+            # 决定可见行；01/02/00 仍必须落在绑定范围内。
             if not scope.mes_filtered:
                 out_of_range = [
                     value for value in drill.dept_ids if DeptId(value) not in scope.dept_ids
@@ -511,7 +616,15 @@ class SessionPipelineMixin(SessionConsistencyMixin):
             return
         # The parse call stays silent for as long as the model takes; announce
         # the stage before it starts so the caller watches progress, not a stall.
+        # The transcript is opened here, before the first wait of the round, and
+        # every terminal path below closes it (see ``_close_transcript``).
+        self._start_transcript(
+            state,
+            ThinkingFacts(stage="解析", lines=("正在理解您的问题，确认要查询的内容。",)),
+        )
         yield await self._progress(state, "parse_started")
+        async for event in self._fact(state, "正在理解您的问题，确认要查询的内容。"):
+            yield event
         if drill is not None:
             # Structured drill (D-3 拍板)：intent comes from the validated
             # drill payload, not from a model call — zero LLM spend, zero
@@ -526,8 +639,15 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 interaction_id=str(state.record.interaction_id),
                 session_id=str(state.record.session_id),
             )
+            # A drill whose card carried no window (an older client, or a card
+            # rendered before this change) inherits the session's established
+            # window instead of silently answering 当月 (D-7 兜底). The lookup is
+            # skipped whenever the payload already pins the time.
+            inherited: TimeRange | None = None
+            if drill.time_range_start is None and not drill.time_expression:
+                inherited = await self._session_time_range(owner, state.record.session_id)
             try:
-                parsed = self._drill_parse_outcome(drill)
+                parsed = self._drill_parse_outcome(drill, inherited)
             except TimeExpressionError:
                 async for event in self._reject_message(
                     state,
@@ -555,10 +675,25 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 )
             )
         else:
+            parse_slot: WorkSlot[IntentParseOutcome] = WorkSlot()
             try:
-                parsed = await self._parse(
-                    state, history, usage_events, role=authorization.tenant_context.role
-                )
+                async for event in self._narrate_over(
+                    state,
+                    self._parse(
+                        state, history, usage_events, role=authorization.tenant_context.role
+                    ),
+                    parse_slot,
+                    usage_events,
+                    facts=ThinkingFacts(
+                        stage="解析",
+                        lines=(
+                            "正在理解您的问题，确认要查询的内容。",
+                            "正在匹配一项已审核的统计口径。",
+                        ),
+                    ),
+                ):
+                    yield event
+                parsed = settled(parse_slot)
             except ModelGatewayError as exc:
                 async for event in self._fail(state, f"gateway_{exc.category.value}", usage_events):
                     yield event
@@ -584,6 +719,15 @@ class SessionPipelineMixin(SessionConsistencyMixin):
             )
         )
 
+        if intent.needs_clarification:
+            # A follow-up that names no time at all («那后道车间呢？») reports the
+            # window as its single missing slot and would stop to ask for it
+            # (D-7 拍板). The session already established that window, so it is
+            # inherited instead of being asked for again.
+            rescued = await self._rescue_missing_time_range(owner, state, intent)
+            if rescued is not None:
+                intent = rescued
+                state.last_intent = intent
         if intent.needs_clarification:
             if state.record.clarification_rounds + 1 >= self._limits.max_clarification_rounds:
                 async for event in self._fail(state, "clarification_exhausted", usage_events):
@@ -621,8 +765,11 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         # resolves the caller's directory names before any business call:
         # announce it up front so none of that is a black box.
         yield await self._progress(state, "authorize_started")
+        async for event in self._fact(state, "正在核对权限与可查询范围。"):
+            yield event
         plan = _ExecutionPlan()
         async for event in self._authorize_request(
+            owner,
             authorization,
             state,
             intent,
@@ -657,6 +804,18 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 yield event
             return
 
+        # The wait the pager dominates is announced by its own facts rather than
+        # by model prose: a deployment whose gateway cannot stream still tells
+        # the caller what is being fetched and over which window, and only the
+        # live page counters depend on streaming being available at all. They
+        # are stated before the phase pair rather than after it so the two
+        # adjacent transitions stay adjacent — AUTHORIZING is never a durable
+        # state, and a frame persisted between them would break that reading.
+        fetch_facts = self._fetch_facts(capability_id, time_range, decision_context.role)
+        for line in fetch_facts.lines:
+            async for event in self._fact(state, line):
+                yield event
+
         for event in await self._phases(
             state,
             (SessionState.AUTHORIZING, "intent_complete"),
@@ -665,14 +824,25 @@ class SessionPipelineMixin(SessionConsistencyMixin):
             yield event
 
         try:
-            result = await self._runner.run(
-                CapabilityRunRequest(
-                    capability_id=capability_id,
-                    filters=filters,
-                    time_range=time_range,
-                    role=decision_context.role,
-                )
-            )
+            run_slot: WorkSlot[CapabilityRunResult] = WorkSlot()
+            watch = FetchProgressWatch()
+            async for event in self._narrate_over(
+                state,
+                self._runner.run(
+                    CapabilityRunRequest(
+                        capability_id=capability_id,
+                        filters=filters,
+                        time_range=time_range,
+                        role=decision_context.role,
+                    )
+                ),
+                run_slot,
+                usage_events,
+                facts=fetch_facts,
+                watch=watch,
+            ):
+                yield event
+            result = settled(run_slot)
         except ForbiddenError as exc:
             # Executor-level scope rule: surface as a friendly denial, never a
             # generic failure.
@@ -737,6 +907,33 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         ):
             yield event
 
+    def _fetch_facts(
+        self, capability_id: CapabilityId, time_range: TimeRange, role: Role
+    ) -> ThinkingFacts:
+        """Display-safe facts for the wait the pager dominates.
+
+        Reviewed Chinese titles and the caller's own data range only. The
+        capability id, the recipe step ids and the endpoint that answers them
+        are internal identifiers; the narration prompt never receives them, and
+        the gate drops any frame that produces one anyway. An unreviewed
+        capability contributes no title rather than an id that would read as
+        jargon to the user who asked for it.
+        """
+        lines: list[str] = []
+        title = FR_INFO.get(fr_id_for(str(capability_id)), ("", ""))[0]
+        if title:
+            lines.append(f"本次查询：{title}。")
+        start_day = time_range.start.astimezone(self._factory_zone).date()
+        end_day = inclusive_end_day(time_range.end, self._factory_zone)
+        lines.append(f"时间范围：{start_day.isoformat()} 至 {end_day.isoformat()}。")
+        data_range = ROLE_DATA_RANGE.get(role)
+        if data_range:
+            lines.append(f"可查询范围：{data_range}。")
+        # Last, because it is the only line that describes what is happening at
+        # the moment it is read rather than what was resolved a step earlier.
+        lines.append("正在向工厂系统取数，数据量大时会逐页取回。")
+        return ThinkingFacts(stage="取数", lines=tuple(lines))
+
     async def _complete_result(
         self,
         owner: InteractionOwner,
@@ -754,10 +951,20 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         and the terminal event commit atomically with the usage events.
         """
         yield await self._phase(state, SessionState.COMPOSING, "execution_complete")
+        async for event in self._fact(state, "正在汇总本次结果并生成答复。"):
+            yield event
 
         answer_text = await self._compose_result_answer(
             state, result, capability_id, time_range, usage_events
         )
+
+        # Closed here, after the answer is composed and before the result event
+        # claims its sequence: the contract requires every thinking frame to
+        # carry a smaller id than ``interaction.result``, and the frontend
+        # collapses the block on ``done`` — so closing any earlier would hide
+        # the transcript for the length of the compose call.
+        async for event in self._close_transcript(state):
+            yield event
 
         artifact_id = None
         if self._exporter is not None:
@@ -787,11 +994,19 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         column_titles = [
             (result.column_titles or {}).get(name, name) for name in result.column_names
         ]
+        # The window this turn actually answered over, echoed back to the client
+        # (D-7 拍板) so a row click can carry it into the drill instead of
+        # re-resolving a phrase and drifting to another window. It rides on the
+        # card (so ``buildDrill`` can read it off the card it was clicked on) and
+        # on the payload itself (so continuity survives a turn that emitted no
+        # card, e.g. an empty window).
+        echo = time_range_echo(time_range, self._factory_zone, intent_time_expression(state))
         # The card payload (recipe-declared, built by the kernel) is placed on
         # the SSE event and the persisted result_table message as the SAME
         # dict, so live, replay and history streams render identically.
+        card = getattr(result, "card", None)
         card_payload: dict[str, object] = (
-            {"card": result.card} if getattr(result, "card", None) is not None else {}
+            {"card": {**card, "time_range": echo}} if isinstance(card, dict) else {}
         )
         result_event = SessionEvent(
             sequence=state.next_sequence(),
@@ -805,6 +1020,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                 "incomplete_reason": result.incomplete_reason,
                 "artifact_id": artifact_id,
                 "answer": answer_text,
+                "time_range": echo,
                 **card_payload,
                 **({"consistency": consistency} if consistency is not None else {}),
             },
@@ -870,6 +1086,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
                             "incomplete_reason": result.incomplete_reason,
                             "artifact_id": artifact_id,
                             "answer": answer_text,
+                            "time_range": echo,
                             **card_payload,
                             **({"consistency": consistency} if consistency is not None else {}),
                         },
@@ -889,17 +1106,119 @@ class SessionPipelineMixin(SessionConsistencyMixin):
         yield result_event
         yield terminal
 
-    def _drill_parse_outcome(self, drill: DrillPayload) -> IntentParseOutcome:
+    async def _session_time_range(
+        self, owner: InteractionOwner, session_id: SessionId
+    ) -> TimeRange | None:
+        """The window of the newest answered turn in this session (D-7 兜底).
+
+        Read from the durable ``result_table`` message payload rather than from
+        a process-local cache, so the same window survives a restart and a
+        replayed history. A failed read degrades to ``None`` — the caller then
+        keeps its own default — because an optional continuity lookup must
+        never turn a healthy turn into a failed one.
+        """
+        try:
+            message = await self._store.latest_message(
+                owner, session_id, kinds=frozenset({MessageKind.RESULT_TABLE})
+            )
+        except Exception:  # noqa: BLE001 - continuity lookup never fails a turn
+            session_logger.opt(exception=True).warning(
+                "session.time_range.lookup_failed",
+                user_id=str(owner.user_id),
+                session_id=str(session_id),
+            )
+            return None
+        if message is None:
+            return None
+        return time_range_from_echo(message.payload.get("time_range"))
+
+    async def _rescue_missing_time_range(
+        self, owner: InteractionOwner, state: RunState, intent: CapabilityIntent
+    ) -> CapabilityIntent | None:
+        """Fill a turn whose only gap is the window, from the session (D-7 拍板).
+
+        Only the exact shape "nothing else is missing and nothing is ambiguous"
+        qualifies, and that shape is what distinguishes the two cases that
+        matter:
+
+        * the caller never mentioned a time (「那后道车间呢？」) — the parser
+          reports ``missing == ("time_range",)`` with no ambiguity, and the
+          window this session already answered over is inherited rather than
+          asked for again;
+        * the caller mentioned a time the reviewed vocabulary cannot resolve —
+          the parser reports it under ``ambiguous`` (``intent.py`` marks a
+          failed phrase ``time_range``), which is deliberately NOT rescued:
+          carrying over the previous window there would answer a period the
+          user did not ask for. That turn keeps its clarification.
+
+        Returns the patched intent, or ``None`` to leave every other
+        clarification exactly as it was.
+        """
+        if intent.capability_id is None or intent.ambiguous:
+            return None
+        if tuple(intent.missing) != ("time_range",):
+            return None
+        window = await self._session_time_range(owner, state.record.session_id)
+        if window is None:
+            return None
+        session_logger.info(
+            "session.time_range.rescued",
+            capability_id=str(intent.capability_id),
+            interaction_id=str(state.record.interaction_id),
+            session_id=str(state.record.session_id),
+        )
+        return replace(
+            intent,
+            slots=replace(
+                intent.slots,
+                time_range_start=window.start,
+                time_range_end=window.end,
+            ),
+            missing=(),
+        )
+
+    def _drill_parse_outcome(
+        self, drill: DrillPayload, fallback: TimeRange | None = None
+    ) -> IntentParseOutcome:
         """Synthetic parse outcome for a structured drill round.
 
-        Time comes from the reviewed expression vocabulary (default 当月);
-        confidence is 1.0 because the capability is client-declared from a
-        server-authored card action, and the slots carry no ambiguity.
+        Time precedence (D-7 拍板): the absolute window echoed from the card
+        wins, because it is the very window the card displayed and the one the
+        user believes they are drilling into; the reviewed expression is the
+        next choice for a client that echoes words only; the session's
+        established window covers a drill whose payload pins nothing; 当月
+        remains the last resort for a session with no answered turn.
+        ``time_expression`` stays the human label — it never overrides an
+        echoed window. Confidence is 1.0 because the capability is
+        client-declared from a server-authored card action.
         """
-        expression = drill.time_expression or "本月"
-        time_range = resolve_time_expression(
-            expression, self._clock.now(), self._factory_timezone_name
-        )
+        expression = drill.time_expression
+        if drill.time_range_start is not None and drill.time_range_end is not None:
+            start = factory_aware(drill.time_range_start, self._factory_zone)
+            end = factory_aware(drill.time_range_end, self._factory_zone)
+            violation = time_range_violation(
+                start,
+                end,
+                max_days=self._time_range_max_days,
+                now=self._clock.now(),
+                tz_name=self._factory_timezone_name,
+            )
+            if violation is not None:
+                # An echoed window is still an external input: the same redline
+                # that judges a model-proposed range judges this one.
+                raise TimeExpressionError(f"drill window rejected: {violation}")
+            time_range = TimeRange(start=start, end=end)
+        elif expression:
+            time_range = resolve_time_expression(
+                expression, self._clock.now(), self._factory_timezone_name
+            )
+        elif fallback is not None:
+            time_range = fallback
+        else:
+            expression = "本月"
+            time_range = resolve_time_expression(
+                expression, self._clock.now(), self._factory_timezone_name
+            )
         intent = CapabilityIntent(
             capability_id=CapabilityId(drill.capability_id),
             confidence=1.0,
@@ -1146,7 +1465,7 @@ class SessionPipelineMixin(SessionConsistencyMixin):
     @staticmethod
     def _result_time_label(state: RunState, time_range: TimeRange, zone: ZoneInfo) -> str:
         """Human time label for the answer: the caller's own words when present."""
-        expression = state.last_intent.slots.time_expression if state.last_intent else None
+        expression = intent_time_expression(state)
         if expression:
             return expression
         start_day = time_range.start.astimezone(zone).date()

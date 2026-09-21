@@ -24,6 +24,9 @@ OWNERSHIP_STATEMENTS: dict[str, Statement] = {
     "select_interaction": queries.select_interaction(TENANT, USER, "i-1"),
     "select_events": queries.select_events(TENANT, USER, "i-1", 0),
     "select_messages": queries.select_messages(TENANT, USER, "s-1", 50),
+    "select_latest_message": queries.select_latest_message(
+        TENANT, USER, "s-1", ("result_table",)
+    ),
     "select_interactions": queries.select_interactions(TENANT, USER, "s-1", 50),
     "claim_interaction_run": queries.claim_interaction_run(TENANT, USER, "i-1", NOW),
     "fail_stale_interaction_run": queries.fail_stale_interaction_run(
@@ -140,3 +143,15 @@ def test_message_sequence_is_unique_within_an_interaction() -> None:
     }
 
     assert ("interaction_id", "sequence") in unique
+
+
+def test_latest_message_reads_newest_first_one_row_within_the_given_kinds() -> None:
+    """窗口兜底取的是「最近一条结果消息」：倒序一行，且只认指定 kind（D-7）."""
+    sql = compiled(
+        queries.select_latest_message(TENANT, USER, "s-1", ("error", "result_table"))
+    )
+
+    assert "created_at DESC" in sql
+    assert "message_id DESC" in sql
+    assert "LIMIT 1" in sql
+    assert "kind IN ('error', 'result_table')" in sql

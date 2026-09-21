@@ -15,9 +15,8 @@ top-level package does not re-export it, and Pyright strict rejects the
 re-export as a private import.
 """
 
-
-
 import time
+from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import litellm
@@ -25,6 +24,8 @@ from litellm.router import Router
 
 from factory_agent.llm.registry import ModelRegistry, ResolvedDeployment
 from factory_agent.ports.model import (
+    ModelDelta,
+    ModelDeltaKind,
     ModelErrorCategory,
     ModelGatewayError,
     ModelRequest,
@@ -142,13 +143,7 @@ class LiteLlmRouterGateway:
         )
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
-        if not request.messages:
-            raise ModelGatewayError(ModelErrorCategory.PROTOCOL, "messages cannot be empty")
-        if request.model_alias not in self._registry.aliases():
-            raise ModelGatewayError(
-                ModelErrorCategory.NOT_CONFIGURED,
-                f"alias {request.model_alias} has no configured deployment",
-            )
+        self._validate(request)
 
         started = time.monotonic()
         try:
@@ -166,6 +161,43 @@ class LiteLlmRouterGateway:
             fallback_reason=_fallback_reason(body, request.model_alias),
         )
 
+    def stream(self, request: ModelRequest) -> AsyncIterator[ModelDelta]:
+        """Incremental output for one call.
+
+        Reasoning fields are deliberately NOT requested: a deployment with
+        thinking enabled spends the whole stream on deliberation and only emits
+        visible text at the very end, which reads as a stall to a user watching
+        a thinking block. A caller that wants the model's own deliberation gets
+        it by configuring the deployment, not by asking here.
+
+        Validation runs eagerly (not on first iteration) so an unconfigured
+        alias fails at the call site that requested narration.
+        """
+        self._validate(request)
+        return self._stream(request)
+
+    async def _stream(self, request: ModelRequest) -> AsyncIterator[ModelDelta]:
+        started = time.monotonic()
+        try:
+            chunks = await self._acompletion_stream(request)
+            async for chunk in chunks:
+                delta = _delta(chunk)
+                if delta is not None:
+                    yield delta
+        except ModelGatewayError:
+            raise
+        except Exception as exc:
+            raise _translate(exc, _elapsed_ms(started)) from exc
+
+    def _validate(self, request: ModelRequest) -> None:
+        if not request.messages:
+            raise ModelGatewayError(ModelErrorCategory.PROTOCOL, "messages cannot be empty")
+        if request.model_alias not in self._registry.aliases():
+            raise ModelGatewayError(
+                ModelErrorCategory.NOT_CONFIGURED,
+                f"alias {request.model_alias} has no configured deployment",
+            )
+
     async def _acompletion(self, request: ModelRequest) -> object:
         """Sole litellm call site; its loose typing is contained here."""
         call = cast("Any", self._router.acompletion)  # pyright: ignore[reportUnknownMemberType]
@@ -175,7 +207,20 @@ class LiteLlmRouterGateway:
             **self._call_options(request),
         )
 
-    def _call_options(self, request: ModelRequest) -> dict[str, Any]:
+    async def _acompletion_stream(self, request: ModelRequest) -> AsyncIterator[object]:
+        """Streaming sibling of ``_acompletion``; same single call boundary."""
+        call = cast("Any", self._router.acompletion)  # pyright: ignore[reportUnknownMemberType]
+        return cast(
+            "AsyncIterator[object]",
+            await call(
+                model=request.model_alias,
+                messages=_messages(request),
+                stream=True,
+                **self._call_options(request, streaming=True),
+            ),
+        )
+
+    def _call_options(self, request: ModelRequest, *, streaming: bool = False) -> dict[str, Any]:
         options: dict[str, Any] = {
             "temperature": (
                 self._default_temperature if request.temperature is None else request.temperature
@@ -186,9 +231,13 @@ class LiteLlmRouterGateway:
         }
         if request.json_output:
             options["response_format"] = dict(_JSON_OBJECT_RESPONSE_FORMAT)
-        thinking = self._thinking_body(request.model_alias)
-        if thinking:
-            options["extra_body"] = thinking
+        # A streamed call must produce visible text as it arrives, so the
+        # provider thinking fields are withheld: with thinking on, the deltas
+        # are deliberation and the answer only lands at the end.
+        if not streaming:
+            thinking = self._thinking_body(request.model_alias)
+            if thinking:
+                options["extra_body"] = thinking
         return options
 
     def _thinking_body(self, alias: str) -> dict[str, Any]:
@@ -319,6 +368,35 @@ def _content(body: dict[str, Any], started: float) -> str:
     if isinstance(content, str) and content.strip():
         return content
     raise _error(ModelErrorCategory.PROTOCOL, "router message content is empty", started)
+
+
+def _delta(chunk: object) -> ModelDelta | None:
+    """One streamed chunk as a delta, or ``None`` when it carries no text.
+
+    Deployments disagree on where incremental text lives: the OpenAI-compatible
+    ``choices[0].delta.content`` is universal, while a model's own deliberation
+    arrives as ``reasoning_content`` on the families that expose it. Both are
+    surfaced. A chunk with neither — the role-only opening chunk, or a trailing
+    usage-only chunk with an empty ``choices`` — yields ``None``.
+    """
+    body = _as_mapping(chunk)
+    choices: object = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first: object = cast("list[object]", choices)[0]
+    if not isinstance(first, dict):
+        return None
+    delta: object = cast("dict[str, object]", first).get("delta")
+    if not isinstance(delta, dict):
+        return None
+    fields = cast("dict[str, object]", delta)
+    reasoning: object = fields.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning:
+        return ModelDelta(text=reasoning, kind=ModelDeltaKind.REASONING)
+    content: object = fields.get("content")
+    if isinstance(content, str) and content:
+        return ModelDelta(text=content, kind=ModelDeltaKind.CONTENT)
+    return None
 
 
 def _actual_model(body: dict[str, Any], alias: str) -> str:

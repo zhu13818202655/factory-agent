@@ -40,6 +40,7 @@ from factory_agent.domain import (
     InteractionId,
     InteractionStatus,
     MessageKind,
+    MessageRecord,
     MessageRole,
     Role,
     SessionEvent,
@@ -496,13 +497,25 @@ async def test_result_event_and_message_carry_the_same_card_payload() -> None:
     events = await drain(service, record.interaction_id)
 
     result_event = next(event for event in events if event.name == INTERACTION_RESULT)
-    assert result_event.data["card"] == card
+    event_card = result_event.data["card"]
+    assert isinstance(event_card, dict)
     table_message = next(
         m
         for m in store.messages
         if m.interaction_id == record.interaction_id and m.kind is MessageKind.RESULT_TABLE
     )
-    assert table_message.payload["card"] == card
+    # Same dict on both surfaces: that identity is what makes live, replay and
+    # history render identically. The resolved window (D-7) is attached to it,
+    # so the comparison is card-to-card rather than against the recipe's card.
+    assert event_card == table_message.payload["card"]
+    for key, value in card.items():
+        assert event_card[key] == value
+    assert event_card["time_range"] == result_event.data["time_range"]
+    # ``event_card`` is a ``dict`` of unknown values, so the window's shape is
+    # declared here and then asserted by the reads below.
+    window: dict[str, object] = event_card["time_range"]
+    assert window["expression"] == "上个月"
+    assert window["start"] and window["end"] and window["label"]
 
 
 @pytest.mark.asyncio
@@ -1234,6 +1247,31 @@ async def test_drill_out_of_range_dept_is_rejected_before_any_business_call() ->
 
 
 @pytest.mark.asyncio
+async def test_owner_drill_into_any_workshop_is_allowed() -> None:
+    """99 老板是最高权限：点工厂里任意车间都不再被判越界（MES 行级过滤兜底）.
+
+    本地只持有最小可证范围（emp-1 → dept-1），"dept-9" 正是修复前会被拒的
+    用例；老板必须放行，且请求部门以收窄条件下发到能力层。
+    """
+    runner = _drill_runner(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    service, _, _ = build(role=Role.OWNER, runner=runner)
+    record = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看该车间/小组的工资清单（缝制）",
+            drill=DrillPayload(capability_id="fr008_payroll_ranking", dept_ids=("dept-9",)),
+        ),
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    assert any(event.name == INTERACTION_RESULT for event in events)
+    assert runner.requests, "老板下钻必须真正执行到能力层"
+    assert runner.requests[0].filters.requested_dept_ids == frozenset({DeptId("dept-9")})
+
+
+@pytest.mark.asyncio
 async def test_drill_target_employee_inside_scope_runs_with_narrowed_employee() -> None:
     """D-5：01/02 下钻点成员工资条 —— 目标员工在本部门内 → 放行并收窄到该员工."""
     runner = _drill_runner(capability_ids=frozenset({"fr012_employee_payroll"}))
@@ -1282,3 +1320,215 @@ async def test_drill_target_employee_without_bound_dept_is_rejected() -> None:
     assert runner.requests == []
     assert events[-1].name == "interaction.failed"
     assert store.interactions[str(record.interaction_id)].error_category == "filter_not_found"
+
+
+# —— D-7：时间窗口贯通（卡片回显 → 下钻回传 → 服务端继承） ——
+
+#: 一张卡片实际回答过的四天窗口，工厂本地 2026-08-10 ~ 2026-08-13
+#: （必须落在测试时钟 2026-08-24 之前：回传的窗口同样要过「未来」红线）。
+ECHOED_START = datetime(2026, 8, 9, 16, 0, tzinfo=timezone.utc)
+ECHOED_END = datetime(2026, 8, 13, 16, 0, tzinfo=timezone.utc)
+#: 追问里一个时间词都没有（「那后道车间呢？」）。
+NO_TIME_PAYLOAD = '{"capability_id": "FR-001", "confidence": 0.95, "slots": {}}'
+#: 说了时间但不在受审词表里 → 解析器归入 ambiguous，不得用上一轮窗口顶替。
+UNRESOLVABLE_TIME_PAYLOAD = (
+    '{"capability_id": "FR-001", "confidence": 0.95, '
+    '"slots": {"time_expression": "7月1日到7月5日"}}'
+)
+
+
+class _BrokenWindowStore(InMemoryInteractionStore):
+    """存储抖动：最新消息读不出来。只用于验证兜底查询的降级行为。"""
+
+    async def latest_message(
+        self,
+        owner: InteractionOwner,
+        session_id: SessionId,
+        *,
+        kinds: frozenset[MessageKind],
+    ) -> MessageRecord | None:
+        raise RuntimeError("store unavailable")
+
+
+@pytest.mark.asyncio
+async def test_drill_echoed_window_beats_the_expression_label() -> None:
+    """D-7：卡片回传的绝对窗口才是真正取数的窗口，表述只留作人读标签."""
+    runner = _drill_runner(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    service, _, _ = build(role=Role.OWNER, runner=runner)
+    record = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看该车间/小组的工资清单（缝制）",
+            drill=DrillPayload(
+                capability_id="fr008_payroll_ranking",
+                dept_ids=("dept-1",),
+                time_expression="本月",
+                time_range_start=ECHOED_START,
+                time_range_end=ECHOED_END,
+            ),
+        ),
+    )
+
+    events = await drain(service, record.interaction_id)
+
+    result_event = next(event for event in events if event.name == INTERACTION_RESULT)
+    request = runner.requests[0]
+    # 表述说「本月」，但发到能力层的必须是卡片实际回答过的那个窗口。
+    assert (request.time_range.start, request.time_range.end) == (ECHOED_START, ECHOED_END)
+    echo = result_event.data["time_range"]
+    assert isinstance(echo, dict)
+    assert (echo["start"], echo["end"]) == (ECHOED_START.isoformat(), ECHOED_END.isoformat())
+    assert echo["label"] == "2026-08-10 至 2026-08-13"
+    assert echo["expression"] == "本月"
+
+
+@pytest.mark.asyncio
+async def test_drill_window_survives_into_the_next_drill_of_the_session() -> None:
+    """D-7 兜底：载荷没带时间的下钻继承同会话上一次结果的窗口，而不是回到当月."""
+    runner = _drill_runner(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    service, _, _ = build(role=Role.OWNER, runner=runner)
+    first = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看该车间/小组的工资清单（缝制）",
+            drill=DrillPayload(
+                capability_id="fr008_payroll_ranking",
+                dept_ids=("dept-1",),
+                time_range_start=ECHOED_START,
+                time_range_end=ECHOED_END,
+            ),
+        ),
+    )
+    await drain(service, first.interaction_id)
+
+    second = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看该车间/小组的工资清单（后道）",
+            drill=DrillPayload(capability_id="fr008_payroll_ranking", dept_ids=("dept-1",)),
+        ),
+    )
+    events = await drain(service, second.interaction_id)
+
+    result_event = next(event for event in events if event.name == INTERACTION_RESULT)
+    inherited = runner.requests[1]
+    assert (inherited.time_range.start, inherited.time_range.end) == (ECHOED_START, ECHOED_END)
+    echo = result_event.data["time_range"]
+    assert isinstance(echo, dict)
+    assert echo["label"] == "2026-08-10 至 2026-08-13"
+    # 继承来的窗口没有用户原话：回显按日期说话，不假造一句用户没说过的时间词。
+    assert "expression" not in echo
+
+
+@pytest.mark.asyncio
+async def test_drill_without_a_window_or_history_keeps_the_month_default() -> None:
+    """全新会话的第一轮下钻没有可继承的窗口 → 保持旧的「当月」默认（行为不变）."""
+    runner = _drill_runner(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    service, _, _ = build(role=Role.OWNER, runner=runner)
+    record = await service.start(
+        credential(),
+        StartRequest(
+            session_id=SESSION,
+            text="查看该车间/小组的工资清单（缝制）",
+            drill=DrillPayload(capability_id="fr008_payroll_ranking", dept_ids=("dept-1",)),
+        ),
+    )
+
+    await drain(service, record.interaction_id)
+
+    # NOW = 2026-08-24T06:00Z = 本地 14:00 → 当月 = 本地 2026-08-01 ~ 2026-09-01。
+    request = runner.requests[0]
+    assert request.time_range.start == datetime(2026, 7, 31, 16, 0, tzinfo=timezone.utc)
+    assert request.time_range.end == datetime(2026, 8, 31, 16, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_drill_rejects_an_unusable_echoed_window() -> None:
+    """回传的窗口也是外部输入：倒置 / 超一年上限都拒绝，且零业务调用."""
+    runner = _drill_runner(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    service, store, _ = build(role=Role.OWNER, runner=runner)
+    cases = (
+        ("inverted", ECHOED_END, ECHOED_START),
+        (
+            "over_a_year",
+            datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc),
+        ),
+    )
+    for label, start, end in cases:
+        record = await service.start(
+            credential(),
+            StartRequest(
+                session_id=SESSION,
+                text="查看该车间/小组的工资清单（缝制）",
+                drill=DrillPayload(
+                    capability_id="fr008_payroll_ranking",
+                    dept_ids=("dept-1",),
+                    time_range_start=start,
+                    time_range_end=end,
+                ),
+            ),
+        )
+        events = await drain(service, record.interaction_id)
+
+        assert runner.requests == [], label
+        assert events[-1].name == "interaction.failed"
+        stored = store.interactions[str(record.interaction_id)]
+        assert stored.error_category == "drill_invalid_time", label
+
+
+@pytest.mark.asyncio
+async def test_follow_up_without_a_time_inherits_the_session_window() -> None:
+    """D-7：追问一个时间词都没提时，用会话已建立的窗口继续，不再让用户补时间."""
+    service, _, runner = build([INTENT_PAYLOAD, NO_TIME_PAYLOAD])
+    first = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+    await drain(service, first.interaction_id)
+
+    second = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="那后道车间呢")
+    )
+    events = await drain(service, second.interaction_id)
+
+    assert any(event.name == INTERACTION_RESULT for event in events)
+    assert not any(event.name == INTERACTION_CLARIFICATION for event in events)
+    # 上个月 = 本地 2026-07-01 ~ 2026-08-01；追问沿用同一窗口。
+    assert runner.requests[1].time_range == runner.requests[0].time_range
+    assert runner.requests[1].time_range.start == datetime(2026, 6, 30, 16, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_follow_up_with_an_unresolvable_time_is_not_silently_swapped() -> None:
+    """说了时间但解析不出来 → 仍然澄清，绝不用上一轮窗口顶替：差一天就是错数据."""
+    service, _, runner = build([INTENT_PAYLOAD, UNRESOLVABLE_TIME_PAYLOAD])
+    first = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+    await drain(service, first.interaction_id)
+
+    second = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="7月1日到7月5日的产量")
+    )
+    events = await drain(service, second.interaction_id)
+
+    assert len(runner.requests) == 1, "第二轮不得执行"
+    assert any(event.name == INTERACTION_CLARIFICATION for event in events)
+
+
+@pytest.mark.asyncio
+async def test_continuity_lookup_failure_degrades_to_the_previous_behaviour() -> None:
+    """窗口兜底是可选连续性查询：读失败退化为原来的追问，绝不把整轮变成失败."""
+    store = _BrokenWindowStore()
+    service, _, runner = build([INTENT_PAYLOAD, NO_TIME_PAYLOAD], store=store)
+    first = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+    await drain(service, first.interaction_id)
+
+    second = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="那后道车间呢")
+    )
+    events = await drain(service, second.interaction_id)
+
+    assert len(runner.requests) == 1
+    assert not any(event.name == INTERACTION_RESULT for event in events)
+    assert any(event.name == INTERACTION_CLARIFICATION for event in events)
+    assert events[-1].name != "interaction.failed"

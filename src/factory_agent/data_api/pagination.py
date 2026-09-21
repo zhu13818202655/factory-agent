@@ -6,14 +6,13 @@ pages, and enforcing page/row budgets. Any anomaly aborts with a structured
 ``incomplete`` status instead of silently truncating results.
 """
 
-
-
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self, cast
 
 from pydantic import BaseModel, ValidationError
 
 from factory_agent.domain.errors import UpstreamInvalidError
+from factory_agent.ports import MesFetchProgress, publish_mes_fetch_progress
 
 if TYPE_CHECKING:
     from factory_agent.data_api.hongzhao import HongzhaoMesAdapter
@@ -166,6 +165,13 @@ class BoundedPager:
             if validated_items:
                 seen_pages.add(fingerprint)
             items.extend(validated_items)
+            # Publish after the rows land, so the count a waiting user sees is
+            # the count actually held — a page announced before validation
+            # would overstate progress on a page that then fails schema
+            # validation and aborts the fetch.
+            publish_mes_fetch_progress(
+                MesFetchProgress(page=page_number, rows=len(items), total=expected_total or total)
+            )
 
             if len(items) >= expected_total:
                 trimmed = tuple(items[:expected_total])

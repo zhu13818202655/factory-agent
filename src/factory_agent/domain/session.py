@@ -8,8 +8,6 @@ every non-terminal state, terminal states can never restart, and every applied
 transition records ``from``, ``to``, and ``reason``.
 """
 
-
-
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -170,6 +168,11 @@ class MessageKind(StrEnum):
     PHASE = "phase"
     RESULT_TABLE = "result_table"
     ERROR = "error"
+    #: The round's narration, reassembled from its streamed fragments. Part of
+    #: a separate reading path from ``interaction.thinking``: the fragments
+    #: live in the event log (replay), this single row is what restores the
+    #: collapsed block after a refresh.
+    THINKING = "thinking"
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +229,10 @@ INTERACTION_PHASE = "interaction.phase"
 #: which step is being worked on while it is still silent.
 INTERACTION_PROGRESS = "interaction.progress"
 INTERACTION_CLARIFICATION = "interaction.clarification"
+#: One fragment of the round's reasoning transcript. Fragments are durable
+#: events so a reconnecting client can resume mid-transcript; the reassembled
+#: text is also persisted once as a ``kind=thinking`` message.
+INTERACTION_THINKING = "interaction.thinking"
 INTERACTION_RESULT = "interaction.result"
 INTERACTION_HEARTBEAT = "interaction.heartbeat"
 INTERACTION_COMPLETED = "interaction.completed"
@@ -320,6 +327,7 @@ __all__ = [
     "INTERACTION_PROGRESS",
     "INTERACTION_RESULT",
     "INTERACTION_STARTED",
+    "INTERACTION_THINKING",
     "TERMINAL_EVENT_NAMES",
     "TERMINAL_INTERACTION_STATUSES",
     "TERMINAL_STATES",

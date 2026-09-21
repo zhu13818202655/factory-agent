@@ -265,6 +265,27 @@ class SqlInteractionStore:
             items=tuple(_message_from_row(row) for row in page), next_cursor=next_cursor
         )
 
+    async def latest_message(
+        self,
+        owner: InteractionOwner,
+        session_id: SessionId,
+        *,
+        kinds: frozenset[MessageKind],
+    ) -> MessageRecord | None:
+        if not kinds:
+            return None
+        statement = queries.select_latest_message(
+            str(owner.tenant_id),
+            str(owner.user_id),
+            str(session_id),
+            tuple(sorted(kind.value for kind in kinds)),
+        )
+        async with self._engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().first()
+        if row is None:
+            return None
+        return _message_from_row(row)
+
     async def list_interactions(
         self,
         owner: InteractionOwner,

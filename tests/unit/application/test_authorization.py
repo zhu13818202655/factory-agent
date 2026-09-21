@@ -2,9 +2,10 @@
 
 Membership comes from the customer credential bundle: ``tenant_id`` is the
 plaintext AppKey and ``employee_id`` is the token ``user``; one factory has one
-AppKey, so membership is naturally unique. ``DataScope`` is the minimal
-provable range with ``mes_filtered`` recorded at the adapter boundary, never
-here. Roles are display-only.
+AppKey, so membership is naturally unique. ``DataScope`` is always the minimal
+provable range; the authoritative token role additionally decides whether
+``mes_filtered`` marks the whole-tenant stance (99 老板), whose wider range only
+MES-side row filtering can answer.
 """
 
 
@@ -158,3 +159,26 @@ async def test_resolved_tenant_is_bound_to_the_log_correlation_context() -> None
     await build_service(memberships).authorize(credential("tenant-a", "user-a"), AS_OF)
 
     assert current_log_context()["tenant_id"] == "tenant-a"
+
+
+@pytest.mark.asyncio
+async def test_owner_scope_carries_the_whole_tenant_stance() -> None:
+    """99 老板是最高权限：本地仍只持有最小可证范围，全厂范围由 MES 行级过滤.
+
+    这个标记不是"声称拥有全厂"（取数仍由 MES 决定），而是让下游的范围校验
+    知道老板没有本地上限——否则点工厂里任意非本部门车间都会被当成越界。
+    """
+    memberships = FakeMembershipSource(
+        memberships_by_credential={
+            ("tenant-a", "user-o"): membership("user-o", "tenant-a", "employee-o1", Role.OWNER)
+        }
+    )
+    organizations = FakeOrganizationSource(depts_by_employee={"employee-o1": ("dept-a1",)})
+    service = build_service(memberships, organizations)
+
+    resolved = await service.authorize(credential("tenant-a", "user-o"), AS_OF)
+
+    assert resolved.tenant_context.role is Role.OWNER
+    assert {str(item) for item in resolved.data_scope.dept_ids} == {"dept-a1"}
+    assert resolved.data_scope.employee_ids == frozenset({resolved.tenant_context.employee_id})
+    assert resolved.data_scope.mes_filtered is True

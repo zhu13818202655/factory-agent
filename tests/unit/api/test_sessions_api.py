@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -50,9 +51,10 @@ def overrides(
     store: InMemoryInteractionStore,
     runner: RecordingCapabilityRunner,
     *,
+    role: Role = Role.EMPLOYEE,
     extra_members: dict[tuple[str, str], object] | None = None,
 ) -> DependencyOverrides:
-    member = membership("user-a", "tenant-a", "emp-1", Role.EMPLOYEE)
+    member = membership("user-a", "tenant-a", "emp-1", role)
     members = {("tenant-a", "user-a"): member}
     if extra_members:
         members.update(extra_members)  # type: ignore[arg-type]
@@ -73,8 +75,13 @@ def overrides(
     )
 
 
-def client(store: InMemoryInteractionStore, runner: RecordingCapabilityRunner) -> httpx.AsyncClient:
-    app = create_app(FactoryAgentSettings(environment="test"), overrides(store, runner))
+def client(
+    store: InMemoryInteractionStore,
+    runner: RecordingCapabilityRunner,
+    *,
+    role: Role = Role.EMPLOYEE,
+) -> httpx.AsyncClient:
+    app = create_app(FactoryAgentSettings(environment="test"), overrides(store, runner, role=role))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test.invalid")
 
 
@@ -311,3 +318,57 @@ async def test_export_download_is_owned_and_not_replayable_across_users() -> Non
 
     assert foreign.status_code == 404
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_drill_body_rejects_a_half_supplied_window() -> None:
+    """窗口两半必须成对下发：只发一半是客户端 bug，422 拒掉而不是猜另一半（D-7）."""
+    store, runner = InMemoryInteractionStore(), RecordingCapabilityRunner()
+
+    async with client(store, runner) as http:
+        response = await http.post(
+            "/v1/sessions/session-1/interactions",
+            json={
+                "text": "查看该车间工资",
+                "drill": {
+                    "capability_id": "fr008_payroll_ranking",
+                    "dept_ids": ["dept-1"],
+                    "time_range_start": "2026-08-09T16:00:00+00:00",
+                },
+            },
+            headers=HEADERS,
+        )
+
+    assert response.status_code == 422
+    assert store.interactions == {}
+
+
+@pytest.mark.asyncio
+async def test_drill_body_accepts_a_complete_window() -> None:
+    """成对的窗口载荷通过校验并落到下钻请求上（不在请求体里带任何身份字段）."""
+    store, runner = InMemoryInteractionStore(), RecordingCapabilityRunner()
+    runner.recipes = SimpleNamespace(capability_ids=frozenset({"fr008_payroll_ranking"}))
+    body = {
+        "text": "查看该车间工资",
+        "drill": {
+            "capability_id": "fr008_payroll_ranking",
+            "dept_ids": ["dept-1"],
+            "time_range_start": "2026-08-09T16:00:00+00:00",
+            "time_range_end": "2026-08-13T16:00:00+00:00",
+        },
+    }
+
+    # 下钻载荷是进程内状态：发起与领取流必须走同一个应用实例（单 worker 部署），
+    # 换一个实例会把它当作「从未被领取的 pending」，本轮就退回纯文本路径了。
+    async with client(store, runner, role=Role.MANAGER) as http:
+        created = await http.post(
+            "/v1/sessions/session-1/interactions", json=body, headers=HEADERS
+        )
+        assert created.status_code == 201
+        interaction_id = created.json()["interaction_id"]
+        await http.get(f"/v1/interactions/{interaction_id}/stream", headers=HEADERS)
+
+    assert len(runner.requests) == 1
+    # 发到能力层的必须是回传的那个窗口，而不是表述解析出来的「本月」。
+    assert runner.requests[0].time_range.start == datetime(2026, 8, 9, 16, 0, tzinfo=timezone.utc)
+    assert runner.requests[0].time_range.end == datetime(2026, 8, 13, 16, 0, tzinfo=timezone.utc)

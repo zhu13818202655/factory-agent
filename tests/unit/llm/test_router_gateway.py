@@ -12,6 +12,7 @@ from factory_agent.llm.router_gateway import (
     silence_litellm_global_state,
 )
 from factory_agent.ports.model import (
+    ModelDeltaKind,
     ModelErrorCategory,
     ModelGatewayError,
     ModelMessage,
@@ -434,3 +435,192 @@ async def test_use_registry_is_a_no_op_when_the_verdict_changes_nothing() -> Non
     built.use_registry(built._registry)  # pyright: ignore[reportPrivateUsage]
 
     assert built._router is original_router  # pyright: ignore[reportPrivateUsage]
+
+
+# --------------------------------------------------------------------------- #
+# streaming: the narration path (``ModelStreamGateway``)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class StreamingRouter:
+    """Stands in for ``litellm.acompletion(stream=True)``.
+
+    The real call returns an async iterable of chunks rather than a body, so a
+    double that returns a dict cannot exercise the streaming path at all.
+    """
+
+    chunks: list[dict[str, Any]] = field(default_factory=lambda: [])
+    error: Exception | None = None
+    calls: list[dict[str, Any]] = field(default_factory=lambda: [])
+
+    async def acompletion(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return _chunks(self.chunks)
+
+
+async def _chunks(payloads: list[dict[str, Any]]) -> Any:
+    for payload in payloads:
+        yield payload
+
+
+def chunk(
+    content: str | None = None,
+    *,
+    reasoning: str | None = None,
+    choices: bool = True,
+) -> dict[str, Any]:
+    """One OpenAI-compatible streamed chunk."""
+    if not choices:
+        return {"choices": [], "usage": {"completion_tokens": 7}}
+    delta: dict[str, Any] = {}
+    if content is not None:
+        delta["content"] = content
+    if reasoning is not None:
+        delta["reasoning_content"] = reasoning
+    return {"choices": [{"index": 0, "delta": delta}]}
+
+
+def streaming_gateway(
+    router: StreamingRouter,
+    *aliases: str,
+    thinking_enabled: bool = False,
+    reg: ModelRegistry | None = None,
+) -> LiteLlmRouterGateway:
+    return LiteLlmRouterGateway(
+        reg or registry(*aliases),
+        router=router,  # pyright: ignore[reportArgumentType]
+        thinking_enabled=thinking_enabled,
+        thinking_effort="high",
+    )
+
+
+async def collect(
+    built: LiteLlmRouterGateway, alias: str = "factory-fast"
+) -> list[tuple[str, ModelDeltaKind]]:
+    deltas = [
+        delta
+        async for delta in built.stream(
+            ModelRequest(
+                model_alias=alias,
+                messages=(ModelMessage(role="user", content=CANARY_PROMPT),),
+                stage=ModelStage.THINKING,
+                logical_call_id="call-1",
+            )
+        )
+    ]
+    return [(delta.text, delta.kind) for delta in deltas]
+
+
+@pytest.mark.asyncio
+async def test_stream_asks_the_router_for_a_stream() -> None:
+    router = StreamingRouter(chunks=[chunk("正在取数。")])
+
+    await collect(streaming_gateway(router))
+
+    assert router.calls[0]["stream"] is True
+    # Same single call boundary as ``complete``: the logical alias, never a
+    # provider model name.
+    assert router.calls[0]["model"] == "factory-fast"
+
+
+@pytest.mark.asyncio
+async def test_stream_withholds_provider_thinking_fields() -> None:
+    """With thinking on, a streamed call would spend the whole stream on
+    deliberation and only emit visible text at the end — a stall to anyone
+    watching the narration block."""
+    router = StreamingRouter(chunks=[chunk("正在取数。")])
+
+    await collect(streaming_gateway(router, thinking_enabled=True))
+
+    assert "extra_body" not in router.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_a_completed_call_still_sends_the_provider_thinking_fields() -> None:
+    """The withholding is specific to streaming, not a global change."""
+    router = StubRouter()
+
+    await gateway(router, thinking_enabled=True).complete(request())
+
+    assert router.calls[0]["extra_body"] == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_surfaces_content_and_keeps_deliberation_distinguishable() -> None:
+    router = StreamingRouter(
+        chunks=[
+            chunk(),  # role-only opening chunk
+            chunk(reasoning="让我先想一下"),
+            # A real stream never mixes the two channels in one chunk; when a
+            # chunk carries deliberation, that is what it is for.
+            chunk("正在核对"),
+            chunk("权限范围。"),
+            chunk("", choices=False),  # trailing usage-only chunk
+        ]
+    )
+
+    deltas = await collect(streaming_gateway(router))
+
+    assert deltas == [
+        ("让我先想一下", ModelDeltaKind.REASONING),
+        ("正在核对", ModelDeltaKind.CONTENT),
+        ("权限范围。", ModelDeltaKind.CONTENT),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deliberation_wins_over_content_within_one_chunk() -> None:
+    """Documented precedence: a chunk that carries ``reasoning_content`` is
+    read as deliberation, so the two channels never interleave out of order."""
+    router = StreamingRouter(chunks=[chunk("正文", reasoning="思考")])
+
+    assert await collect(streaming_gateway(router)) == [("思考", ModelDeltaKind.REASONING)]
+
+
+@pytest.mark.asyncio
+async def test_stream_maps_a_provider_failure_to_a_category() -> None:
+    router = StreamingRouter(error=litellm.Timeout(message="boom", model="m", llm_provider="p"))
+
+    with pytest.raises(ModelGatewayError) as caught:
+        await collect(streaming_gateway(router))
+
+    assert caught.value.category is ModelErrorCategory.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_stream_failures_never_echo_prompt_or_provider_detail() -> None:
+    router = StreamingRouter(error=RuntimeError(f"stream died with {CANARY_PROMPT} {CANARY_KEY}"))
+
+    with pytest.raises(ModelGatewayError) as caught:
+        await collect(streaming_gateway(router))
+
+    rendered = f"{caught.value}{caught.value.message}"
+    assert CANARY_PROMPT not in rendered
+    assert CANARY_KEY not in rendered
+
+
+@pytest.mark.asyncio
+async def test_stream_refuses_an_unconfigured_alias_at_the_call_site() -> None:
+    """Eager validation: an alias with no deployment fails where narration was
+    requested, not on first iteration deep inside a task."""
+    router = StreamingRouter(chunks=[chunk("正在取数。")])
+    built = streaming_gateway(router, "factory-summary")
+
+    with pytest.raises(ModelGatewayError) as caught:
+        built.stream(
+            ModelRequest(
+                model_alias="factory-fast",
+                messages=(ModelMessage(role="user", content=CANARY_PROMPT),),
+                stage=ModelStage.THINKING,
+                logical_call_id="call-1",
+            )
+        )
+
+    assert caught.value.category is ModelErrorCategory.NOT_CONFIGURED
+    assert router.calls == []

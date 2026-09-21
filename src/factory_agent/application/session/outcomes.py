@@ -1,6 +1,6 @@
 """Session outcome events: phases, clarifications, chat answers, terminations."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 
 from factory_agent.application.intent import clarification_for
@@ -13,12 +13,14 @@ from factory_agent.application.session.definitions import (
     RunState,
     session_logger,
 )
+from factory_agent.application.session.thinking import ThinkingTranscript, transcript_line
 from factory_agent.application.usage import drain_mes_events
 from factory_agent.domain import (
     INTERACTION_ANSWER,
     INTERACTION_CLARIFICATION,
     INTERACTION_PHASE,
     INTERACTION_PROGRESS,
+    INTERACTION_THINKING,
     CapabilityIntent,
     InteractionRecord,
     InteractionStatus,
@@ -68,6 +70,8 @@ class SessionOutcomeMixin(SessionCore):
         usage_events: list[UsageEvent],
     ) -> AsyncIterator[SessionEvent]:
         clarifying = self._advance(state.record, SessionState.CLARIFYING, "slots_missing")
+        async for event in self._close_transcript(state):
+            yield event
         event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_CLARIFICATION,
@@ -137,6 +141,8 @@ class SessionOutcomeMixin(SessionCore):
         """
         now = self._clock.now()
         answered = self._advance(state.record, SessionState.ANSWERED, "chat_answer")
+        async for event in self._close_transcript(state):
+            yield event
         answer_event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_ANSWER,
@@ -260,6 +266,168 @@ class SessionOutcomeMixin(SessionCore):
             lifecycle=False,
         )
 
+    async def _thinking(
+        self,
+        state: RunState,
+        text: str,
+        *,
+        sequence: int,
+        done: bool = False,
+        truncated: bool = False,
+    ) -> SessionEvent:
+        """Emit one fragment of the round's reasoning transcript.
+
+        ``sequence`` is the transcript's own fragment counter (契约 §3.2 ``seq``,
+        restarting at 1 every round); it is deliberately independent of the
+        durable event id that carries the frame, because the event id is also
+        the replay cursor and must stay globally monotonic.
+
+        Informational commit (``lifecycle=False``) for the same reason as
+        ``_progress``: a narration fragment must never be the write that
+        resurrects a run another process already terminated.
+        """
+        data: dict[str, object] = {
+            "text": text,
+            "seq": sequence,
+            "done": done,
+            "elapsed_ms": state.duration_ms(),
+        }
+        if truncated:
+            data["truncated"] = True
+        return await self._stage_event(
+            state,
+            name=INTERACTION_THINKING,
+            data=data,
+            record=state.record,
+            lifecycle=False,
+        )
+
+    async def _record_thinking_message(
+        self, state: RunState, *, text: str, elapsed_ms: int, sequence: int
+    ) -> None:
+        """Persist the reassembled transcript once, for history restore.
+
+        The per-fragment events are the replay path (契约 §3); this single
+        ``kind=thinking`` row is what a refreshed client renders collapsed
+        (契约 §4). Written only when the model actually narrated something, so
+        a round that produced no transcript leaves no empty block behind.
+
+        ``sequence`` reuses the final fragment's event sequence — the same
+        mapping ``result_table`` uses for its own result event — so no event
+        number is consumed by a row that has no event.
+        """
+        if not text.strip():
+            return
+        message = self._message(
+            state.record,
+            MessageRole.ASSISTANT,
+            MessageKind.THINKING,
+            sequence,
+            text,
+            payload={"elapsed_ms": elapsed_ms},
+        )
+        await self._commit(
+            InteractionCommit(
+                interaction=state.record,
+                messages=(message,),
+                usage_events=drain_mes_events(),
+                lifecycle=False,
+            )
+        )
+
+    async def _fact(self, state: RunState, sentence: str) -> AsyncIterator[SessionEvent]:
+        """Emit one deterministic sentence as part of the transcript.
+
+        Deterministic rows are what make the block honest on a deployment whose
+        gateway cannot stream: the pipeline states what it is doing from facts
+        it already holds instead of leaving the user with a silent wait.
+        """
+        transcript = state.transcript
+        if transcript is None or not transcript.enabled or transcript.closed:
+            return
+        for frame in self._commit_fact(transcript, sentence):
+            transcript.seq += 1
+            event = await self._thinking(state, frame, sequence=transcript.seq)
+            transcript.last_event_sequence = event.sequence
+            yield event
+
+    async def _flush_frames(
+        self,
+        state: RunState,
+        transcript: ThinkingTranscript,
+        *,
+        poll: Callable[[], str | None] | None = None,
+        force: bool = False,
+    ) -> AsyncIterator[SessionEvent]:
+        """Emit every frame that is ready, in transcript order.
+
+        Facts first: a page that has just landed is the newest thing the user
+        can be told, and the model's own pending clause is older than it.
+        ``poll`` is the pager's own counter reader, passed as a callable so this
+        layer stays independent of whoever is doing the fetching.
+        """
+        frames: list[str] = []
+        if poll is not None:
+            sentence = poll()
+            if sentence is not None:
+                frames.extend(self._commit_fact(transcript, sentence))
+        frames.extend(transcript.coalescer.take(transcript.facts, force=force))
+        for frame in frames:
+            transcript.seq += 1
+            event = await self._thinking(state, frame, sequence=transcript.seq)
+            transcript.last_event_sequence = event.sequence
+            yield event
+
+    async def _close_transcript(self, state: RunState) -> AsyncIterator[SessionEvent]:
+        """Finish the transcript: last frames, the end marker, the saved copy.
+
+        Every terminal path calls this before it allocates the terminal event's
+        sequence, which is what keeps thinking frames earlier than ``result``
+        (契约 §7-5). A round that narrated nothing produces no marker and no
+        message, so a client never renders an empty block.
+        """
+        transcript = state.transcript
+        if transcript is None or transcript.closed:
+            return
+        # Marked first: re-entering here after a partial close would emit a
+        # second ``done`` frame, which the contract forbids outright.
+        transcript.closed = True
+        if not transcript.enabled:
+            return
+        async for event in self._flush_frames(state, transcript, force=True):
+            yield event
+        if not transcript.produced:
+            return
+        transcript.seq += 1
+        # 契约 §3.2: the final fragment may carry no text.
+        done = await self._thinking(
+            state,
+            "",
+            sequence=transcript.seq,
+            done=True,
+            truncated=transcript.coalescer.truncated,
+        )
+        transcript.last_event_sequence = done.sequence
+        await self._record_thinking_message(
+            state,
+            text=transcript.text,
+            elapsed_ms=state.duration_ms(),
+            sequence=done.sequence,
+        )
+        yield done
+
+    @staticmethod
+    def _commit_fact(transcript: ThinkingTranscript, sentence: str) -> tuple[str, ...]:
+        """Widen the gate's allowlist with one fact sentence, then send it.
+
+        The allowlist holds the bare sentence while the frame is the sentence
+        on its own transcript line: the gate compares numbers, which the line
+        shape does not change, whereas the prompt renders the allowlist back to
+        the model and would show a stray leading newline.
+        """
+        transcript.facts = transcript.facts.widened(sentence)
+        return transcript.coalescer.commit(transcript.facts, transcript_line(sentence))
+
     def _stage_event_uncommitted(
         self,
         state: RunState,
@@ -349,6 +517,8 @@ class SessionOutcomeMixin(SessionCore):
         target = (
             SessionState.FAILED if status is InteractionStatus.FAILED else SessionState.CANCELLED
         )
+        async for event in self._close_transcript(state):
+            yield event
         advanced = self._advance(state.record, target, category)
         event = SessionEvent(
             sequence=state.next_sequence(),
@@ -416,3 +586,10 @@ class SessionOutcomeMixin(SessionCore):
         if stop == STOP_RUN_TIMEOUT:
             async for event in self._fail(state, "run_timeout", usage_events):
                 yield event
+            return
+        # ``cancelled``: the cancel API already persisted the terminal, so the
+        # executor spends no further call budget on one. The transcript is still
+        # finished, so a cancelled round keeps — and can still restore — the
+        # reasoning it had already shown (契约 §8-10).
+        async for event in self._close_transcript(state):
+            yield event
