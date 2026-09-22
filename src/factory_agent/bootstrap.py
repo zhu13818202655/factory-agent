@@ -587,6 +587,7 @@ def _build_session_service(
             thinking_enabled=settings.session_thinking_enabled,
             thinking_timeout_seconds=settings.session_thinking_timeout_seconds,
             thinking_tick_seconds=settings.session_thinking_tick_seconds,
+            thinking_wait_seconds=settings.session_thinking_wait_seconds,
             thinking_max_output_tokens=settings.session_thinking_max_output_tokens,
         ),
         exporter=exporter,

@@ -60,6 +60,12 @@ Do not silently resolve a conflict in a lower-priority source. Record the confli
 - `frontend/`: a **third-party Git submodule**
   (`git@codeup.aliyun.com:junerda/ai-fczs/ai-management-font.git`, registered in `.gitmodules`).
   Another team owns it. It is **read-only for this repository's agents** — see below.
+- **Never inspect `frontend/` to find out what the frontend does or does not implement.** Its state
+  is not an input to any decision here: do not read, search, or grep it to establish whether a
+  feature exists, and never rest a trade-off on a claim about it ("the frontend does not consume
+  this event yet", "the frontend has no such block"). Design and implement the backend contract on
+  its own terms. The user synchronises frontend status whenever it matters — if that status would
+  genuinely change a decision, ask instead of looking.
 
 `src/factory_agent/statistics/` must not depend on the business domain, and the business
 domain must not import it — the API edge reaches it only through ports

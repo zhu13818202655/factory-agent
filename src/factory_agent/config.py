@@ -174,6 +174,11 @@ class FactoryAgentSettings(BaseSettings):
     #: still in flight. Bounds how late a landed page can appear, and costs one
     #: wakeup per tick when nothing has changed.
     session_thinking_tick_seconds: float = Field(default=0.25, gt=0.0)
+    #: Interval of the temporal wait sentence. Covers the MES window that
+    #: produces no pager counters at all — one large request answered in a
+    #: single round trip — which is otherwise the quietest part of a run.
+    #: Zero disables the sentence and leaves the fetch narrated by counters.
+    session_thinking_wait_seconds: float = Field(default=5.0, ge=0.0)
     session_thinking_max_output_tokens: int = Field(default=160, gt=0)
     #: Alias the narration call runs on. ``factory-fast`` rather than the
     #: summary alias on purpose: narration runs in parallel with the real work,

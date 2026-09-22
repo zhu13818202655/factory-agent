@@ -806,11 +806,13 @@ class SessionPipelineMixin(SessionNarrationMixin):
 
         # The wait the pager dominates is announced by its own facts rather than
         # by model prose: a deployment whose gateway cannot stream still tells
-        # the caller what is being fetched and over which window, and only the
-        # live page counters depend on streaming being available at all. They
-        # are stated before the phase pair rather than after it so the two
-        # adjacent transitions stay adjacent — AUTHORIZING is never a durable
-        # state, and a frame persisted between them would break that reading.
+        # the caller what is being fetched and over which window. The live
+        # counters and the elapsed-wait sentence are both read from the watch
+        # through the interleaving loop, so those two are the parts of the fetch
+        # narration that need a gateway able to stream. They are stated before
+        # the phase pair rather than after it so the two adjacent transitions
+        # stay adjacent — AUTHORIZING is never a durable state, and a frame
+        # persisted between them would break that reading.
         fetch_facts = self._fetch_facts(capability_id, time_range, decision_context.role)
         for line in fetch_facts.lines:
             async for event in self._fact(state, line):
@@ -825,7 +827,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
 
         try:
             run_slot: WorkSlot[CapabilityRunResult] = WorkSlot()
-            watch = FetchProgressWatch()
+            watch = FetchProgressWatch(wait_seconds=self._limits.thinking_wait_seconds)
             async for event in self._narrate_over(
                 state,
                 self._runner.run(

@@ -324,6 +324,66 @@ def test_fetch_progress_watch_omits_a_total_the_pager_does_not_know() -> None:
     assert "600" in sentence
 
 
+class _SteppingClock:
+    """Monotonic seconds a test advances by hand."""
+
+    def __init__(self) -> None:
+        self._now = 0.0
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+    def __call__(self) -> float:
+        return self._now
+
+
+def test_fetch_progress_watch_reports_the_elapsed_wait_when_no_page_lands() -> None:
+    clock = _SteppingClock()
+    watch = FetchProgressWatch(wait_seconds=5.0, monotonic=clock)
+
+    # A fetch that never pages publishes no counters, so counters alone would
+    # leave the longest window of the run completely silent.
+    clock.advance(4.0)
+    assert watch.fresh_sentence() is None
+
+    clock.advance(1.0)
+    first = watch.fresh_sentence()
+    assert first is not None and "已等待 5 秒" in first
+
+    # The total, not the interval: a repeating "已等待 5 秒" would both
+    # understate the wait and be dropped downstream as a repeat.
+    clock.advance(5.0)
+    second = watch.fresh_sentence()
+    assert second is not None and "已等待 10 秒" in second
+
+
+def test_a_landed_page_restarts_the_wait() -> None:
+    clock = _SteppingClock()
+    watch = FetchProgressWatch(wait_seconds=5.0, monotonic=clock)
+
+    clock.advance(3.0)
+    watch.observe(MesFetchProgress(page=1, rows=100))
+    assert watch.fresh_sentence() is not None
+
+    # A landed page is the newest thing there is to say, so the wait restarts
+    # from it rather than reporting on top of it.
+    clock.advance(4.0)
+    assert watch.fresh_sentence() is None
+
+    clock.advance(1.0)
+    sentence = watch.fresh_sentence()
+    assert sentence is not None and "已等待 8 秒" in sentence
+
+
+def test_the_wait_sentence_stays_off_until_it_is_asked_for() -> None:
+    clock = _SteppingClock()
+    watch = FetchProgressWatch(monotonic=clock)
+
+    clock.advance(600.0)
+
+    assert watch.fresh_sentence() is None
+
+
 # --------------------------------------------------------------------------- #
 # wiring: a round that narrates
 # --------------------------------------------------------------------------- #
@@ -685,3 +745,24 @@ async def test_narration_is_additive_to_the_rounds_own_events() -> None:
     assert [event.name for event in off_events] == [
         event.name for event in on_events if event.name != INTERACTION_THINKING
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_fetch_that_never_pages_still_narrates_its_wait() -> None:
+    """The counters say nothing when nothing pages; the wait sentence covers it.
+
+    One large request answered in a single round trip is the slowest and
+    quietest window of a run: it publishes no page mark at all, so before the
+    wait sentence existed it produced no frames whatever between the fetch's
+    opening facts and its result.
+    """
+    service, _ = build(
+        stream_gateway=_StreamingGateway(),
+        limits=SessionLimits(thinking_wait_seconds=1.0, thinking_tick_seconds=0.05),
+        runner=_SlowRunner(delay_seconds=1.3),
+        sleep=asyncio.sleep,
+    )
+
+    events = await drain(service, await _start(service))
+
+    assert "正在等待工厂系统返回数据" in _transcript(events)

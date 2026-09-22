@@ -53,6 +53,11 @@ class SessionLimits:
     #: Poll interval of the interleaving loop: how often the pipeline looks at
     #: the transcript and at the fetch counters while work is in flight.
     thinking_tick_seconds: float = 0.25
+    #: Interval of the temporal wait sentence. A fetch that never pages — one
+    #: large request answered in a single round trip — publishes no counters, so
+    #: without this the longest window in the run narrates nothing at all.
+    #: ``0`` leaves the fetch narrated by its counters only.
+    thinking_wait_seconds: float = 5.0
     #: Output cap for one narration call; short by design, since the transcript
     #: describes the current step rather than the answer.
     thinking_max_output_tokens: int = 160

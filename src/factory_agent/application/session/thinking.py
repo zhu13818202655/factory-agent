@@ -19,6 +19,8 @@ than rewritten — a half-edited sentence can invert its own meaning.
 """
 
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from factory_agent.ports import MesFetchProgress
@@ -344,11 +346,25 @@ def transcript_line(text: str) -> str:
 
 
 class FetchProgressWatch:
-    """Latest page counters of the run, as fact sentences.
+    """How the run's fetch is going, as fact sentences.
 
-    Fed by the pager through the context-local sink in ``ports.mes_progress``,
-    surfaced once per distinct ``(page, rows)`` mark so a slow walk produces a
-    progress sentence rather than a repeated one.
+    Two sources, because the pager's counters alone cannot cover every wait:
+
+    * every distinct ``(page, rows)`` mark the pager publishes, surfaced once
+      each so a slow walk reports progress rather than repeating itself;
+    * while no mark arrives, a sentence stating how long the caller has been
+      waiting, emitted every ``wait_seconds``.
+
+    The second source exists because a fetch that never pages — one large
+    request answered in a single round trip — produces no counters at all, and
+    that is the slowest and quietest window in the whole run. It reports the
+    *total* wait rather than the time since the previous sentence: a repeating
+    "已等待 5 秒" would both understate the wait and be dropped downstream as a
+    repeat of the frame before it.
+
+    ``wait_seconds=0`` keeps the counters-only behaviour, so the temporal
+    sentence is opt-in from the pipeline rather than a property of every
+    watch.
 
     It belongs to this module rather than to the mixin that drives the
     transcript: the session mixin modules are scanned by an architecture test
@@ -356,7 +372,17 @@ class FetchProgressWatch:
     there, and a plain helper would be read as a layer reaching outside itself.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        wait_seconds: float = 0.0,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._wait_seconds = wait_seconds
+        self._monotonic = monotonic
+        started = self._monotonic()
+        self._started_at = started
+        self._reported_at = started
         self._latest: MesFetchProgress | None = None
         self._reported: tuple[int, int] | None = None
         self.observations = 0
@@ -367,17 +393,33 @@ class FetchProgressWatch:
 
     def fresh_sentence(self) -> str | None:
         latest = self._latest
-        if latest is None:
-            return None
-        mark = (latest.page, latest.rows)
-        if mark == self._reported:
-            return None
-        self._reported = mark
+        if latest is not None:
+            mark = (latest.page, latest.rows)
+            if mark != self._reported:
+                self._reported = mark
+                # A landed page is the newest thing there is to say, so it also
+                # restarts the wait: the next temporal sentence becomes due only
+                # after another full quiet interval.
+                self._reported_at = self._monotonic()
+                return self._page_sentence(latest)
+        return self._wait_sentence()
+
+    @staticmethod
+    def _page_sentence(latest: MesFetchProgress) -> str:
         page = f"第 {latest.page} 页"
         rows = f"{latest.rows:,}"
         if latest.total:
             return f"正在逐页取回数据：已取回 {rows} 行，共 {latest.total:,} 行（{page}）"
         return f"正在逐页取回数据：已取回 {rows} 行（{page}）"
+
+    def _wait_sentence(self) -> str | None:
+        if self._wait_seconds <= 0.0:
+            return None
+        now = self._monotonic()
+        if now - self._reported_at < self._wait_seconds:
+            return None
+        self._reported_at = now
+        return f"正在等待工厂系统返回数据，已等待 {int(now - self._started_at)} 秒。"
 
 
 @dataclass(slots=True)
