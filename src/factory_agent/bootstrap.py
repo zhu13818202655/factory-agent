@@ -25,6 +25,7 @@ from factory_agent.application.rollup import RollupEngine, RollupWorker
 from factory_agent.application.scope_guard import ScopeGuard
 from factory_agent.application.session import SessionLimits, SessionService
 from factory_agent.application.summary import ResultSummarizer
+from factory_agent.application.trace import TraceCapability, TraceService
 from factory_agent.application.usage import ContextVarMesCallRecorder
 from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.catalog import load_catalog
@@ -51,6 +52,7 @@ from factory_agent.llm.health import EndpointHealthMonitor, HttpModelsProbe
 from factory_agent.llm.registry import ModelRegistry, load_model_registry
 from factory_agent.llm.router_gateway import LiteLlmRouterGateway
 from factory_agent.observability.audit import AuditSink, StructuredLogAuditSink
+from factory_agent.persistence.debug_trace_store import SqlDebugTraceStore
 from factory_agent.persistence.engine import create_session_engine
 from factory_agent.persistence.metering import SqlMeteringStore
 from factory_agent.persistence.personal_store import (
@@ -66,6 +68,7 @@ from factory_agent.persistence.rollup_store import SqlRollupStore
 from factory_agent.persistence.scope_violation import SqlScopeViolationStore
 from factory_agent.persistence.session_store import SqlInteractionStore
 from factory_agent.persistence.tenant_registry import SqlTenantRegistryReader
+from factory_agent.persistence.trace_store import SqlTraceStore
 from factory_agent.ports import (
     ArtifactStore,
     CapabilityRunner,
@@ -127,6 +130,9 @@ class DependencyOverrides:
     credential_exchange: TokenCredentialExchange | None = None
     statistics: StatisticsContainer | None = None
     tenant_lifecycle: TenantLifecycle | None = None
+    #: Trace read model. Injectable so the endpoints can be exercised without a
+    #: database, matching how the session and export services are overridden.
+    trace: TraceService | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +161,22 @@ class ApplicationContainer:
     tenant_lifecycle: TenantLifecycle | None = None
     usage_partitions: UsagePartitionMaintainer | None = None
     usage_rollup: RollupWorker | None = None
+    #: Whether this deployment may hold captured content, and therefore whether
+    #: the content-bearing report route is mounted at all (§4.5). Carried as a
+    #: plain value so no request handler has to re-derive the environment rule
+    #: and risk disagreeing with the mount decision.
+    trace_capability: TraceCapability = field(
+        default_factory=lambda: TraceCapability(
+            environment="prod", report_available=False, reason="environment", content_capture="none"
+        )
+    )
+    #: ``None`` when no database is configured: the A-level timeline is a
+    #: database read, so the endpoint answers 503 rather than inventing an empty
+    #: trace. Capability discovery still works, because it needs no store.
+    trace: TraceService | None = None
+    #: Owns the B-channel table. Present only when capture is possible, and used
+    #: by the startup sweep to expire rows whose retention has lapsed.
+    debug_trace: SqlDebugTraceStore | None = None
     readiness: dict[str, str] = field(default_factory=lambda: {})
 
 
@@ -257,12 +279,27 @@ def build_container(
     capability_runner = _build_capability_runner(supplied, mes, settings)
     artifact_store, exporter, export_status = _build_export_service(supplied, settings, clock)
 
+    # The B-channel store is built as soon as a database exists, not only when
+    # capture is switched on: reads must still reach rows a previous developer
+    # deployment left behind, and the startup sweep must be able to expire them.
+    # What the switch gates is writing — see ``configure_debug_trace`` and the
+    # adapters' ``debug_capture_enabled`` check.
+    debug_trace = (
+        SqlDebugTraceStore(
+            create_session_engine(str(settings.postgres_url)),
+            retention_hours=settings.debug_trace_retention_hours,
+        )
+        if settings.postgres_url is not None
+        else None
+    )
     if supplied.interactions is not None:
         interactions: InteractionStore | None = supplied.interactions
         interactions_status = "fake"
     elif settings.postgres_url is not None:
         engine = create_session_engine(str(settings.postgres_url))
-        interactions = SqlInteractionStore(engine, metering=SqlMeteringStore(engine))
+        interactions = SqlInteractionStore(
+            engine, metering=SqlMeteringStore(engine), debug_trace=debug_trace
+        )
         interactions_status = "configured"
     else:
         interactions = None
@@ -318,6 +355,9 @@ def build_container(
     # One audit sink per process: the fail-closed download gate and the
     # best-effort consistency alert must report to the same sink.
     audit = supplied.audit or StructuredLogAuditSink()
+    trace_capability = _trace_capability(settings)
+    trace_service = _build_trace(supplied, settings, interactions, debug_trace)
+    readiness["debug_trace"] = "configured" if debug_trace is not None else "not_configured"
     return ApplicationContainer(
         settings=settings,
         capabilities=CapabilityRegistry(),
@@ -351,6 +391,9 @@ def build_container(
         ),
         usage_partitions=_build_usage_partitions(settings, statistics),
         usage_rollup=_build_usage_rollup(settings, statistics),
+        trace_capability=trace_capability,
+        trace=trace_service,
+        debug_trace=debug_trace,
         sessions_service=_build_session_service(
             settings,
             supplied,
@@ -366,6 +409,64 @@ def build_container(
             audit,
         ),
         readiness=readiness,
+    )
+
+
+def _trace_capability(settings: FactoryAgentSettings) -> TraceCapability:
+    """Resolve the deployment's content-capture ceiling into plain values.
+
+    The two gates are applied in the order that matters. The environment is the
+    boundary and the switch is the preference, so a switch set on a production
+    deployment is reported as refused *by environment* rather than as merely
+    ``disabled``. That distinction is the whole point: it tells an operator they
+    asked for something this deployment is incapable of, instead of leaving them
+    to conclude the switch was ignored.
+    """
+    if not settings.is_developer_environment:
+        return TraceCapability(
+            environment=settings.environment,
+            report_available=False,
+            reason="environment",
+            content_capture="none",
+        )
+    if not settings.debug_trace_enabled:
+        return TraceCapability(
+            environment=settings.environment,
+            report_available=False,
+            reason="disabled",
+            content_capture="none",
+        )
+    return TraceCapability(
+        environment=settings.environment,
+        report_available=True,
+        reason=None,
+        content_capture="full",
+        capture_max_payload_bytes=settings.debug_trace_max_payload_bytes,
+        capture_max_rows=settings.debug_trace_max_rows,
+    )
+
+
+def _build_trace(
+    supplied: DependencyOverrides,
+    settings: FactoryAgentSettings,
+    interactions: InteractionStore | None,
+    debug_store: SqlDebugTraceStore | None,
+) -> TraceService | None:
+    """Build the trace read model over the already-constructed stores.
+
+    The read model additionally needs the interaction store, because ownership
+    is resolved there *before* any fact is read: the metering tables carry only
+    ``tenant_id``, so the ``(tenant_id, user_id)`` filter has to come from the
+    interaction row itself.
+    """
+    if supplied.trace is not None:
+        return supplied.trace
+    if debug_store is None or interactions is None:
+        return None
+    return TraceService(
+        interactions,
+        SqlTraceStore(create_session_engine(str(settings.postgres_url)), debug_store),
+        _trace_capability(settings),
     )
 
 

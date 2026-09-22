@@ -15,7 +15,7 @@ from factory_agent.config import FactoryAgentSettings
 
 @pytest.mark.asyncio
 async def test_readiness_reports_statistics_dependency() -> None:
-    app = create_app(FactoryAgentSettings(environment="test"))
+    app = create_app(FactoryAgentSettings(environment="local"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/health/ready")
@@ -29,7 +29,7 @@ async def test_readiness_reports_statistics_dependency() -> None:
 @pytest.mark.asyncio
 async def test_readiness_reports_configured_statistics_without_disclosing_the_dsn() -> None:
     settings = FactoryAgentSettings(
-        environment="test",
+        environment="local",
         postgres_url=PostgresDsn("postgresql://secret@example.invalid:5432/factory_agent"),
     )
     app = create_app(settings)
@@ -45,7 +45,7 @@ async def test_readiness_reports_configured_statistics_without_disclosing_the_ds
 @pytest.mark.asyncio
 async def test_statistics_router_is_not_served_by_the_business_credential() -> None:
     """The two identity domains never authorize each other (D-2)."""
-    app = create_app(FactoryAgentSettings(environment="test"))
+    app = create_app(FactoryAgentSettings(environment="local"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(

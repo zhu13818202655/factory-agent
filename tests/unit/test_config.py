@@ -1,8 +1,10 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
-from factory_agent.config import FactoryAgentSettings
+from factory_agent.config import DeployEnv, FactoryAgentSettings
 
 
 def test_optional_services_are_disabled_by_default() -> None:
@@ -69,3 +71,120 @@ def test_s3_settings_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) 
     assert settings.s3_secret_key.get_secret_value() == "test-secret"
     # Credentials must not surface in repr/str, only through an explicit read.
     assert "test-secret" not in repr(settings)
+
+
+# --- Environment tiers (ADR-0004 §Environment Tiers) -------------------------
+
+
+def test_environment_defaults_to_prod() -> None:
+    """An unconfigured deployment gets the strictest tier, not the loosest.
+
+    "Safe by default" must not depend on anyone remembering to tighten it.
+    """
+    settings = FactoryAgentSettings()
+
+    assert settings.environment == "prod"
+    assert settings.is_developer_environment is False
+    assert settings.debug_trace_active is False
+
+
+@pytest.mark.parametrize("environment", ["cert", "staging", "prod"])
+@pytest.mark.parametrize("debug_trace_enabled", [True, False])
+def test_content_capture_is_unavailable_outside_developer_environments(
+    environment: DeployEnv, debug_trace_enabled: bool
+) -> None:
+    """Acceptance and pre-production are grouped with production on purpose.
+
+    ``cert`` and ``staging`` normally run against real customer data, so the
+    debug switch there must be inert rather than merely "off by default" — a
+    stray environment variable cannot widen the boundary.
+    """
+    settings = FactoryAgentSettings(
+        environment=environment, debug_trace_enabled=debug_trace_enabled
+    )
+
+    assert settings.is_developer_environment is False
+    assert settings.debug_trace_active is False
+
+
+@pytest.mark.parametrize("environment", ["local", "dev"])
+def test_content_capture_needs_both_the_environment_and_the_switch(environment: DeployEnv) -> None:
+    allowed = FactoryAgentSettings(environment=environment, debug_trace_enabled=True)
+    withheld = FactoryAgentSettings(environment=environment)
+
+    assert allowed.debug_trace_active is True
+    assert withheld.debug_trace_active is False
+
+
+@pytest.mark.parametrize(
+    ("written", "resolved"),
+    [
+        ("production", "prod"),
+        ("development", "local"),
+        ("stage", "staging"),
+        ("PROD", "prod"),
+        ("  dev  ", "dev"),
+    ],
+)
+def test_environment_spellings_normalise(written: str, resolved: DeployEnv) -> None:
+    """Legacy and colloquial spellings map onto the five canonical values.
+
+    ``written`` stays a plain ``str`` on purpose — the before-validator is the
+    subject of this test, and a spelling the static type already accepted would
+    never reach it.
+    """
+    assert FactoryAgentSettings(environment=cast("DeployEnv", written)).environment == resolved
+
+
+def test_ambiguous_test_environment_is_refused() -> None:
+    """``test`` means CI to one caller and acceptance to another.
+
+    Those two readings sit on opposite sides of the content-capture boundary, so
+    there is nothing safe to infer: the operator is told to choose rather than
+    handed a guess. Failing at startup is the only safe reading of a value that
+    governs what may be captured.
+    """
+    with pytest.raises(ValidationError) as caught:
+        # ``test`` sits outside DeployEnv by design — refusing it is the behaviour
+        # under test, so the cast tells the checker what the runtime will reject.
+        FactoryAgentSettings(environment=cast("DeployEnv", "test"))
+
+    message = str(caught.value)
+    assert "no equivalent" in message
+    assert "local" in message
+    assert "cert" in message
+
+
+@pytest.mark.parametrize("environment", ["cert", "staging", "prod"])
+def test_debug_log_level_is_withheld_outside_developer_environments(environment: DeployEnv) -> None:
+    """DEBUG records carry far more of a payload than INFO ones (decision B)."""
+    settings = FactoryAgentSettings(environment=environment, log_level="DEBUG")
+
+    assert settings.effective_log_level == "INFO"
+
+
+@pytest.mark.parametrize("environment", ["local", "dev"])
+def test_debug_log_level_is_honoured_in_developer_environments(environment: DeployEnv) -> None:
+    settings = FactoryAgentSettings(environment=environment, log_level="DEBUG")
+
+    assert settings.effective_log_level == "DEBUG"
+
+
+def test_environment_is_read_from_the_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FACTORY_AGENT_ENVIRONMENT", "dev")
+
+    assert FactoryAgentSettings().environment == "dev"
+
+
+def test_debug_trace_defaults_keep_capture_off_and_bounded() -> None:
+    """The channel is off unless asked for, and bounded when it is asked for."""
+    settings = FactoryAgentSettings()
+
+    assert settings.debug_trace_enabled is False
+    assert settings.debug_trace_retention_hours == 24
+    assert settings.debug_trace_max_payload_bytes == 262_144
+    assert settings.debug_trace_max_rows == 500
+
+
+def test_third_party_log_floor_defaults_to_warning() -> None:
+    assert FactoryAgentSettings().log_third_party_level == "WARNING"

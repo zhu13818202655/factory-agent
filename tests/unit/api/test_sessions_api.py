@@ -97,7 +97,7 @@ def client(
     *,
     role: Role = Role.EMPLOYEE,
 ) -> httpx.AsyncClient:
-    app = create_app(FactoryAgentSettings(environment="test"), overrides(store, runner, role=role))
+    app = create_app(FactoryAgentSettings(environment="local"), overrides(store, runner, role=role))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test.invalid")
 
 
@@ -106,7 +106,7 @@ def foreign_client(
 ) -> httpx.AsyncClient:
     """A second identity in the same tenant, to prove session isolation."""
     app = create_app(
-        FactoryAgentSettings(environment="test"),
+        FactoryAgentSettings(environment="local"),
         overrides(
             store,
             runner,
@@ -439,7 +439,7 @@ async def test_export_download_is_owned_and_not_replayable_across_users() -> Non
         # A valid but different user cannot fetch the export (indistinguishable
         # from a missing id).
         app = create_app(
-            FactoryAgentSettings(environment="test"),
+            FactoryAgentSettings(environment="local"),
             overrides(
                 store,
                 runner,

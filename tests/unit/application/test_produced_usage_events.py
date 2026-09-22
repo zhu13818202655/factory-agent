@@ -112,9 +112,24 @@ ALLOWED_FIELDS: dict[str, frozenset[str]] = {
         # verdict, and the verdict it returned (``null`` when it returned none).
         "includes_scope",
         "scope_verdict",
+        # Timeline edges and the parent span. Instants plus an opaque span id,
+        # so the waterfall can be drawn without widening what a fact discloses.
+        "started_at",
+        "ended_at",
+        "parent_span_id",
     },
     "mes_call_completed": ENVELOPE_FIELDS
-    | {"operation_id", "page_count", "row_count_bucket", "duration_ms", "status", "error_category"},
+    | {
+        "operation_id",
+        "page_count",
+        "row_count_bucket",
+        "duration_ms",
+        "status",
+        "error_category",
+        "started_at",
+        "ended_at",
+        "parent_span_id",
+    },
 }
 
 CATALOG = CapabilityCatalog(

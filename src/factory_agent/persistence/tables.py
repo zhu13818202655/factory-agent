@@ -6,8 +6,9 @@ ownership pair; there is deliberately no "by id only" access path.
 Table ownership (ADR-0003): one service and one schema own every table here.
 Business tables are the ``agent_*`` family; metering tables are ``usage_event``,
 ``interaction_fact``, ``llm_call_fact``, ``mes_call_fact``,
-``mes_operation_category``, ``tenant_usage_hourly``, ``tenant_usage_daily``; and
-the platform surface adds ``tenant_registry``, ``admin_audit``,
+``mes_operation_category``, ``tenant_usage_hourly``, ``tenant_usage_daily``; the
+B-channel content store is ``debug_trace`` (separate from metering and from
+logs on purpose); and the platform surface adds ``tenant_registry``, ``admin_audit``,
 ``platform_principal``, ``usage_export``. The Alembic migration history
 (mirroring this metadata) is the only schema source in production; these
 definitions drive the disposable test schema.
@@ -181,6 +182,17 @@ llm_call_fact_table = sa.Table(
     sa.Column("status", sa.Text, nullable=False),
     sa.Column("fallback_reason", sa.Text, nullable=True),
     sa.Column("error_category", sa.Text, nullable=True),
+    #: Wall-clock span edges. ``occurred_at`` dates the record's construction,
+    #: not the call's extent, so without these two a waterfall cannot be drawn
+    #: (no offset). Nullable because rows written before the timeline migration
+    #: carry no reading, and a back-filled guess would be indistinguishable from
+    #: a measurement.
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
+    #: Parent span within this interaction: the phase a call ran under, or an
+    #: enclosing span. Expresses cross-round causality that ``logical_call_id``
+    #: (a flat id) cannot.
+    sa.Column("parent_span_id", sa.Text, nullable=True),
     sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
     sa.Index("llm_call_fact_tenant_occurred_idx", "tenant_id", "occurred_at"),
 )
@@ -203,9 +215,65 @@ mes_call_fact_table = sa.Table(
     sa.Column("duration_ms", sa.BigInteger, nullable=False),
     sa.Column("status", sa.Text, nullable=False),
     sa.Column("error_category", sa.Text, nullable=True),
+    #: See ``llm_call_fact``: the timeline pair plus the phase this call ran
+    #: under. A paged fetch is a serial fan-out, so the offsets here are what
+    #: makes the dominant stage visible at a glance (§4.7 约束二).
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("parent_span_id", sa.Text, nullable=True),
     sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
     sa.Index("mes_call_fact_tenant_occurred_idx", "tenant_id", "occurred_at"),
     sa.Index("mes_call_fact_operation_idx", "operation_id", "occurred_at"),
+)
+
+#: B-channel debug payload store (§4.4 route B). Holds the content the fact
+#: tables deliberately exclude — prompts, tool parameters, result envelopes —
+#: and is a separate store precisely so that content retention, expiry and
+#: access control are decided here rather than inherited from the log stream.
+#:
+#: Not part of the metering chain and never written by it: rows are only
+#: produced when the environment ceiling *and* the runtime switch both allow
+#: capture, so on ``cert`` / ``staging`` / ``prod`` this table only ever drains.
+#:
+#: ``(tenant_id, user_id)`` is part of every read, matching the
+#: ``agent_interaction`` ownership rule; there is no by-id-only path.
+#: ``expires_at`` follows the same lazy-cleanup precedent as ``agent_favorite``
+#: and ``usage_export`` and is defaulted from ``debug_trace_retention_hours``.
+debug_trace_table = sa.Table(
+    "debug_trace",
+    METADATA,
+    #: ``{interaction_id}:{span_key}`` — deterministic, so a replayed commit
+    #: writes the same row once instead of duplicating the payload.
+    sa.Column("trace_id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, nullable=False),
+    sa.Column("user_id", sa.Text, nullable=False),
+    sa.Column("session_id", sa.Text, nullable=False),
+    sa.Column("interaction_id", sa.Text, nullable=False),
+    #: Join key back to the fact row; see ``observability.debug_trace``.
+    sa.Column("span_key", sa.Text, nullable=False),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("stage", sa.Text, nullable=True),
+    sa.Column("logical_call_id", sa.Text, nullable=True),
+    sa.Column("attempt", sa.Integer, nullable=True),
+    sa.Column("operation_id", sa.Text, nullable=True),
+    sa.Column("input_payload", sa.JSON, nullable=True),
+    sa.Column("output_payload", sa.JSON, nullable=True),
+    #: True means ``input_payload`` / ``output_payload`` carry structure and
+    #: statistics only; ``original_rows`` / ``original_bytes`` give the size
+    #: before truncation. A consumer must render this explicitly.
+    sa.Column("truncated", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column("original_rows", sa.Integer, nullable=True),
+    sa.Column("original_bytes", sa.Integer, nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index(
+        "debug_trace_owner_idx",
+        "tenant_id",
+        "user_id",
+        "interaction_id",
+        "span_key",
+    ),
+    sa.Index("debug_trace_expiry_idx", "expires_at"),
 )
 
 #: Reviewed ``operation_id`` → billing category mapping (D5). Owned by this
@@ -422,6 +490,7 @@ usage_export_table = sa.Table(
 __all__ = [
     "METADATA",
     "admin_audit_table",
+    "debug_trace_table",
     "event_table",
     "favorite_table",
     "interaction_fact_table",

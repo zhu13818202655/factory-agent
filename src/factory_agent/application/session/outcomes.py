@@ -31,6 +31,7 @@ from factory_agent.domain import (
     SessionState,
     terminal_event_name,
 )
+from factory_agent.observability.redaction import text_digest
 from factory_agent.ports import InteractionCommit, UsageEvent
 
 
@@ -95,9 +96,15 @@ class SessionOutcomeMixin(SessionCore):
             updated_at=now,
             completed_at=now,
         )
+        # The clarification text is user-facing prose that can echo the caller's own
+        # business values ("你要查哪个部门的工资条?"), which ADR-0004 §Forbidden Log
+        # Content excludes from the log stream. Length and an irreversible digest
+        # keep the record diagnosable without the text; the text itself is on the
+        # clarification event and in ``agent_message``.
         session_logger.info(
-            "session.outcome.clarify question={question}",
-            question=question,
+            "session.outcome.clarify question_len={question_len} question_digest={question_digest}",
+            question_len=len(question),
+            question_digest=text_digest(question),
             interaction_id=str(state.record.interaction_id),
             session_id=str(state.record.session_id),
         )
@@ -163,9 +170,14 @@ class SessionOutcomeMixin(SessionCore):
             updated_at=now,
             completed_at=now,
         )
+        # Same rule as the clarification and result paths: the answer is a final
+        # answer, and ADR-0004 §Forbidden Log Content excludes it from logs. It is
+        # yielded on the ``interaction.answer`` event and persisted as an
+        # ``agent_message``; the log keeps only its size and an irreversible digest.
         session_logger.info(
-            "session.outcome.chat answer={answer}",
-            answer=text,
+            "session.outcome.chat answer_len={answer_len} answer_digest={answer_digest}",
+            answer_len=len(text),
+            answer_digest=text_digest(text),
             interaction_id=str(state.record.interaction_id),
             session_id=str(state.record.session_id),
         )

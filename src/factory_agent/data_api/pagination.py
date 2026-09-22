@@ -133,6 +133,26 @@ class BoundedPager:
 
             if expected_total is None:
                 expected_total = total
+                if len(validated_items) >= expected_total:
+                    # The upstream ignored the ``size`` cap and returned the
+                    # whole window in one shot (observed live: a probe for
+                    # 20k rows came back with all 75k). The data is already
+                    # complete — re-walking at the ceiling size would
+                    # re-download the identical dump and pay the upstream's
+                    # ~30 s a second time.
+                    items.extend(validated_items)
+                    publish_mes_fetch_progress(
+                        MesFetchProgress(
+                            page=page_number, rows=len(items), total=expected_total
+                        )
+                    )
+                    return PagedResult(
+                        items=tuple(items[:expected_total]),
+                        total=expected_total,
+                        pages_fetched=page_number,
+                        complete=True,
+                        footer=footer,
+                    )
                 if not resized and total > size:
                     escalated = self.budget.page_size_ceiling
                     if escalated > size:

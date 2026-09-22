@@ -78,7 +78,7 @@ async def test_orchestration_baseline_records_p50_p95_p99() -> None:
         capability_runner=runner,
         new_id=SequentialIds(),
     )
-    app = create_app(FactoryAgentSettings(environment="test"), overrides)
+    app = create_app(FactoryAgentSettings(environment="local"), overrides)
 
     durations_ms: list[float] = []
     async with httpx.AsyncClient(

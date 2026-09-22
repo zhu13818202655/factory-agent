@@ -36,7 +36,7 @@ def business_app() -> FastAPI:
     exchange = FakeCredentialExchange(
         {CREDENTIAL: principal(tenant_id="tenant-a", user_id="user-a", role=Role.EMPLOYEE)}
     )
-    settings = FactoryAgentSettings(environment="test")
+    settings = FactoryAgentSettings(environment="local")
     return create_app(
         settings,
         DependencyOverrides(clock=FrozenClock(NOW), credential_exchange=exchange),

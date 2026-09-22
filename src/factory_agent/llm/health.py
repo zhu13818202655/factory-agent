@@ -96,6 +96,10 @@ class EndpointHealthMonitor:
         self._failures_to_demote = failures_to_demote
         self._consecutive_failures: dict[str, int] = {}
         self._demoted: set[str] = set()
+        #: Endpoints whose current failure episode began with the probe itself
+        #: raising. Tracked so "the health check is broken" is reported once per
+        #: episode rather than once per probe.
+        self._probe_errors: set[str] = set()
 
     @property
     def demoted_endpoints(self) -> frozenset[str]:
@@ -137,16 +141,22 @@ class EndpointHealthMonitor:
             await closer()
 
     async def _probe_one(self, deployment: ResolvedDeployment) -> None:
+        probe_raised = False
         try:
             healthy = await self._probe.is_healthy(deployment)
         except Exception:  # noqa: BLE001 - an unusable probe is a failed probe
-            _health_logger.warning("llm.endpoint.probe_error", endpoint=deployment.api_base)
+            # Not logged here. A persistently unreachable host used to print one
+            # line per endpoint per interval forever while saying nothing new;
+            # ``_record`` knows whether this verdict is a transition, so it — not
+            # the probe — decides what earns a line.
+            probe_raised = True
             healthy = False
-        self._record(deployment.api_base, healthy)
+        self._record(deployment.api_base, healthy, probe_error=probe_raised)
 
-    def _record(self, endpoint: str, healthy: bool) -> None:
+    def _record(self, endpoint: str, healthy: bool, *, probe_error: bool = False) -> None:
         if healthy:
             attempts = self._consecutive_failures.pop(endpoint, 0)
+            self._probe_errors.discard(endpoint)
             if endpoint in self._demoted:
                 self._demoted.discard(endpoint)
                 _health_logger.info(
@@ -158,7 +168,21 @@ class EndpointHealthMonitor:
 
         failures = self._consecutive_failures.get(endpoint, 0) + 1
         self._consecutive_failures[endpoint] = failures
-        if failures >= self._failures_to_demote and endpoint not in self._demoted:
+        if probe_error and endpoint not in self._probe_errors:
+            # First error of this episode. Distinct from a probe that answers
+            # "unhealthy": here the health check itself is unusable (bad URL,
+            # DNS, TLS), which an operator fixes differently.
+            self._probe_errors.add(endpoint)
+            _health_logger.warning(
+                "llm.endpoint.probe_error endpoint={endpoint} failed_probes={failed}",
+                endpoint=endpoint,
+                failed=failures,
+            )
+        if endpoint in self._demoted:
+            # The verdict has not changed, so neither has anything worth a line:
+            # this repetition is exactly the noise the state tracking suppresses.
+            return
+        if failures >= self._failures_to_demote:
             self._demoted.add(endpoint)
             _health_logger.warning(
                 "llm.endpoint.demoted endpoint={endpoint} failed_probes={failed}",

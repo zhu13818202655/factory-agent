@@ -1,15 +1,60 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, SecretStr
+from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: Deployment environments. ``environment`` is deliberately not just a label: it
+#: is the *ceiling* on everything the observability surface may capture. Only
+#: developer environments (``local`` / ``dev``) may ever hold prompt text,
+#: tool arguments or tool returns; ``cert`` and ``staging`` sit with ``prod`` on
+#: purpose, because acceptance and pre-production stacks normally run against
+#: real customer data (docs/adr/0004 §Environment Tiers).
+DeployEnv = Literal["local", "dev", "cert", "staging", "prod"]
+
+#: Behaviour-equivalent legacy spellings. ``test`` is deliberately absent: a CI
+#: run and an acceptance run sit on opposite sides of the content-capture
+#: boundary, so there is nothing safe to infer and the caller must choose.
+_LEGACY_ENVIRONMENTS: dict[str, str] = {
+    "production": "prod",
+    "development": "local",
+}
+
+#: Accepted input spellings that normalise to a canonical value. ``stage`` is
+#: the colloquial form of ``staging``; it is accepted on input but never
+#: emitted, because ``stage`` is already this codebase's word for a pipeline
+#: stage (``ModelStage``, ``llm_call_fact.stage``) and the collision reads badly
+#: in a record that carries both.
+_ENVIRONMENT_ALIASES: dict[str, str] = {**_LEGACY_ENVIRONMENTS, "stage": "staging"}
 
 
 class FactoryAgentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FACTORY_AGENT_", extra="ignore")
 
-    environment: Literal["development", "test", "production"] = "development"
+    environment: DeployEnv = "prod"
+
+    @field_validator("environment", mode="before")
+    @classmethod
+    def _normalise_environment(cls, value: Any) -> Any:
+        """Accept legacy and colloquial spellings; refuse ambiguous ones.
+
+        A deployment environment is a compliance boundary, so a value that
+        cannot be mapped without guessing is an error rather than a silent
+        fallback: ``test`` means "CI" to one caller and "acceptance" to another,
+        and those two answers sit on opposite sides of the content-capture
+        boundary. Failing loudly at startup is the only safe reading.
+        """
+        if not isinstance(value, str):
+            return value
+        normalised = value.strip().lower()
+        if normalised == "test":
+            raise ValueError(
+                "environment 'test' has no equivalent: use 'local' for a local or "
+                "CI run, or 'cert' for an acceptance environment"
+            )
+        return _ENVIRONMENT_ALIASES.get(normalised, normalised)
+
     host: str = "127.0.0.1"
     port: int = 8000
     canonical_mes_base_url: AnyHttpUrl | None = None
@@ -40,7 +85,33 @@ class FactoryAgentSettings(BaseSettings):
 
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
+    #: Minimum level for the standard-library loggers forwarded into the business
+    #: stream (``logging_adapter._INTERCEPTED_LOGGERS``). Transport libraries log
+    #: one line per outbound request at INFO, duplicating a fact that
+    #: ``mes_call_fact`` / ``llm_call_fact`` already record in redacted,
+    #: structured form — and ``httpx`` prints the full URL including its query
+    #: string, which ADR-0004 forbids. ``WARNING`` keeps connection failures and
+    #: 5xx visible while dropping the per-request narration; raise it back to
+    #: ``INFO`` locally when diagnosing a transport library itself.
+    log_third_party_level: str = "WARNING"
     request_id_header: str = "X-Request-ID"
+
+    # ---- Debug trace channel (ADR-0004 §Environment Tiers) -------------------
+    #: Capture prompt text, tool arguments and tool returns into the separate
+    #: ``debug_trace`` store. Ignored — and reported as refused at startup —
+    #: outside the developer environments, so ``prod`` / ``cert`` / ``staging``
+    #: cannot be talked into holding content by a stray environment variable.
+    debug_trace_enabled: bool = False
+    #: Independent retention window for captured content. Content is not a log
+    #: record and must not inherit the log's retention.
+    debug_trace_retention_hours: int = Field(default=24, ge=1)
+    #: Per-payload caps. A whole-plant query returns tens of thousands of rows
+    #: (the reference prototype models 128,430 rows / ~96 MB); storing that
+    #: verbatim would defeat the retention window and the point of a separate
+    #: store. Beyond the cap only structure and statistics are kept, flagged
+    #: ``truncated`` so a reader cannot mistake a partial payload for a whole one.
+    debug_trace_max_payload_bytes: int = Field(default=262_144, ge=1024)
+    debug_trace_max_rows: int = Field(default=500, ge=1)
 
     # MES credential contract (docs/product/AI问答对外接口-整理.md §2). The
     # caller presents an encrypted app_key in this header; the agent exchanges
@@ -204,6 +275,40 @@ class FactoryAgentSettings(BaseSettings):
     #: sweep interval so a restart or a failed cycle cannot leave a gap, and it
     #: is the replay window for late-arriving facts.
     usage_rollup_window_hours: int = Field(default=24, ge=1)
+
+    @property
+    def is_developer_environment(self) -> bool:
+        """Whether this deployment may hold captured content at all.
+
+        Single source of truth for both the debug channel and the DEBUG log
+        level: two features that must never disagree about what "not production"
+        means, because they are gated on the same compliance boundary.
+        """
+        return self.environment in ("local", "dev")
+
+    @property
+    def debug_trace_active(self) -> bool:
+        """Whether captured content is actually being written right now.
+
+        Requires the environment ceiling *and* the explicit runtime switch;
+        neither alone is enough (ADR-0004 §Environment Tiers). Setting the switch
+        on a non-developer deployment is a no-op by construction, not by
+        convention — a misconfiguration cannot widen the boundary.
+        """
+        return self.debug_trace_enabled and self.is_developer_environment
+
+    @property
+    def effective_log_level(self) -> str:
+        """``log_level`` with DEBUG withheld outside developer environments.
+
+        ADR-0004 scopes DEBUG to local diagnostics. Debug records carry far more
+        of a payload than INFO ones, so an operator setting DEBUG on a production
+        deployment is asking for precisely the leak the environment tier exists
+        to prevent; the request is ignored rather than honoured.
+        """
+        if self.log_level.strip().upper() == "DEBUG" and not self.is_developer_environment:
+            return "INFO"
+        return self.log_level
 
 
 @lru_cache

@@ -87,7 +87,7 @@ def _client(exporter: ArtifactExporter, audit: AuditSink) -> httpx.AsyncClient:
         artifact_exporter=exporter,
         audit=audit,
     )
-    app = create_app(FactoryAgentSettings(environment="test"), overrides)
+    app = create_app(FactoryAgentSettings(environment="local"), overrides)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test.invalid")
 
 

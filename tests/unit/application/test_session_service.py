@@ -933,8 +933,15 @@ async def test_chitchat_records_only_extract_and_chat_llm_usage_events() -> None
 
 
 @pytest.mark.asyncio
-async def test_chitchat_logs_the_answer_text(caplog: pytest.LogCaptureFixture) -> None:
-    """The chat answer returned to the front end is logged."""
+async def test_chitchat_logs_the_outcome_without_the_answer_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The chat outcome is logged; the answer text is not.
+
+    ADR-0004 §Forbidden Log Content excludes final answers. The answer reached the
+    front end and was persisted, so the log only owes us its size and an
+    irreversible digest — this asserts the text itself never appears.
+    """
     service, _, _ = build([CHITCHAT_PAYLOAD], chat_text="你好呀！")
     record = await service.start(credential(), StartRequest(session_id=SESSION, text="你好"))
 
@@ -942,7 +949,9 @@ async def test_chitchat_logs_the_answer_text(caplog: pytest.LogCaptureFixture) -
     await drain(service, record.interaction_id)
 
     assert "session.outcome.chat" in caplog.text
-    assert "你好呀！" in caplog.text
+    assert "answer_len=" in caplog.text
+    assert "answer_digest=" in caplog.text
+    assert "你好呀！" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1094,6 +1103,36 @@ async def test_rewritten_follow_up_is_echoed_back_on_clarification() -> None:
     assert isinstance(question, str)
     assert "查询我这个月的工资明细" in question
     assert store.interactions[str(record.interaction_id)].clarification_rounds == 1
+
+
+@pytest.mark.asyncio
+async def test_clarification_text_stays_on_the_event_and_out_of_the_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The clarification prose echoes the caller's own business values.
+
+    The text is a model-derived, user-facing sentence — with a rewrite it can carry
+    a phrase like ``工资明细`` out of the caller's question and into the record, which
+    ADR-0004 §Forbidden Log Content excludes. It belongs on the clarification event
+    (asserted above) and in ``agent_message``; the log keeps only its size and an
+    irreversible digest.
+    """
+    payload = (
+        '{"type": "capability", "capability_id": null, "confidence": 0.9, '
+        '"slots": {}, "rewrite_query": "查询我这个月的工资明细"}'
+    )
+    service, _, _ = build([payload])
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="那这个月呢？")
+    )
+
+    caplog.set_level(0)
+    await drain(service, record.interaction_id)
+
+    assert "session.outcome.clarify" in caplog.text
+    assert "question_len=" in caplog.text
+    assert "question_digest=" in caplog.text
+    assert "工资明细" not in caplog.text
 
 
 SCOPE_BEYOND_PAYLOAD = '{"verdict": "beyond", "target": "全组的工资明细"}'

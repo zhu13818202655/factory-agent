@@ -224,3 +224,39 @@ async def test_window_that_fits_the_probe_page_is_fetched_once() -> None:
     assert result.complete is True
     assert result.pages_fetched == 1
     assert {int(request.params["size"]) for request in adapter.requests} == {10}
+
+
+class _FullDumpAdapter(FakeMesAdapter):
+    """Ignores ``size`` and dumps the whole window on every call.
+
+    Live finding (2026-09-22): the customer MES returned all 75k rows for a
+    20k-row probe. The old pager then discarded the complete data and
+    re-downloaded the identical dump at the ceiling size — paying the
+    upstream's ~30 s twice for zero extra rows.
+    """
+
+    def __init__(self, total: int) -> None:
+        super().__init__()
+        self._total = total
+
+    async def execute(self, request: MesRequest) -> MesResponse:
+        self.requests.append(request)
+        items = [{"record_id": f"r{index}"} for index in range(self._total)]
+        return MesResponse(result={"list": items, "total": self._total}, footer=None)
+
+
+@pytest.mark.asyncio
+async def test_probe_that_already_returned_the_total_is_not_rewalked() -> None:
+    """The probe came back complete despite a smaller ``size``: keep it."""
+    adapter = _FullDumpAdapter(total=80)
+    pager = BoundedPager(
+        adapter,  # type: ignore[arg-type]
+        budget=PagerBudget(page_size=10, page_size_ceiling=100),
+    )
+
+    result = await pager.fetch_all("YskQuery", {}, item_model=_Item)
+
+    assert result.complete is True
+    assert result.total == 80
+    assert len(result.items) == 80
+    assert len(adapter.requests) == 1

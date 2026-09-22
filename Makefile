@@ -11,6 +11,7 @@ GIT_SAFE_ENV := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VA
 VENV_PYTHON := .venv/bin/python
 ENV_FILE ?= .env
 PG_CONTAINER ?= factory-agent-middleware-postgres-1
+PG_DB ?= factory_agent
 # Usage: make migrate ACTION=downgrade REVISION=base
 ACTION ?= upgrade
 REVISION ?= head
@@ -106,8 +107,19 @@ middleware-reset:
 migrate: middleware-up
 	@$(LOAD_ENV); $(VENV_PYTHON) -m factory_agent.persistence.migrations $(ACTION) $(REVISION)
 
+# Three distinguishable answers, because collapsing them hides the one an
+# operator actually needs: "the container is down" must not read as "nothing has
+# been migrated yet". Reachability is probed separately from the version query,
+# so a database that exists but has never been migrated still reports NOT
+# MIGRATED rather than looking like an outage.
 migrate-status:
-	@rev=$$(docker exec $(PG_CONTAINER) psql -U postgres -d factory_agent \
+	@if ! docker exec $(PG_CONTAINER) psql -U postgres -d $(PG_DB) \
+		-tAc "SELECT 1" >/dev/null 2>&1; then \
+		printf '%-30s %s\n' "alembic_version:" \
+			"UNAVAILABLE: cannot reach database '$(PG_DB)' in container '$(PG_CONTAINER)'" >&2; \
+		exit 1; \
+	fi; \
+	rev=$$(docker exec $(PG_CONTAINER) psql -U postgres -d $(PG_DB) \
 		-tAc "SELECT version_num FROM alembic_version;" 2>/dev/null | tr -d '[:space:]'); \
 	printf '%-30s %s\n' "alembic_version:" "$${rev:-NOT MIGRATED}"
 

@@ -143,6 +143,11 @@ class MesCallRecord:
     duration_ms: int
     status: Literal["completed", "failed"]
     error_category: str | None = None
+    #: Wall-clock edges of the attempt. The adapter already reads its clock at
+    #: both ends, so handing them over costs nothing and gives the trace view an
+    #: offset to draw; no business value travels with them.
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
 
 
 class MesCallRecorder(Protocol):

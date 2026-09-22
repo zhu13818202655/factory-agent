@@ -6,8 +6,6 @@ The recorder is a protocol, so this suite
 injects a recording fake and asserts adapter behaviour without a database.
 """
 
-
-
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -147,6 +145,68 @@ async def test_recorder_raising_never_breaks_the_mes_call() -> None:
 
     # The MES call succeeds even though recording failed.
     await adapter.execute(_request())
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_debug_capture_stores_envelope_as_structure_not_repr_string() -> None:
+    """B-channel capture keeps the envelope's JSON structure.
+
+    The envelope is a pydantic model; handed to the capture layer raw it would
+    be flattened by ``json.dumps(..., default=str)`` into one giant repr
+    string — rows counted as 0 and the report showing a repr blob. The capture
+    must ``model_dump`` it: rows counted, nesting intact, JSON-renderable.
+    """
+    import json as _json
+
+    from factory_agent.observability.debug_trace import (
+        CaptureScope,
+        close_capture_scope,
+        configure_debug_trace,
+        drain_debug_captures,
+        open_capture_scope,
+    )
+    from tests.support.payload import as_dict, as_list
+
+    configure_debug_trace(enabled=True, max_payload_bytes=262_144, max_rows=500)
+    open_capture_scope(
+        CaptureScope(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            session_id="session-1",
+            interaction_id="interaction-1",
+        )
+    )
+    rows = [
+        {"id": 1, "uname": "王倩倩", "je": 1.08},
+        {"id": 2, "uname": "郑金禄", "je": 2.20},
+    ]
+    adapter = _adapter(
+        client=JsonBodyTransport(_envelope(result={"list": rows, "total": 2})).client(),
+    )
+    try:
+        await adapter.execute(_request())
+        captures = drain_debug_captures()
+    finally:
+        close_capture_scope()
+        configure_debug_trace(enabled=False, max_payload_bytes=262_144, max_rows=500)
+
+    assert captures, "capture was enabled: the MES span must have been captured"
+    mes = [c for c in captures if c.kind == "mes"]
+    assert mes, "the MES span capture is missing"
+    payload = mes[-1].payload
+    assert payload.truncated is False
+    envelope = as_dict(as_dict(payload.output)["envelope"])
+    assert envelope["code"] == 1
+    result = as_dict(envelope["result"])
+    out_rows = as_list(result["list"])
+    assert len(out_rows) == 2
+    assert as_dict(out_rows[0])["uname"] == "王倩倩"
+    # The whole point: the stored payload must be JSON-serializable as-is —
+    # a repr string would not be, and the report cannot render it as JSON.
+    rendered = _json.dumps(payload.output, ensure_ascii=False)
+    assert "王倩倩" in rendered
+    assert "'uname'" not in rendered, "single quotes would mean a repr string, not JSON"
     await adapter.aclose()
 
 

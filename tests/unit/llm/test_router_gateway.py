@@ -628,3 +628,114 @@ async def test_stream_refuses_an_unconfigured_alias_at_the_call_site() -> None:
 
     assert caught.value.category is ModelErrorCategory.NOT_CONFIGURED
     assert router.calls == []
+
+
+@pytest.mark.asyncio
+async def test_debug_capture_records_llm_request_and_response() -> None:
+    """B-channel: LLM 调用的输入（消息序列+采样参数）与输出（正文+用量）入捕获库。
+
+    修复前 LLM 调用完全没有捕获点 —— 报告里 LLM 行只有「未捕获载荷」。
+    输入输出必须保持 JSON 原生结构（messages 是列表），供报告树状渲染。
+    """
+    import json as _json
+
+    from factory_agent.observability.debug_trace import (
+        CaptureScope,
+        close_capture_scope,
+        configure_debug_trace,
+        drain_debug_captures,
+        open_capture_scope,
+    )
+    from tests.support.payload import as_dict, as_list
+
+    configure_debug_trace(enabled=True, max_payload_bytes=262_144, max_rows=500)
+    open_capture_scope(
+        CaptureScope(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            session_id="session-1",
+            interaction_id="interaction-1",
+        )
+    )
+    try:
+        built = gateway(StubRouter())
+        response = await built.complete(request())
+    finally:
+        captures = drain_debug_captures()
+        close_capture_scope()
+        configure_debug_trace(enabled=False, max_payload_bytes=262_144, max_rows=500)
+
+    assert response.content == '{"ok": true}'
+    llm = [c for c in captures if c.kind == "llm"]
+    assert len(llm) == 1, f"expected exactly one llm capture, got {len(llm)}"
+    capture = llm[0]
+    assert capture.stage == "classify"
+    assert capture.logical_call_id == "call-1"
+
+    payload = capture.payload
+    assert payload.truncated is False
+    inp = as_dict(payload.input)
+    assert inp["model_alias"] == "factory-fast"
+    messages = as_list(inp["messages"])
+    assert len(messages) == 1
+    assert as_dict(messages[0])["content"] == CANARY_PROMPT
+
+    out = as_dict(payload.output)
+    assert out["content"] == '{"ok": true}'
+    usage = as_dict(out["usage"])
+    assert usage["prompt_tokens"] == 31
+    # JSON 原生结构（不是 repr 字符串）：报告可以树状渲染
+    assert "'content'" not in _json.dumps(payload.output, ensure_ascii=False)
+    assert '"content"' in _json.dumps(payload.output, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_debug_capture_records_streamed_reply_as_accumulated_text() -> None:
+    """流式调用在流结束后整体入捕获：content/reasoning 拼接为完整文本。"""
+    from factory_agent.observability.debug_trace import (
+        CaptureScope,
+        close_capture_scope,
+        configure_debug_trace,
+        drain_debug_captures,
+        open_capture_scope,
+    )
+    from tests.support.payload import as_dict
+
+    configure_debug_trace(enabled=True, max_payload_bytes=262_144, max_rows=500)
+    open_capture_scope(
+        CaptureScope(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            session_id="session-1",
+            interaction_id="interaction-1",
+        )
+    )
+    try:
+        built = streaming_gateway(
+            StreamingRouter(chunks=[chunk(reasoning="思考中。"), chunk("全厂"), chunk("合计。")]),
+            "factory-fast",
+        )
+        parts = [
+            delta.text
+            async for delta in built.stream(
+                ModelRequest(
+                    model_alias="factory-fast",
+                    messages=(ModelMessage(role="user", content=CANARY_PROMPT),),
+                    stage=ModelStage.SUMMARIZE,
+                    logical_call_id="call-stream-1",
+                )
+            )
+            if delta.kind is ModelDeltaKind.CONTENT
+        ]
+    finally:
+        captures = drain_debug_captures()
+        close_capture_scope()
+        configure_debug_trace(enabled=False, max_payload_bytes=262_144, max_rows=500)
+
+    assert "".join(parts) == "全厂合计。"
+    llm = [c for c in captures if c.kind == "llm"]
+    assert len(llm) == 1
+    out = as_dict(llm[0].payload.output)
+    assert out["streamed"] is True
+    assert out["content"] == "全厂合计。"
+    assert out["reasoning"] == "思考中。"

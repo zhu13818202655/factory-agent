@@ -30,7 +30,9 @@ from factory_agent.domain import (
     TenantId,
     UserId,
 )
+from factory_agent.observability.debug_trace import drain_debug_captures
 from factory_agent.persistence import queries
+from factory_agent.persistence.debug_trace_store import SqlDebugTraceStore
 from factory_agent.persistence.metering import SqlMeteringStore
 from factory_agent.persistence.tables import (
     event_table,
@@ -51,9 +53,15 @@ from factory_agent.ports import (
 class SqlInteractionStore:
     """Durable session store; every query is ownership-filtered."""
 
-    def __init__(self, engine: AsyncEngine, metering: SqlMeteringStore | None = None) -> None:
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        metering: SqlMeteringStore | None = None,
+        debug_trace: SqlDebugTraceStore | None = None,
+    ) -> None:
         self._engine = engine
         self._metering = metering or SqlMeteringStore(engine)
+        self._debug_trace = debug_trace
 
     async def commit(self, commit: InteractionCommit) -> None:
         record = commit.interaction
@@ -95,6 +103,16 @@ class SqlInteractionStore:
         # Metering is a separate transaction so a write failure can never roll
         # back the business data above.
         await self._metering.write_usage_events(commit.usage_events)
+        # The debug channel drains here, next to metering and for the same
+        # reason: the captures recorded since the last commit belong to this
+        # interaction (the buffer is per-interaction by context variable), and
+        # the drain is a context read, so no commit site had to learn about it.
+        # Draining unconditionally matters even with no store configured —
+        # otherwise a capture-enabled process without a database would keep the
+        # payloads alive for the life of the interaction.
+        captures = drain_debug_captures()
+        if self._debug_trace is not None:
+            await self._debug_trace.write(captures)
 
     async def claim_run(
         self, owner: InteractionOwner, interaction_id: InteractionId, now: datetime

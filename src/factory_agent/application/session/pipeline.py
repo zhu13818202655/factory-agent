@@ -78,6 +78,12 @@ from factory_agent.domain import (
     terminal_event_name,
 )
 from factory_agent.domain.errors import ForbiddenError
+from factory_agent.observability.debug_trace import (
+    CaptureScope,
+    close_capture_scope,
+    open_capture_scope,
+)
+from factory_agent.observability.redaction import text_digest
 from factory_agent.ports import (
     CapabilityRunRequest,
     CapabilityRunResult,
@@ -276,6 +282,19 @@ class SessionPipelineMixin(SessionNarrationMixin):
         # (``asyncio.create_task`` copies it), so concurrent connections and
         # the spawning request handler are never affected.
         set_usage_context(self._usage_context(record))
+        # The debug channel is opened alongside the usage context and for the
+        # same reason: adapters record payloads without knowing the ownership
+        # pair, and the identity is attached where it is already trusted. A
+        # no-op when capture is off, which is the normal case — the buffer stays
+        # empty because the adapters never build a payload to put in it.
+        open_capture_scope(
+            CaptureScope(
+                tenant_id=str(record.tenant_id),
+                user_id=str(record.user_id),
+                session_id=str(record.session_id),
+                interaction_id=str(record.interaction_id),
+            )
+        )
         binder = self._credential_binder
         binding = binder.bind_for(credential) if binder is not None else nullcontext()
         try:
@@ -343,6 +362,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
                         yield event
         finally:
             set_usage_context(None)
+            close_capture_scope()
 
     async def _authorize_request(
         self,
@@ -1046,18 +1066,34 @@ class SessionPipelineMixin(SessionNarrationMixin):
         )
         # Final user-visible outcome on the result path: structured metadata
         # only — capability, columns, row_count and completeness. Raw result
-        # rows are deliberately never logged (sensitive business values).
+        # rows are deliberately never logged (sensitive business values), and
+        # neither is the answer text: ADR-0004 §Forbidden Log Content bans final
+        # answers, and interpolating ``answer_text`` into the template puts it in
+        # ``event``, where the key-based policy in ``redact_mapping`` cannot reach
+        # it — the message is already rendered by the time the sink sees it. The
+        # character count and an irreversible digest carry what a log reader
+        # actually needs (that an answer existed, how long it was, and whether two
+        # records describe the same one); the answer itself lives in
+        # ``agent_message.payload``, which is where it belongs.
+        #
+        # Both values stay in the message rather than becoming ``extra`` keys on
+        # purpose: ``answer`` is a sensitive-key pattern, and ``is_sensitive_key``
+        # matches on substring, so ``answer_len`` / ``answer_digest`` would be
+        # redacted back to ``[REDACTED]`` — invisible in the structured payload and
+        # inconsistent with the same value in ``event``.
         session_logger.info(
             "session.outcome.result capability={capability_id} rows={row_count} "
             "incomplete={incomplete} reason={incomplete_reason} "
-            "artifact={artifact_id} columns=[{columns}] answer={answer}",
+            "artifact={artifact_id} columns=[{columns}] answer_len={answer_len} "
+            "answer_digest={answer_digest}",
             capability_id=str(capability_id),
             row_count=len(result.rows),
             incomplete=result.incomplete,
             incomplete_reason=result.incomplete_reason,
             artifact_id=artifact_id,
             columns=",".join(result.column_names),
-            answer=answer_text,
+            answer_len=len(answer_text),
+            answer_digest=text_digest(answer_text),
             interaction_id=str(state.record.interaction_id),
             session_id=str(state.record.session_id),
         )

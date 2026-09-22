@@ -24,6 +24,7 @@ from factory_agent.persistence.metering import SqlMeteringStore
 from factory_agent.persistence.rollup_store import SqlRollupStore
 from factory_agent.persistence.tables import (
     METADATA,
+    llm_call_fact_table,
     mes_call_fact_table,
     tenant_usage_hourly_table,
     usage_event_table,
@@ -113,6 +114,9 @@ def mes_event(
     *,
     status: str = "completed",
     occurred_at: datetime = NOW,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
+    parent_span_id: str | None = None,
 ) -> UsageEvent:
     payload: dict[str, object] = {
         "event_id": event_id,
@@ -130,6 +134,13 @@ def mes_event(
         "duration_ms": 12,
         "status": status,
         "error_category": None if status == "completed" else "internal_error",
+        # Optional by design: an adapter that has the two clock readings supplies
+        # them, and one that does not must leave them NULL rather than have a
+        # value invented for it (migration 20260922_0003). Left out entirely by
+        # older callers, so the key is present-but-null here rather than absent.
+        "started_at": started_at.isoformat() if started_at is not None else None,
+        "ended_at": ended_at.isoformat() if ended_at is not None else None,
+        "parent_span_id": parent_span_id,
     }
     return UsageEvent(
         event_id=event_id,
@@ -137,6 +148,51 @@ def mes_event(
         tenant_id=TenantId(TENANT),
         payload=payload,
         created_at=occurred_at,
+    )
+
+
+def llm_event(
+    event_id: str,
+    logical_call_id: str = "lc_8f21",
+    *,
+    attempt: int = 1,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
+    parent_span_id: str | None = None,
+) -> UsageEvent:
+    payload: dict[str, object] = {
+        "event_id": event_id,
+        "schema_version": "1.0",
+        "occurred_at": NOW.isoformat(),
+        "tenant_id": TENANT,
+        "user_subject_id": "u1",
+        "session_id": "s-1",
+        "interaction_id": "i-1",
+        "trace_id": "0" * 32,
+        "event_type": "llm_call_completed",
+        "logical_call_id": logical_call_id,
+        "stage": "extract",
+        "model_alias": "factory-fast",
+        "actual_model": "Qwen3-32B-Instruct",
+        "attempt": attempt,
+        "prompt_tokens": 1_842,
+        "completion_tokens": 96,
+        "cached_tokens": 0,
+        "reasoning_tokens": 0,
+        "duration_ms": 1_180,
+        "status": "completed",
+        "fallback_reason": None,
+        "error_category": None,
+        "started_at": started_at.isoformat() if started_at is not None else None,
+        "ended_at": ended_at.isoformat() if ended_at is not None else None,
+        "parent_span_id": parent_span_id,
+    }
+    return UsageEvent(
+        event_id=event_id,
+        event_type="llm_call_completed",
+        tenant_id=TenantId(TENANT),
+        payload=payload,
+        created_at=NOW,
     )
 
 
@@ -200,6 +256,102 @@ async def test_direct_write_then_rollup_then_readable(engine: AsyncEngine) -> No
     assert metrics["mes_calls.output"] == 2
     assert metrics["mes_calls.payroll"] == 1
     assert metrics["mes_calls.order"] == 0
+
+
+async def test_the_mes_timeline_edges_reach_the_fact_row(engine: AsyncEngine) -> None:
+    """The timeline columns are written, and not invented when absent.
+
+    Two rows with different provenance, because these are the two cases that can
+    silently regress: an adapter that supplies the edges from its own two clock
+    readings, and one that does not. The second must land ``NULL`` — migration
+    ``20260922_0003`` left the columns nullable on purpose instead of
+    backfilling, because a missing measurement must stay distinguishable from a
+    real one, or the waterfall starts inventing bar positions.
+    """
+    started = NOW - timedelta(milliseconds=12)
+    store = SqlMeteringStore(engine)
+    await store.write_usage_events(
+        (
+            mes_event(
+                "t-1",
+                "SystemToken",
+                started_at=started,
+                ended_at=NOW,
+                parent_span_id="ph_authorizing",
+            ),
+            mes_event("t-2", "YskQuery"),
+        )
+    )
+
+    async with engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                sa.select(
+                    mes_call_fact_table.c.operation_id,
+                    mes_call_fact_table.c.started_at,
+                    mes_call_fact_table.c.ended_at,
+                    mes_call_fact_table.c.parent_span_id,
+                ).order_by(mes_call_fact_table.c.operation_id)
+            )
+        ).all()
+
+    by_operation = {str(row[0]): row for row in rows}
+    measured = by_operation["SystemToken"]
+    assert measured[1] == started
+    assert measured[2] == NOW
+    assert measured[3] == "ph_authorizing"
+    omitted = by_operation["YskQuery"]
+    assert omitted[1] is None
+    assert omitted[2] is None
+    assert omitted[3] is None
+
+
+async def test_the_llm_timeline_edges_and_parent_reach_the_fact_row(
+    engine: AsyncEngine,
+) -> None:
+    """A retry group shares one parent: that is what ``parent_span_id`` buys.
+
+    ``logical_call_id`` alone is flat — it can name the call but not the phase
+    that triggered it, so "round 2 re-entered EXTRACT" was unrepresentable. Both
+    rows below are attempts of one logical call under one phase span.
+    """
+    store = SqlMeteringStore(engine)
+    await store.write_usage_events(
+        (
+            llm_event(
+                "a-1",
+                attempt=1,
+                started_at=NOW,
+                ended_at=NOW + timedelta(milliseconds=400),
+                parent_span_id="ph_parsing",
+            ),
+            llm_event(
+                "a-2",
+                attempt=2,
+                started_at=NOW + timedelta(milliseconds=500),
+                ended_at=NOW + timedelta(milliseconds=1_180),
+                parent_span_id="ph_parsing",
+            ),
+        )
+    )
+
+    async with engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                sa.select(
+                    llm_call_fact_table.c.attempt,
+                    llm_call_fact_table.c.started_at,
+                    llm_call_fact_table.c.ended_at,
+                    llm_call_fact_table.c.parent_span_id,
+                ).order_by(llm_call_fact_table.c.attempt)
+            )
+        ).all()
+
+    assert [int(row[0]) for row in rows] == [1, 2]
+    assert [row[3] for row in rows] == ["ph_parsing", "ph_parsing"]
+    # Edges are per-attempt, not per logical call: the retry starts later.
+    assert rows[1][1] > rows[0][1]
+    assert rows[1][2] > rows[0][2]
 
 
 async def test_failure_isolation_preserves_business_and_rollup(engine: AsyncEngine) -> None:

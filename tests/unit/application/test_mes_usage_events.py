@@ -73,9 +73,41 @@ def test_mes_call_event_carries_only_whitelisted_fields() -> None:
         "duration_ms",
         "status",
         "error_category",
+        # Timeline edges and the parent span: the waterfall's axis. They are
+        # instants and an opaque id, so they widen the whitelist without
+        # widening what the event may disclose.
+        "started_at",
+        "ended_at",
+        "parent_span_id",
     }
     assert produced.payload["event_type"] == "mes_call_completed"
     assert produced.payload["operation_id"] == "YskQuery"
+
+
+def test_mes_call_event_records_the_timeline_edges_it_was_given() -> None:
+    """The adapter's own two clock readings survive into the event verbatim."""
+    started = datetime(2026, 8, 24, 6, 0, 0, tzinfo=timezone.utc)
+    ended = datetime(2026, 8, 24, 6, 0, 1, tzinfo=timezone.utc)
+    produced = event(started_at=started, ended_at=ended, duration_ms=1000)
+
+    assert produced.payload["started_at"] == started.isoformat()
+    assert produced.payload["ended_at"] == ended.isoformat()
+    assert produced.payload["parent_span_id"] is None
+
+
+def test_mes_call_event_recovers_the_start_when_the_caller_omits_it() -> None:
+    """Recovery is from the measured duration, so the two edges stay consistent.
+
+    A caller that supplies neither edge still gets a drawable bar: the event is
+    built at the call's exit, so ``occurred_at - duration_ms`` is the measured
+    start placed on the wall clock.
+    """
+    produced = event(duration_ms=250)
+
+    started = datetime.fromisoformat(str(produced.payload["started_at"]))
+    ended = datetime.fromisoformat(str(produced.payload["ended_at"]))
+    assert ended == NOW
+    assert (ended - started).total_seconds() * 1000 == 250
 
 
 def test_mes_call_event_buckets_rows_and_keeps_page_count_supportive() -> None:

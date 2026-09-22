@@ -67,7 +67,7 @@ def _overrides(
 
 
 def _client(role: Role = Role.EMPLOYEE) -> httpx.AsyncClient:
-    app = create_app(FactoryAgentSettings(environment="test"), _overrides(role=role))
+    app = create_app(FactoryAgentSettings(environment="local"), _overrides(role=role))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test.invalid")
 
 

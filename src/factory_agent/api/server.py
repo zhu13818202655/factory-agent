@@ -12,12 +12,14 @@ from factory_agent.api.exports import export_router
 from factory_agent.api.personal import personal_router
 from factory_agent.api.preferences import preferences_router
 from factory_agent.api.sessions import session_router
+from factory_agent.api.trace import trace_report_router, trace_router
 from factory_agent.bootstrap import ApplicationContainer, DependencyOverrides, build_container
 from factory_agent.config import FactoryAgentSettings, get_settings
 from factory_agent.observability.context import (
     accept_request_id,
     bind_request_id,
 )
+from factory_agent.observability.debug_trace import configure_debug_trace
 from factory_agent.observability.logging_adapter import configure_logging, get_logger
 from factory_agent.statistics.api.router import statistics_router
 
@@ -74,9 +76,22 @@ async def _lifespan(app: FastAPI):
     reads. Unlike a missed partition this is not data loss — the facts are all
     still there — but it is equally invisible: an unrun rollup reads as zero
     traffic on every dashboard, which is indistinguishable from a quiet day.
+
+    The debug-payload store is swept once here rather than on a loop. Its rows
+    expire on their own clock and nothing reads an expired row, so a forgotten
+    sweep costs disk rather than correctness — and a process that has been
+    restarted is exactly when the backlog is worth clearing.
     """
     container = cast(ApplicationContainer, app.state.container)
     settings = cast(FactoryAgentSettings, app.state.settings)
+    debug_trace = container.debug_trace
+    if debug_trace is not None:
+        try:
+            purged = await debug_trace.purge_expired(datetime.now(timezone.utc))
+            if purged:
+                _logger.info("debug_trace.purged", row_count=purged)
+        except Exception:  # noqa: BLE001 - retention must never block startup
+            _logger.exception("debug_trace.purge.startup_failed")
     service = container.sessions_service
     sweep_task: asyncio.Task[None] | None = None
     if service is not None:
@@ -170,6 +185,16 @@ def create_app(
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings)
+    # Install the debug-capture ceiling before the container is built, so no
+    # adapter can be constructed while the answer to "may I capture?" is still
+    # being decided. The value is the already-gated one: the environment
+    # boundary and the runtime switch are resolved in one place so the adapters
+    # never see a half-applied rule.
+    configure_debug_trace(
+        enabled=resolved_settings.debug_trace_active,
+        max_payload_bytes=resolved_settings.debug_trace_max_payload_bytes,
+        max_rows=resolved_settings.debug_trace_max_rows,
+    )
     app = FastAPI(title="factory-agent", version=__version__, lifespan=_lifespan)
     container = build_container(resolved_settings, overrides)
     app.state.container = container
@@ -197,5 +222,11 @@ def create_app(
     app.include_router(export_router)
     app.include_router(personal_router)
     app.include_router(preferences_router)
+    app.include_router(trace_router)
     app.include_router(statistics_router)
+    if resolved_settings.debug_trace_active:
+        # Mounted, not guarded: outside a developer environment the content
+        # report does not exist at all, so a misconfigured deployment cannot
+        # expose it and an attacker has one fewer path to probe (§4.5).
+        app.include_router(trace_report_router)
     return app

@@ -31,7 +31,7 @@ services:
       - path: .env
         required: false
     environment:
-      FACTORY_AGENT_ENVIRONMENT: production
+      FACTORY_AGENT_ENVIRONMENT: prod
       FACTORY_AGENT_HOST: 0.0.0.0
       FACTORY_AGENT_PORT: 8000
       FACTORY_AGENT_CANONICAL_MES_BASE_URL: ${FACTORY_AGENT_CANONICAL_MES_BASE_URL:?FACTORY_AGENT_CANONICAL_MES_BASE_URL 未设置：请在 deploy/compose/.env 填写客户真实 MES 网关地址}

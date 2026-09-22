@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from factory_agent.domain import (
@@ -121,6 +121,8 @@ def record_mes_call(call: MesCallRecord) -> None:
                 duration_ms=call.duration_ms,
                 status=call.status,
                 error_category=call.error_category,
+                started_at=call.started_at,
+                ended_at=call.ended_at,
             )
         )
     except Exception:  # noqa: BLE001 - metering must never break the adapter
@@ -266,6 +268,9 @@ def llm_call_event(
     error_category: str | None = None,
     includes_scope: bool = False,
     scope_verdict: Mapping[str, object] | None = None,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
+    parent_span_id: str | None = None,
 ) -> UsageEvent:
     """One model-call event.
 
@@ -274,6 +279,13 @@ def llm_call_event(
     selection. A merged payload that omitted the key still reports
     ``includes_scope=true`` with a ``null`` verdict: that combination is the
     signal that the dedicated guard call took over for this interaction.
+
+    ``started_at`` / ``ended_at`` are the wall-clock edges of the attempt. When
+    the caller does not supply them they are recovered from ``occurred_at`` and
+    the measured ``duration_ms``: this event is built at the call's exit, so
+    subtracting the duration recovers the start without threading a second
+    clock reading through every call site. That keeps the waterfall drawable
+    from call sites that were never touched.
     """
     if includes_scope and stage is not ModelStage.EXTRACT:
         raise ValueError("includes_scope is only meaningful on the EXTRACT stage")
@@ -291,6 +303,15 @@ def llm_call_event(
     payload["status"] = status
     payload["fallback_reason"] = _short(fallback_reason)
     payload["error_category"] = _short(error_category)
+    edges = _resolve_span_edges(
+        occurred_at=occurred_at,
+        duration_ms=max(0, duration_ms),
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    payload["started_at"] = _utc_isoformat(edges[0])
+    payload["ended_at"] = _utc_isoformat(edges[1])
+    payload["parent_span_id"] = _short(parent_span_id)
     if includes_scope:
         payload["includes_scope"] = True
         payload["scope_verdict"] = dict(scope_verdict) if scope_verdict is not None else None
@@ -307,6 +328,9 @@ def mes_call_completed_event(
     duration_ms: int,
     status: MesCallStatus,
     error_category: str | None = None,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
+    parent_span_id: str | None = None,
 ) -> UsageEvent:
     """One MES HTTP call completion event.
 
@@ -315,6 +339,10 @@ def mes_call_completed_event(
     is the request page number within its paged fetch (1 for non-paged calls)
     and is a supporting metric — call counts are aggregated by event count, not
     by summing ``page_count`` (D6).
+
+    ``started_at`` / ``ended_at`` are the wall-clock edges and are normally the
+    adapter's own two clock readings; unlike the model path they need no
+    recovery, because the adapter times the attempt directly.
     """
     payload = context.envelope("mes_call_completed", occurred_at)
     payload["operation_id"] = operation_id
@@ -323,6 +351,15 @@ def mes_call_completed_event(
     payload["duration_ms"] = max(0, int(duration_ms))
     payload["status"] = status
     payload["error_category"] = _short(error_category)
+    edges = _resolve_span_edges(
+        occurred_at=occurred_at,
+        duration_ms=max(0, int(duration_ms)),
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    payload["started_at"] = _utc_isoformat(edges[0])
+    payload["ended_at"] = _utc_isoformat(edges[1])
+    payload["parent_span_id"] = _short(parent_span_id)
     return _wrap(context, payload, occurred_at)
 
 
@@ -342,6 +379,35 @@ def _wrap(context: UsageContext, payload: dict[str, object], occurred_at: dateti
 
 def _short(value: str | None) -> str | None:
     return value[:64] if value else None
+
+
+def _resolve_span_edges(
+    *,
+    occurred_at: datetime,
+    duration_ms: int,
+    started_at: datetime | None,
+    ended_at: datetime | None,
+) -> tuple[datetime, datetime]:
+    """Resolve the wall-clock edges of one attempt.
+
+    Precedence is explicit-reading-then-recovery, and the two edges are resolved
+    independently so a caller may supply either. Recovery from
+    ``occurred_at - duration_ms`` is honest rather than approximate in the sense
+    that matters here: ``duration_ms`` is a measurement, and ``occurred_at`` is
+    the instant the measurement ended, so the derived start is the measured one
+    shifted onto the wall clock — good enough to place a bar in a waterfall, and
+    never presented as a second independent measurement.
+    """
+    measured = timedelta(milliseconds=max(0, duration_ms))
+    end = ended_at or occurred_at
+    start = started_at if started_at is not None else end - measured
+    return start, end
+
+
+def _utc_isoformat(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
 
 
 __all__ = [

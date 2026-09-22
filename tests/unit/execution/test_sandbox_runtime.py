@@ -133,3 +133,63 @@ def test_policy_defaults_stay_memory_only_and_read_only() -> None:
     assert policy.database == ":memory:"
     assert not policy.allow_external_access
     assert not policy.allow_unsigned_extensions
+
+
+def test_bulk_registration_preserves_values_and_types() -> None:
+    """The JSON round-trip must land exactly what the per-row path landed.
+
+    75k-row MES pages used to cost ~1.4 ms of client-side binding per row
+    (~110 s of event-loop stall); the bulk path inserts them in under a
+    second. Values, NULLs, missing keys, quoting, and declared types must all
+    survive the JSON STRUCT cast identically.
+    """
+    sandbox = InteractionSandbox(allowed_tables=["bulk"])
+    rows = tuple(
+        {
+            "record_id": "含'引号'\"与\n换行" if index == 0 else f"r{index}",
+            "employee_id": None if index % 2 == 0 else f"emp-{index}",
+            "qualified_quantity": index,
+            "amount": float(index) + 0.25,
+        }
+        for index in range(2_000)
+    )
+    sandbox.register_table(
+        SandboxTable(
+            name="bulk",
+            rows=rows,
+            columns=(
+                ("record_id", "VARCHAR"),
+                ("employee_id", "VARCHAR"),
+                ("qualified_quantity", "INTEGER"),
+                ("amount", "DECIMAL(18,4)"),
+            ),
+        )
+    )
+    assert sandbox.execute("SELECT COUNT(*) FROM bulk") == [(2_000,)]
+    assert sandbox.execute(
+        "SELECT qualified_quantity, amount, employee_id FROM bulk "
+        "WHERE record_id = 'r3'"
+    ) == [(3, 3.25, "emp-3")]
+    # Missing keys and NULLs both land as column NULL.
+    null_count = sandbox.execute(
+        "SELECT COUNT(*) FROM bulk WHERE employee_id IS NULL"
+    )
+    assert null_count == [(1_000,)]
+    # The INTEGER column really is integral, not text that quacks like it.
+    assert sandbox.execute("SELECT MAX(qualified_quantity) + 1 FROM bulk") == [(2_000,)]
+
+
+def test_bulk_registration_falls_back_for_unknown_types() -> None:
+    """A column type outside the JSON-safe vocabulary takes the per-row path."""
+    sandbox = InteractionSandbox(allowed_tables=["exotic"])
+    sandbox.register_table(
+        SandboxTable(
+            name="exotic",
+            rows=({"payload": 1, "n": 1}, {"payload": 2, "n": 2}),
+            columns=(("payload", "TINYINT"), ("n", "INTEGER")),
+        )
+    )
+    assert sandbox.execute("SELECT payload, n FROM exotic ORDER BY n") == [
+        (1, 1),
+        (2, 2),
+    ]

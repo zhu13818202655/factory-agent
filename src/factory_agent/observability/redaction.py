@@ -1,7 +1,6 @@
 """Centralized sensitive-field redaction aligned with SECURITY.md."""
 
-
-
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, cast
@@ -48,6 +47,11 @@ SENSITIVE_KEY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 # Value-level patterns for strings that may embed secrets regardless of key.
 _DSN_PATTERN = re.compile(r"\b(?:postgres(?:ql)?|redis|mysql)://\S+", re.IGNORECASE)
 _BEARER_PATTERN = re.compile(r"\bBearer\s+\S+", re.IGNORECASE)
+#: Query strings carry business values — order numbers, employee numbers, date
+#: windows — into places ADR-0004 forbids them, most notably MES request URLs.
+#: Scheme, host and path are kept because together they are the operation's
+#: identity; only everything after ``?`` is replaced.
+_URL_QUERY_PATTERN = re.compile(r"(\bhttps?://[^\s\"'?]*)\?[^\s\"']*", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,5 +102,28 @@ def redact_mapping(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def redact_text(text: str) -> str:
-    """Redact credential-like substrings embedded in free-form text."""
-    return _BEARER_PATTERN.sub(f"Bearer {REDACTED}", _DSN_PATTERN.sub(REDACTED, text))
+    """Redact credential-like substrings and URL query strings in free text.
+
+    Applied to every rendered message, because the leak path that matters is a
+    value interpolated *into* the message template: by then the structured
+    ``extra`` mapping has already been left behind, so the key-based policy in
+    :func:`redact_mapping` cannot see it.
+    """
+    without_dsn = _DSN_PATTERN.sub(REDACTED, text)
+    without_bearer = _BEARER_PATTERN.sub(f"Bearer {REDACTED}", without_dsn)
+    return redact_url_query(without_bearer)
+
+
+def redact_url_query(text: str) -> str:
+    """Replace URL query strings with a marker, keeping scheme, host and path."""
+    return _URL_QUERY_PATTERN.sub(rf"\1?{REDACTED}", text)
+
+
+def text_digest(text: str) -> str:
+    """Irreversible short digest of free text, for correlation without retention.
+
+    Mirrors :func:`factory_agent.observability.audit.scope_fingerprint`: enough
+    to tell whether two records describe the same answer, never enough to
+    recover it.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]

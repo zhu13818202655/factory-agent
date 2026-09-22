@@ -128,7 +128,7 @@ class Harness:
             new_id=SequentialIds(),
             tenant_lifecycle=lifecycle,
         )
-        app = create_app(FactoryAgentSettings(environment="test"), self.overrides)
+        app = create_app(FactoryAgentSettings(environment="local"), self.overrides)
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test.invalid"
         )

@@ -53,6 +53,11 @@ from factory_agent.domain.errors import (
     UpstreamUnavailableError,
 )
 from factory_agent.domain.queries import NarrowedFilters
+from factory_agent.observability.debug_trace import (
+    debug_capture_enabled,
+    mes_span_key,
+    record_debug_capture,
+)
 from factory_agent.observability.logging_adapter import get_logger
 from factory_agent.ports import MesCallRecord, MesCallRecorder
 from factory_agent.ports.contracts import ResourceFetchResult
@@ -448,17 +453,21 @@ class HongzhaoMesAdapter:
                 )
             except httpx.TimeoutException:
                 last_error = MesTimeoutError()
-                self._record_mes_call(operation, started, status="failed", error=last_error)
+                self._record_mes_call(
+                    operation, started, body=body, status="failed", error=last_error
+                )
                 continue
             except httpx.HTTPError:
                 last_error = UpstreamUnavailableError("transport failure while calling upstream")
-                self._record_mes_call(operation, started, status="failed", error=last_error)
+                self._record_mes_call(
+                    operation, started, body=body, status="failed", error=last_error
+                )
                 continue
 
             if response.status_code == 429:
                 retry_after = _parse_retry_after(response.headers.get("Retry-After"))
                 error = RateLimitedError(retry_after_seconds=retry_after)
-                self._record_mes_call(operation, started, status="failed", error=error)
+                self._record_mes_call(operation, started, body=body, status="failed", error=error)
                 if attempts_left > 0:
                     last_error = error
                     continue
@@ -466,9 +475,11 @@ class HongzhaoMesAdapter:
             try:
                 envelope = self._map_status(response)
             except Exception as error:  # noqa: BLE001 - failure is metered, then re-raised
-                self._record_mes_call(operation, started, status="failed", error=error)
+                self._record_mes_call(operation, started, body=body, status="failed", error=error)
                 raise
-            self._record_mes_call(operation, started, status="completed", envelope=envelope)
+            self._record_mes_call(
+                operation, started, body=body, status="completed", envelope=envelope
+            )
             return envelope
 
         raise last_error or UpstreamUnavailableError("upstream call exhausted retries")
@@ -478,6 +489,7 @@ class HongzhaoMesAdapter:
         operation: CatalogOperation,
         started: datetime,
         *,
+        body: Mapping[str, Any],
         status: str,
         envelope: Any | None = None,
         error: Exception | None = None,
@@ -486,13 +498,16 @@ class HongzhaoMesAdapter:
 
         Success and failure are both recorded; the recorder never raises into
         the adapter — a recorder fault is alerted and dropped so the MES call
-        result is never affected. The record carries no
-        URL, parameter value, or credential.
+        result is never affected. The metered record carries no URL, parameter
+        value, or credential; the request body is handed to the B-channel
+        capture instead, which is a different store with a different lifetime.
         """
+        ended = self._now()
+        duration_ms = max(0, int((ended - started).total_seconds() * 1000))
+        error_category = _error_category(error) if error is not None else None
+        self._capture_debug(operation, started, body=body, envelope=envelope, error=error)
         if self._recorder is None:
             return
-        duration_ms = max(0, int((self._now() - started).total_seconds() * 1000))
-        error_category = _error_category(error) if error is not None else None
         try:
             self._recorder.record(
                 MesCallRecord(
@@ -502,6 +517,8 @@ class HongzhaoMesAdapter:
                     duration_ms=duration_ms,
                     status="completed" if status == "completed" else "failed",
                     error_category=error_category,
+                    started_at=started,
+                    ended_at=ended,
                 )
             )
         except Exception:  # noqa: BLE001 - metering must never break the MES call
@@ -509,6 +526,48 @@ class HongzhaoMesAdapter:
                 "mes.metering.record_failed",
                 operation_id=operation.operation_id,
             )
+
+    def _capture_debug(
+        self,
+        operation: CatalogOperation,
+        started: datetime,
+        *,
+        body: Mapping[str, Any],
+        envelope: Any | None,
+        error: Exception | None,
+    ) -> None:
+        """Capture request and response bodies for the debug channel only.
+
+        The gate is read *before* the payload is assembled, so with capture off
+        the envelope is never even read into a capture structure: the §2.5 P1
+        property is that the capability is absent, not that a switch is down.
+
+        The request body is included because a failed call is the one worth
+        debugging, and it is scrubbed by the capture layer rather than here —
+        credential material is recognized by key there, so this call site does
+        not need to know which of the client contract's parameters are secret.
+        """
+        if not debug_capture_enabled():
+            return
+        try:
+            record_debug_capture(
+                span_key=mes_span_key(operation.operation_id, started),
+                kind="mes",
+                input_payload={
+                    "operation_id": operation.operation_id,
+                    "path": operation.path,
+                    "body": dict(body),
+                },
+                output_payload=(
+                    {"envelope": _jsonable_envelope(envelope)}
+                    if envelope is not None
+                    else {"error": type(error).__name__ if error is not None else None}
+                ),
+                occurred_at=started,
+                operation_id=operation.operation_id,
+            )
+        except Exception:  # noqa: BLE001 - capture must never break the MES call
+            _LOGGER.exception("mes.debug_capture_failed", operation_id=operation.operation_id)
 
     def _build_body(self, operation: CatalogOperation, params: Mapping[str, Any]) -> dict[str, Any]:
         """Inject public parameters from the bundle; reject unknown sources.
@@ -575,6 +634,25 @@ def _parse_retry_after(raw: str | None) -> int | None:
         return max(int(raw), 0)
     except ValueError:
         return None
+
+
+def _jsonable_envelope(envelope: Any) -> Any:
+    """The envelope as a JSON-ready structure, for the B-channel capture.
+
+    ``MesEnvelope`` is a pydantic model. Handed to the capture layer as-is it
+    reaches ``json.dumps(..., default=str)``, which flattens the *whole*
+    envelope into a single Python-repr string: a 40 MB response stores as one
+    40 MB string with zero rows counted, the row budget never applies, and the
+    report shows a repr blob instead of JSON. ``model_dump(mode="json")`` keeps
+    the structure — real rows, real nesting, real JSON in the report.
+    """
+    dump = getattr(envelope, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json")
+        except Exception:  # noqa: BLE001 - capture must never break the MES call
+            return str(envelope)
+    return envelope
 
 
 def _error_category(error: Exception) -> str:

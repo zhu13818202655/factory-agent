@@ -14,6 +14,7 @@ business commit — a metering failure can therefore never roll back an answer.
 
 
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
@@ -137,6 +138,9 @@ class SqlMeteringStore:
                             "status": str(payload.get("status")),
                             "fallback_reason": _nullable(payload.get("fallback_reason")),
                             "error_category": _nullable(payload.get("error_category")),
+                            "started_at": _nullable_dt(payload.get("started_at")),
+                            "ended_at": _nullable_dt(payload.get("ended_at")),
+                            "parent_span_id": _nullable(payload.get("parent_span_id")),
                         },
                     ),
                 )
@@ -155,6 +159,9 @@ class SqlMeteringStore:
                             "duration_ms": _int(payload.get("duration_ms")),
                             "status": str(payload.get("status")),
                             "error_category": _nullable(payload.get("error_category")),
+                            "started_at": _nullable_dt(payload.get("started_at")),
+                            "ended_at": _nullable_dt(payload.get("ended_at")),
+                            "parent_span_id": _nullable(payload.get("parent_span_id")),
                         },
                     ),
                 )
@@ -193,6 +200,25 @@ def _nullable(value: object) -> str | None:
 def _nullable_int(value: object) -> int | None:
     if isinstance(value, (int, float)):
         return int(value)
+    return None
+
+
+def _nullable_dt(value: object) -> datetime | None:
+    """Read a timeline edge off an event payload.
+
+    Events are JSON-shaped, so the edge travels as an ISO-8601 string; a
+    datetime is also accepted so an in-process caller that already holds one
+    need not round-trip it through text. Anything unparseable becomes ``NULL``:
+    a timeline column is decorative next to the fact it annotates, so a bad
+    value must never cost the metering row.
+    """
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(value, datetime):
+        return value
     return None
 
 

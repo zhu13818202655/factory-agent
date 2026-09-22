@@ -54,7 +54,7 @@ def make_client(role: Role = Role.EMPLOYEE) -> httpx.AsyncClient:
         personalization=personalization,
         credential_exchange=exchange,
     )
-    app = create_app(FactoryAgentSettings(environment="test"), overrides)
+    app = create_app(FactoryAgentSettings(environment="local"), overrides)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test.invalid")
 
 

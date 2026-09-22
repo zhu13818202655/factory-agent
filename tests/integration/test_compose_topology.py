@@ -105,7 +105,7 @@ def test_application_compose_pins_container_only_settings() -> None:
     services = cast(dict[str, dict[str, Any]], load_compose("compose.yaml")["services"])
     environment = cast(dict[str, Any], services["agent-api"]["environment"])
 
-    assert environment["FACTORY_AGENT_ENVIRONMENT"] == "production"
+    assert environment["FACTORY_AGENT_ENVIRONMENT"] == "prod"
     assert environment["FACTORY_AGENT_HOST"] == "0.0.0.0"
     assert environment["FACTORY_AGENT_PORT"] == 8000
 

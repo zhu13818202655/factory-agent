@@ -72,7 +72,7 @@ Every application log event should include these fields when available:
 | `timestamp` | UTC ISO timestamp from the logger sink |
 | `level` | Log level |
 | `service` | `factory-agent` |
-| `environment` | `development`, `test`, or `production` |
+| `environment` | `local`, `dev`, `cert`, `staging`, or `prod`; the ceiling on captured content (see §Environment Tiers) |
 | `component` | Logical package or adapter name |
 | `event` | Stable event name, not free-form prose |
 | `request_id` | Correlation ID for one inbound request |
@@ -95,6 +95,65 @@ Logs must never contain:
 - `DataScope` employee or department ID lists;
 - exported artifact contents or filenames derived from business text.
 
+**No exception is granted inside the log stream.** When a developer environment enables the debug
+trace channel (§Debug Trace Channel), prompts and payloads are written to a *separate* store with its
+own retention and access control; they still never reach a log record, a `usage_event`, a trace, or a
+test snapshot. The list above describes logs. It is not relaxed by that channel, and reading it as
+relaxed is the one misreading this document cannot survive.
+
+### Debug Trace Channel
+
+The debugging experience Louis asked for — "what exactly did the model receive and return, what did
+each tool call take and give back" — cannot be served from the log stream without violating
+§Forbidden Log Content, and it cannot be served by adding OpenTelemetry either: a different transport
+does not change which values may be stored. It is served instead by a separate channel with a
+narrower blast radius than a log line:
+
+| Property | Rule |
+| :--- | :--- |
+| Where | A separate store (`debug_trace`), **never** the log stream, `usage_event`, or any trace |
+| When | Only when `environment` is a developer environment **and** `FACTORY_AGENT_DEBUG_TRACE_ENABLED` is true. Both are required; neither widens the other |
+| Which environments | `local` and `dev` only. `cert` and `staging` are grouped with `prod`: acceptance and pre-production stacks normally run against real customer data, so a debug channel there is a back door onto that data |
+| Access | The caller's existing credential plus `(tenant_id, user_id)` ownership. There is no shared debug token — a secret that must be handed to a browser to power a one-click download is a leak surface, not a control |
+| Audit | An audit record is written before any bytes are released; if the audit sink is unavailable the request fails and nothing is released (DEC-014) |
+| Redaction | A **credential-only** policy runs before persisting. This is deliberately narrower than §Forbidden Log Content: see the exception clause below |
+| Retention | `FACTORY_AGENT_DEBUG_TRACE_RETENTION_HOURS`, independent of log retention. Rows carry `expires_at`, are filtered on read, and are swept once at startup |
+| Size | `FACTORY_AGENT_DEBUG_TRACE_MAX_PAYLOAD_BYTES` / `_MAX_ROWS`; beyond them only structure and statistics are stored, flagged `truncated` |
+| Report route | `GET /v1/interactions/{id}/trace.html` is **not mounted** outside `local` / `dev` with the switch on. The answer is a plain 404, never a 403: "unsupported here" and "not yours" must stay indistinguishable |
+
+Requesting the channel on a deployment that may not hold content is refused, not silently honoured,
+and the refusal is logged at `ERROR` once at startup:
+`config.debug_trace_refused env=prod requested=true applied=false
+reason=content_capture_not_permitted`.
+
+#### Exception clause: the debug channel keeps business values
+
+This is the one approved departure from §Forbidden Log Content, and it is scoped to the debug store
+alone.
+
+§Forbidden Log Content withholds business values *by key* — `prompt`, `answer`, `messages`, `salary`,
+`amount`, `employee_number`, and so on. Applying that policy to `debug_trace` would withhold precisely
+the content the channel exists to show, making it a channel that stores nothing. The channel is
+therefore governed by a narrower rule: it withholds material that **authenticates a call** — app key,
+`sign`, access token, cookie, password, `Authorization`/`Bearer`, DSN, private key, and query strings
+on any URL — and retains business content.
+
+Three properties keep the departure bounded, and a reviewer should check all three:
+
+1. **It is one store, not the observability surface.** Logs, `usage_event`, and every `*_fact` table
+   remain under the original rule. No code path retargets their policy.
+2. **It is unreachable outside `local` / `dev`,** and inside those environments it additionally
+   requires `FACTORY_AGENT_DEBUG_TRACE_ENABLED`. On `cert` / `staging` / `prod` the payload is never
+   *constructed* — the adapters branch on the gate before assembling it, so there is no state in
+   which a misconfiguration widens the boundary.
+3. **It expires.** Business content in this store lives for `DEBUG_TRACE_RETENTION_HOURS` (default
+   24 h) and no longer, which is the property the log stream cannot offer at all.
+
+Because this changes `sensitive-field classification` and `retention` under `AGENTS.md` §Security
+Stop Conditions, the change is human-approved and recorded here rather than inferred from the code.
+The credential canary suite covers the store: a canary planted in a request or response must not
+reach a persisted row.
+
 ### Log Levels
 
 | Level | Intended Use |
@@ -104,6 +163,37 @@ Logs must never contain:
 | `WARNING` | Degraded dependencies, retries, rate limits, recoverable validation repair |
 | `ERROR` | Failed operations that need operator attention |
 | `CRITICAL` | Process-level failure or data-safety stop condition |
+
+### Environment Tiers
+
+`FACTORY_AGENT_ENVIRONMENT` is not a label; it is the ceiling on everything the observability surface
+may capture. Default `prod`: an unconfigured deployment gets the strictest behaviour, so "safe by
+default" does not depend on anyone remembering to tighten it.
+
+| `environment` | Intent | Captured content | `DEBUG` log level |
+| :--- | :--- | :--- | :--- |
+| `local` | Developer workstation | Allowed (with the debug switch on) | Honoured |
+| `dev` | Shared development stack; must not hold real customer data | Allowed (with the debug switch on) | Honoured |
+| `cert` | Acceptance; normally loaded with real data | **Not available** | Withheld (falls back to `INFO`) |
+| `staging` | Pre-production; production-like data | **Not available** | Withheld (falls back to `INFO`) |
+| `prod` | Production | **Not available** | Withheld (falls back to `INFO`) |
+
+Two rules follow, and both are enforced in `FactoryAgentSettings` rather than by convention:
+
+1. **"Not available" means the capability is absent, not that a switch is off.** A misconfigured
+   environment variable on `prod` cannot widen the boundary — the derived properties
+   `is_developer_environment` / `debug_trace_active` are the single source of truth, and
+   `configure_logging` reports the resolved verdict once at startup
+   (`config.environment_effective`).
+2. **`DEBUG` is scoped to developer environments.** Debug records carry far more of a payload than
+   `INFO` ones, so honouring `FACTORY_AGENT_LOG_LEVEL=DEBUG` on a production deployment would reopen
+   the leak this tier exists to close. `effective_log_level` substitutes `INFO` and no warning is
+   needed, because the startup line already states the level actually in force.
+
+Legacy values are accepted for one migration window and normalised: `production` → `prod`,
+`development` → `local` (both behaviour-equivalent renames), and the colloquial `stage` → `staging`.
+`test` is **rejected** rather than mapped: a CI run and an acceptance run sit on opposite sides of
+this boundary, so there is nothing safe to infer and the operator must choose.
 
 ### Loguru Configuration Variables
 
@@ -136,12 +226,13 @@ overrides explicitly rather than mutating global state.
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `<PREFIX>ENVIRONMENT` or `<PREFIX>ENV` | enum/string | `development` | Runtime environment |
+| `<PREFIX>ENVIRONMENT` or `<PREFIX>ENV` | enum | `prod` | Deployment environment; the ceiling on captured content (§Environment Tiers). One of `local`, `dev`, `cert`, `staging`, `prod` |
 | `<PREFIX>HOST` | string | `127.0.0.1` locally | Bind host |
 | `<PREFIX>PORT` | int | service default | Bind port |
 | `<PREFIX>POSTGRES_URL` / `<PREFIX>DATABASE_URL` | secret DSN | unset | Service-owned database |
-| `<PREFIX>LOG_LEVEL` | string | `INFO` | Logging level |
+| `<PREFIX>LOG_LEVEL` | string | `INFO` | Logging level; `DEBUG` is withheld outside developer environments |
 | `<PREFIX>LOG_FORMAT` | enum | `json` | `json` or `console` |
+| `<PREFIX>LOG_THIRD_PARTY_LEVEL` | string | `WARNING` | Floor for the forwarded transport loggers (`httpx`, `httpcore`), whose per-request INFO lines duplicate `mes_call_fact` / `llm_call_fact` and carry the full URL including its query string |
 | `<PREFIX>REQUEST_ID_HEADER` | string | `X-Request-ID` | Trusted correlation header name |
 
 ### Factory Agent Variables
@@ -159,6 +250,10 @@ overrides explicitly rather than mutating global state.
 | `FACTORY_AGENT_MODEL_REGISTRY_PATH` | path | Reviewed model registry; see ADR-0006 |
 | `FACTORY_AGENT_LLM_KEY_*` | secret | Provider keys named by the registry (ADR-0006) |
 | `FACTORY_AGENT_LLM_*` | various | Logical alias and sampling/safety defaults; see `config.py` (`llm_fast_alias`, `llm_reasoning_alias`, `llm_summary_alias`, temperature, top-p, timeout, max repair attempts) |
+| `FACTORY_AGENT_DEBUG_TRACE_ENABLED` | bool | Capture prompts / tool arguments / tool returns into the separate debug store. Inert outside developer environments; a request elsewhere is refused and logged at `ERROR` |
+| `FACTORY_AGENT_DEBUG_TRACE_RETENTION_HOURS` | int | Retention window for captured content; independent of log retention |
+| `FACTORY_AGENT_DEBUG_TRACE_MAX_PAYLOAD_BYTES` | int | Per-payload byte cap; beyond it only structure and statistics are stored, flagged `truncated` |
+| `FACTORY_AGENT_DEBUG_TRACE_MAX_ROWS` | int | Per-payload row cap, same truncation contract |
 
 ### LLM Config Boundary
 

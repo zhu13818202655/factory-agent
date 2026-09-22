@@ -23,6 +23,11 @@ import litellm
 from litellm.router import Router
 
 from factory_agent.llm.registry import ModelRegistry, ResolvedDeployment
+from factory_agent.observability.debug_trace import (
+    debug_capture_enabled,
+    llm_span_key,
+    record_debug_capture,
+)
 from factory_agent.ports.model import (
     ModelDelta,
     ModelDeltaKind,
@@ -149,10 +154,11 @@ class LiteLlmRouterGateway:
         try:
             raw = await self._acompletion(request)
         except Exception as exc:
+            self._capture_error(request, exc)
             raise _translate(exc, _elapsed_ms(started)) from exc
 
         body = _as_mapping(raw)
-        return ModelResponse(
+        response = ModelResponse(
             content=_content(body, started),
             actual_model=_actual_model(body, request.model_alias),
             usage=_usage(body),
@@ -160,6 +166,8 @@ class LiteLlmRouterGateway:
             attempt=_attempt(body),
             fallback_reason=_fallback_reason(body, request.model_alias),
         )
+        self._capture_response(request, response)
+        return response
 
     def stream(self, request: ModelRequest) -> AsyncIterator[ModelDelta]:
         """Incremental output for one call.
@@ -178,16 +186,126 @@ class LiteLlmRouterGateway:
 
     async def _stream(self, request: ModelRequest) -> AsyncIterator[ModelDelta]:
         started = time.monotonic()
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         try:
             chunks = await self._acompletion_stream(request)
             async for chunk in chunks:
                 delta = _delta(chunk)
                 if delta is not None:
+                    bucket = (
+                        reasoning_parts
+                        if delta.kind is ModelDeltaKind.REASONING
+                        else content_parts
+                    )
+                    bucket.append(delta.text)
                     yield delta
-        except ModelGatewayError:
+        except ModelGatewayError as exc:
+            self._capture_stream_error(request, content_parts, reasoning_parts, exc)
             raise
         except Exception as exc:
+            self._capture_stream_error(request, content_parts, reasoning_parts, exc)
             raise _translate(exc, _elapsed_ms(started)) from exc
+        self._capture_stream(request, content_parts, reasoning_parts, _elapsed_ms(started))
+
+    # ---- B-channel capture (ADR-0004) -------------------------------------
+    # 同一个出口捕获请求与响应：输入是消息序列与采样参数，输出是最终文本与
+    # 用量。脱敏与上限都在 capture 层做，这里只负责把结构喂进去——
+    # pydantic/dataclass 一律先转 JSON 原生形态，避免 default=str 摊平。
+    def _capture_input(self, request: ModelRequest) -> dict[str, object]:
+        return {
+            "model_alias": request.model_alias,
+            "stage": getattr(request.stage, "value", str(request.stage)),
+            "json_output": request.json_output,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "max_output_tokens": request.max_output_tokens,
+            "messages": [{"role": m.role, "content": m.content} for m in request.messages],
+        }
+
+    def _capture_response(self, request: ModelRequest, response: ModelResponse) -> None:
+        if not debug_capture_enabled():
+            return
+        record_debug_capture(
+            span_key=llm_span_key(request.logical_call_id),
+            kind="llm",
+            input_payload=self._capture_input(request),
+            output_payload={
+                "content": response.content,
+                "actual_model": response.actual_model,
+                "attempt": response.attempt,
+                "fallback_reason": response.fallback_reason,
+                "duration_ms": response.duration_ms,
+                "usage": {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "cached_tokens": response.usage.cached_tokens,
+                    "reasoning_tokens": response.usage.reasoning_tokens,
+                },
+            },
+            stage=getattr(request.stage, "value", str(request.stage)),
+            logical_call_id=request.logical_call_id,
+            attempt=response.attempt,
+        )
+
+    def _capture_stream(
+        self,
+        request: ModelRequest,
+        content_parts: list[str],
+        reasoning_parts: list[str],
+        duration_ms: int,
+    ) -> None:
+        if not debug_capture_enabled():
+            return
+        record_debug_capture(
+            span_key=llm_span_key(request.logical_call_id),
+            kind="llm",
+            input_payload=self._capture_input(request),
+            output_payload={
+                "content": "".join(content_parts),
+                "reasoning": "".join(reasoning_parts),
+                "streamed": True,
+                "duration_ms": duration_ms,
+            },
+            stage=getattr(request.stage, "value", str(request.stage)),
+            logical_call_id=request.logical_call_id,
+        )
+
+    def _capture_stream_error(
+        self,
+        request: ModelRequest,
+        content_parts: list[str],
+        reasoning_parts: list[str],
+        exc: Exception,
+    ) -> None:
+        if not debug_capture_enabled():
+            return
+        record_debug_capture(
+            span_key=llm_span_key(request.logical_call_id),
+            kind="llm",
+            input_payload=self._capture_input(request),
+            output_payload={
+                "error": type(exc).__name__,
+                "message": str(exc),
+                "partial_content": "".join(content_parts),
+                "partial_reasoning": "".join(reasoning_parts),
+                "streamed": True,
+            },
+            stage=getattr(request.stage, "value", str(request.stage)),
+            logical_call_id=request.logical_call_id,
+        )
+
+    def _capture_error(self, request: ModelRequest, exc: Exception) -> None:
+        if not debug_capture_enabled():
+            return
+        record_debug_capture(
+            span_key=llm_span_key(request.logical_call_id),
+            kind="llm",
+            input_payload=self._capture_input(request),
+            output_payload={"error": type(exc).__name__, "message": str(exc)},
+            stage=getattr(request.stage, "value", str(request.stage)),
+            logical_call_id=request.logical_call_id,
+        )
 
     def _validate(self, request: ModelRequest) -> None:
         if not request.messages:
