@@ -1,6 +1,5 @@
-import asyncio
 import itertools
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -29,7 +28,6 @@ from factory_agent.ports import (
     InteractionOwner,
     InteractionPage,
     MessagePage,
-    ModelDelta,
     ModelGatewayError,
     ModelRequest,
     ModelResponse,
@@ -339,9 +337,7 @@ class InMemoryInteractionStore:
             for message in self.messages
             if message.session_id == session_id and message.kind is not MessageKind.PHASE
         ]
-        turns = [
-            turn for turn in self.interactions.values() if turn.session_id == session_id
-        ]
+        turns = [turn for turn in self.interactions.values() if turn.session_id == session_id]
         questions = [
             message
             for message in self.messages
@@ -439,39 +435,6 @@ class ScriptedModelGateway:
             usage=ModelUsage(prompt_tokens=11, completion_tokens=5),
             duration_ms=3,
         )
-
-
-@dataclass
-class ScriptedModelStreamGateway:
-    """Streaming double for the narration call.
-
-    ``ModelStreamGateway`` is a separate port from ``ModelGateway``, so a double
-    that only completes can never exercise the narration path. ``scripts`` is a
-    list of delta sequences, one per call: a round that narrates twice (the
-    intent wait and the fetch wait) consumes two entries, and the last entry is
-    reused once the list runs out.
-
-    ``delay_seconds`` is what makes interleaving observable at all: narration
-    frames are only flushed from *inside* the wait, so with an instantaneous
-    stream the whole transcript would arrive in the single final sweep and the
-    test could not tell interleaving apart from buffering.
-    """
-
-    scripts: list[list[str]] = field(default_factory=lambda: [])
-    failures: list[Exception | None] = field(default_factory=lambda: [])
-    requests: list[ModelRequest] = field(default_factory=lambda: [])
-    delay_seconds: float = 0.0
-
-    async def stream(self, request: ModelRequest) -> AsyncIterator[ModelDelta]:
-        self.requests.append(request)
-        index = len(self.requests) - 1
-        if index < len(self.failures) and self.failures[index] is not None:
-            raise self.failures[index]  # pyright: ignore[reportGeneralTypeIssues]
-        script = self.scripts[min(index, len(self.scripts) - 1)] if self.scripts else []
-        for piece in script:
-            if self.delay_seconds:
-                await asyncio.sleep(self.delay_seconds)
-            yield ModelDelta(text=piece)
 
 
 @dataclass

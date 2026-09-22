@@ -78,7 +78,6 @@ from factory_agent.ports import (
     MesCallRecorder,
     MesDataSource,
     ModelGateway,
-    ModelStreamGateway,
     SessionRepository,
     TrustedCredential,
 )
@@ -686,10 +685,8 @@ def _build_session_service(
             run_timeout_seconds=settings.session_run_timeout_seconds,
             abandoned_pending_seconds=settings.session_abandoned_pending_seconds,
             thinking_enabled=settings.session_thinking_enabled,
-            thinking_timeout_seconds=settings.session_thinking_timeout_seconds,
             thinking_tick_seconds=settings.session_thinking_tick_seconds,
             thinking_wait_seconds=settings.session_thinking_wait_seconds,
-            thinking_max_output_tokens=settings.session_thinking_max_output_tokens,
         ),
         exporter=exporter,
         personalization=personalization,
@@ -703,11 +700,6 @@ def _build_session_service(
         summarizer=summarizer,
         scope_guard=scope_guard,
         validation_mode=settings.validation_mode,
-        # Transcript narration is optional by construction: a gateway that
-        # cannot stream yields ``stream_gateway=None``, and the round then
-        # narrates from its own facts instead of failing.
-        stream_gateway=model if isinstance(model, ModelStreamGateway) else None,
-        thinking_model_alias=settings.llm_thinking_stream_alias,
     )
 
 

@@ -151,6 +151,9 @@
 | `error` | 错误/拒绝/取消提示，`text` 为可直接展示的友好文案 | 错误提示气泡 |
 
 `sequence` 为该消息在轮内的单调递增序号，与 SSE 的 `id:` 同源。
+**它每轮都从 1 重新计数，只表示轮内先后，不能当整个会话的排序键**；
+消息列表接口（§4.5 / §4.15）已按 `(created_at, interaction_id, sequence)` 升序返回，
+前端直接按数组顺序渲染即可。
 
 `interaction_id` 为该消息所属**轮次**，与 `interactions[]` / SSE 的 `interaction_id` 一一对应；
 `created_at` 为消息创建时间。两者是 2026-09-21 的加法式新增字段（旧前端忽略即可），
@@ -345,6 +348,9 @@ Query：
   已认证但**非该会话所有者**的用户拿到的是 `200` + 空列表（`{"items": []}`），
   既不报错、也不暴露该会话是否存在；只有**凭据本身被拒**（非本厂成员、租户被停用等）才返回
   `403`（§6.1）。
+- 消息按 `(created_at, interaction_id, sequence)` **升序**返回（自然时间顺序）；
+  数组已排好序，前端**直接按数组顺序渲染，不要自行重排**（`sequence` 每轮从 1
+  重新计数，不能当全局排序键，见 §3.3）。
 - 消息新增 `interaction_id`（所属轮次）与 `created_at`（创建时间）两个字段
   （加法式变更，旧前端可忽略，定义见 §3.3）。
 - 本接口的响应用 `exclude_none` 序列化：`next_cursor` 为 `null` 时**该键不存在**
@@ -622,7 +628,7 @@ Query：`limit`（默认 50，上限 200）。响应：`Favorite[]`（结构同�
 }
 ```
 
-- `interactions` 按时间**升序**且**不分页**；`messages` 按 `(created_at, message_id)` 升序，
+- `interactions` 按时间**升序**且**不分页**；`messages` 按 `(created_at, interaction_id, sequence)` 升序，
   `next_cursor` **只表示 `messages` 还有下一页**（翻页仍用本接口的 `limit` / `cursor`）。
 - `ConversationTurn`：`interaction_id` / `status`（§3.2）/ `state` /
   `capability_id`（未命中能力时为 `null`）/ `created_at` /

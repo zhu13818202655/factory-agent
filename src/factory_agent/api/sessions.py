@@ -42,7 +42,12 @@ from factory_agent.domain import (
     MessageRecord,
     SessionId,
 )
-from factory_agent.ports import ConversationSummary, InteractionOwner, InteractionStore
+from factory_agent.ports import (
+    ConversationSummary,
+    InteractionOwner,
+    InteractionStore,
+    MessagePage,
+)
 
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -348,6 +353,31 @@ async def _conversation_turns(
     return turns
 
 
+async def _message_page(
+    store: InteractionStore,
+    owner: InteractionOwner,
+    session_id: SessionId,
+    *,
+    limit: int,
+    cursor: str | None,
+    exclude_kinds: frozenset[MessageKind] = frozenset(),
+) -> MessagePage:
+    """One message page; a malformed or outdated cursor is a client error.
+
+    Cursors are opaque server-signed strings: a client can only replay what it
+    was given, so an unreadable cursor can never be repaired client-side — the
+    correct response is a retryable ``400`` that tells the caller to re-read
+    from the first page.
+    """
+    try:
+        return await store.list_messages(owner, session_id, limit, cursor, exclude_kinds)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="pagination cursor is malformed",
+        ) from exc
+
+
 async def _conversation_detail(
     store: InteractionStore,
     owner: InteractionOwner,
@@ -360,7 +390,9 @@ async def _conversation_detail(
     summary = await store.get_conversation(owner, session_id)
     if summary is None:
         raise _conversation_not_found()
-    messages = await store.list_messages(owner, session_id, limit, cursor, exclude_kinds)
+    messages = await _message_page(
+        store, owner, session_id, limit=limit, cursor=cursor, exclude_kinds=exclude_kinds
+    )
     turns = await _conversation_turns(store, owner, session_id)
     return ConversationDetailView(
         conversation=_summary_view(summary),
@@ -469,7 +501,9 @@ async def list_messages(
 ) -> MessagePageView:
     store = _store(request)
     owner = await _owner(request)
-    page = await store.list_messages(owner, SessionId(session_id), _clamp(limit, 1, 200), cursor)
+    page = await _message_page(
+        store, owner, SessionId(session_id), limit=_clamp(limit, 1, 200), cursor=cursor
+    )
     return MessagePageView(
         items=[_message_view(message) for message in page.items],
         next_cursor=page.next_cursor,
@@ -530,9 +564,7 @@ async def create_conversation(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="conversation limit reached",
         )
-    created = await store.create_conversation(
-        owner, session_id, _container(request).clock.now()
-    )
+    created = await store.create_conversation(owner, session_id, _container(request).clock.now())
     if not created.created:
         # Lost a race with a concurrent create: the winner's conversation is the
         # real one, so report it as an existing conversation.

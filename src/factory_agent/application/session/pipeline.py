@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
@@ -703,13 +703,19 @@ class SessionPipelineMixin(SessionNarrationMixin):
                         state, history, usage_events, role=authorization.tenant_context.role
                     ),
                     parse_slot,
-                    usage_events,
                     facts=ThinkingFacts(
                         stage="解析",
                         lines=(
                             "正在理解您的问题，确认要查询的内容。",
                             "正在匹配一项已审核的统计口径。",
                         ),
+                    ),
+                    # A slow parse is covered by the same fixed wait clock as
+                    # the fetch: one reviewed sentence every wait_seconds, no
+                    # model narration anywhere on the transcript.
+                    watch=FetchProgressWatch(
+                        wait_seconds=self._limits.thinking_wait_seconds,
+                        wait_sentence=lambda elapsed: f"正在理解您的问题，已等待 {elapsed} 秒。",
                     ),
                 ):
                     yield event
@@ -825,14 +831,15 @@ class SessionPipelineMixin(SessionNarrationMixin):
             return
 
         # The wait the pager dominates is announced by its own facts rather than
-        # by model prose: a deployment whose gateway cannot stream still tells
-        # the caller what is being fetched and over which window. The live
-        # counters and the elapsed-wait sentence are both read from the watch
-        # through the interleaving loop, so those two are the parts of the fetch
-        # narration that need a gateway able to stream. They are stated before
-        # the phase pair rather than after it so the two adjacent transitions
-        # stay adjacent — AUTHORIZING is never a durable state, and a frame
-        # persisted between them would break that reading.
+        # by generated prose: the caller is told what is being fetched and over
+        # which window before the call opens, then the watch reports the live
+        # counters and a fixed elapsed-wait sentence every ``wait_seconds``
+        # while the call runs. All of it is fixed reviewed script — zero LLM
+        # spend, and nothing on the transcript a model could have fabricated.
+        # The stage pair is stated before the fetch facts rather than after it
+        # so the two adjacent transitions stay adjacent — AUTHORIZING is never
+        # a durable state, and a frame persisted between them would break that
+        # reading.
         fetch_facts = self._fetch_facts(capability_id, time_range, decision_context.role)
         for line in fetch_facts.lines:
             async for event in self._fact(state, line):
@@ -847,7 +854,10 @@ class SessionPipelineMixin(SessionNarrationMixin):
 
         try:
             run_slot: WorkSlot[CapabilityRunResult] = WorkSlot()
-            watch = FetchProgressWatch(wait_seconds=self._limits.thinking_wait_seconds)
+            watch = FetchProgressWatch(
+                wait_seconds=self._limits.thinking_wait_seconds,
+                wait_sentence=self._fetch_wait_sentence(capability_id),
+            )
             async for event in self._narrate_over(
                 state,
                 self._runner.run(
@@ -859,7 +869,6 @@ class SessionPipelineMixin(SessionNarrationMixin):
                     )
                 ),
                 run_slot,
-                usage_events,
                 facts=fetch_facts,
                 watch=watch,
             ):
@@ -955,6 +964,18 @@ class SessionPipelineMixin(SessionNarrationMixin):
         # the moment it is read rather than what was resolved a step earlier.
         lines.append("正在向工厂系统取数，数据量大时会逐页取回。")
         return ThinkingFacts(stage="取数", lines=tuple(lines))
+
+    def _fetch_wait_sentence(self, capability_id: CapabilityId) -> Callable[[int], str]:
+        """The fixed wait sentence for the fetch: what is fetched, waited how long.
+
+        Reviewed Chinese title only, mirroring ``_fetch_facts`` — the endpoint
+        behind the capability stays an internal identifier and never reaches
+        the transcript. The elapsed seconds are filled in per sentence, so a
+        repeating wait is never dropped as a duplicate frame.
+        """
+        title = FR_INFO.get(fr_id_for(str(capability_id)), ("", ""))[0]
+        label = f"正在取数：{title}" if title else "正在向工厂系统取数"
+        return lambda elapsed: f"{label}，已等待 {elapsed} 秒。"
 
     async def _complete_result(
         self,

@@ -36,6 +36,46 @@ def test_kpi_card_resolves_values_from_totals_and_rows() -> None:
     assert "table" not in card
 
 
+def test_money_and_percent_cells_round_to_two_decimals() -> None:
+    """日均工资等计算均值在卡片上最多保留两位小数（与答案文本口径一致）。"""
+    card = build_card(
+        _kpi_spec(),
+        capability_id="fr002_personal_wage_summary",
+        title="个人工资汇总",
+        columns=_WAGE_COLUMNS,
+        rows=(
+            {
+                "gross_total": Decimal("16167.95"),
+                "piece_count": Decimal("7650"),
+                "daily_avg": Decimal("538.9316666666666667"),
+            },
+        ),
+        totals={},
+    )
+
+    metrics = as_list(card["metrics"])
+    assert metrics[0] == {"label": "计件工资合计", "unit": "元", "value": "16167.95"}
+    assert metrics[2] == {"label": "日均工资", "unit": "元", "value": "538.93"}
+
+    # 字符串数值同样按列类型四舍五入；普通整数不带多余小数位。
+    table_card = build_card(
+        CardTableSpec(kind="table", preview_max_rows=10),
+        capability_id="fr005_order_progress",
+        title="订单/款号进度",
+        columns=(
+            CardColumn("order_code", title="生产单号"),
+            CardColumn("progress_ratio", title="包完工率", column_type="percent"),
+        ),
+        rows=(
+            {"order_code": "DD001", "progress_ratio": "85.7142857142857"},
+            {"order_code": "DD002", "progress_ratio": "100"},
+        ),
+        totals={},
+    )
+    table = as_dict(table_card["table"])
+    assert table["rows"] == [["DD001", "85.71"], ["DD002", "100"]]
+
+
 def test_kpi_metric_without_data_source_is_explicit_not_zero() -> None:
     card = build_card(
         _kpi_spec(),

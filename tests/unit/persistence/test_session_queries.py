@@ -25,16 +25,12 @@ OWNERSHIP_STATEMENTS: dict[str, Statement] = {
     "select_interaction": queries.select_interaction(TENANT, USER, "i-1"),
     "select_events": queries.select_events(TENANT, USER, "i-1", 0),
     "select_messages": queries.select_messages(TENANT, USER, "s-1", 50),
-    "select_latest_message": queries.select_latest_message(
-        TENANT, USER, "s-1", ("result_table",)
-    ),
+    "select_latest_message": queries.select_latest_message(TENANT, USER, "s-1", ("result_table",)),
     "select_interactions": queries.select_interactions(TENANT, USER, "s-1", 50),
     "select_conversations": queries.select_conversations(TENANT, USER, 20),
     "select_conversation": queries.select_conversation(TENANT, USER, "s-1"),
     "count_conversations": queries.count_conversations(TENANT, USER),
-    "select_conversation_messages": queries.select_conversation_messages(
-        TENANT, USER, SESSIONS
-    ),
+    "select_conversation_messages": queries.select_conversation_messages(TENANT, USER, SESSIONS),
     "select_conversation_first_questions": queries.select_conversation_first_questions(
         TENANT, USER, SESSIONS
     ),
@@ -74,14 +70,39 @@ def test_cursor_pagination_is_stable_and_over_fetches_one_row() -> None:
 
     assert "ORDER BY" in sql
     assert "created_at ASC" in sql
-    assert "message_id ASC" in sql
+    assert "interaction_id ASC" in sql
+    assert "sequence ASC" in sql
+    # message_id 是随机 UUID，永远不允许出现在排序键里。
+    order_by = sql.split("ORDER BY", 1)[1]
+    assert "message_id" not in order_by
     assert "LIMIT 26" in sql
 
 
 def test_cursor_round_trips() -> None:
-    cursor = queries.encode_cursor(NOW, "m-1")
+    """轮次与会话列表仍是二元组游标（时间, 行标识）."""
+    cursor = queries.encode_cursor(NOW, "s-9")
 
-    assert queries.decode_cursor(cursor) == (NOW, "m-1")
+    assert queries.decode_cursor(cursor) == (NOW, "s-9")
+
+
+def test_message_cursor_round_trips() -> None:
+    cursor = queries.encode_message_cursor(NOW, "i-1", 7)
+
+    assert queries.decode_message_cursor(cursor) == (NOW, "i-1", 7)
+
+
+@pytest.mark.parametrize("cursor", ["", "not-base64!!", "e30=", "eyJhdCI6IDF9"])
+def test_malformed_message_cursors_are_rejected(cursor: str) -> None:
+    with pytest.raises(queries.CursorError):
+        queries.decode_message_cursor(cursor)
+
+
+def test_legacy_message_cursor_is_rejected() -> None:
+    """旧版二元组游标（含随机 message_id）在新排序语义下不可续页，必须显式报错."""
+    legacy = queries.encode_cursor(NOW, "m-1")
+
+    with pytest.raises(queries.CursorError):
+        queries.decode_message_cursor(legacy)
 
 
 @pytest.mark.parametrize("cursor", ["", "not-base64!!", "e30=", "eyJhdCI6IDF9"])
@@ -90,10 +111,11 @@ def test_malformed_cursors_are_rejected(cursor: str) -> None:
         queries.decode_cursor(cursor)
 
 
-def test_cursor_narrows_the_result_window() -> None:
-    sql = compiled(queries.select_messages(TENANT, USER, "s-1", 25, (NOW, "m-1")))
+def test_message_cursor_narrows_the_result_window() -> None:
+    sql = compiled(queries.select_messages(TENANT, USER, "s-1", 25, (NOW, "i-1", 7)))
 
-    assert "'m-1'" in sql
+    assert "'i-1'" in sql
+    assert "7" in sql
     assert f"tenant_id = '{TENANT}'" in sql
 
 
@@ -138,6 +160,23 @@ def test_bulk_recovery_builders_are_deliberately_not_ownership_scoped() -> None:
         assert f"user_id = '{USER}'" not in compiled(statement)
 
 
+def test_message_owner_index_matches_the_read_ordering_key() -> None:
+    """索引顺序必须与 ``select_messages`` 的排序键一致，随机 message_id 不进索引."""
+    index = {
+        str(index.name): [column.name for column in index.columns]
+        for index in message_table.indexes
+    }
+
+    assert index["agent_message_owner_idx"] == [
+        "tenant_id",
+        "user_id",
+        "session_id",
+        "created_at",
+        "interaction_id",
+        "sequence",
+    ]
+
+
 def test_messages_and_events_cascade_from_the_interaction() -> None:
     cascading = {
         table.name: {constraint.ondelete for constraint in table.foreign_key_constraints}
@@ -161,12 +200,11 @@ def test_message_sequence_is_unique_within_an_interaction() -> None:
 
 def test_latest_message_reads_newest_first_one_row_within_the_given_kinds() -> None:
     """窗口兜底取的是「最近一条结果消息」：倒序一行，且只认指定 kind（D-7）."""
-    sql = compiled(
-        queries.select_latest_message(TENANT, USER, "s-1", ("error", "result_table"))
-    )
+    sql = compiled(queries.select_latest_message(TENANT, USER, "s-1", ("error", "result_table")))
 
     assert "created_at DESC" in sql
-    assert "message_id DESC" in sql
+    assert "interaction_id DESC" in sql
+    assert "sequence DESC" in sql
     assert "LIMIT 1" in sql
     assert "kind IN ('error', 'result_table')" in sql
 
@@ -211,7 +249,8 @@ def test_title_source_is_the_earliest_user_question_not_the_newest() -> None:
     sql = compiled(queries.select_conversation_first_questions(TENANT, USER, SESSIONS))
 
     assert "created_at ASC" in sql
-    assert "message_id ASC" in sql
+    assert "interaction_id ASC" in sql
+    assert "sequence ASC" in sql
     assert "role = 'user'" in sql
     assert "kind = 'plain_text'" in sql
 

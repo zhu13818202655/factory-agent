@@ -71,7 +71,8 @@ message_table = sa.Table(
         "user_id",
         "session_id",
         "created_at",
-        "message_id",
+        "interaction_id",
+        "sequence",
     ),
 )
 

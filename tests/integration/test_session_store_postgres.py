@@ -36,6 +36,7 @@ from factory_agent.domain import (
     TenantId,
     UserId,
 )
+from factory_agent.persistence import queries
 from factory_agent.persistence.engine import normalize_dsn
 from factory_agent.persistence.session_store import SqlInteractionStore
 from factory_agent.persistence.tables import METADATA, usage_event_table
@@ -304,6 +305,112 @@ async def test_cursor_pagination_walks_every_message_exactly_once(
     assert seen == [f"m-{index}" for index in range(1, 8)]
 
 
+async def test_messages_with_identical_timestamps_keep_the_pipeline_order(
+    store: SqlInteractionStore,
+) -> None:
+    """同一微秒落库的消息必须按 (interaction_id, sequence) 确定性排序。
+
+    结果卡片和最终回答诞生于同一次 commit，created_at 可以完全相同；
+    message_id 是随机 UUID，绝不允许参与排序。本用例特意让 message_id
+    的字典序与 sequence 相反——排序键一旦退回 message_id，断言必然失败。
+    """
+    earlier = NOW - timedelta(seconds=60)
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-0", created_at=earlier, last_event_sequence=1),
+            messages=(message("m-9", "i-0", 1, created_at=earlier),),
+        )
+    )
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-a", created_at=NOW, last_event_sequence=7),
+            messages=(
+                message("m-zzz", "i-a", 1, created_at=NOW),
+                message("m-yyy", "i-a", 6, created_at=NOW),
+                message("m-xxx", "i-a", 7, created_at=NOW),
+            ),
+        )
+    )
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-b", created_at=NOW, last_event_sequence=2),
+            messages=(
+                message("m-www", "i-b", 1, created_at=NOW),
+                message("m-vvv", "i-b", 2, created_at=NOW),
+            ),
+        )
+    )
+
+    page = await store.list_messages(OWNER, SESSION, limit=10)
+
+    assert [(str(item.interaction_id), item.sequence) for item in page.items] == [
+        ("i-0", 1),
+        ("i-a", 1),
+        ("i-a", 6),
+        ("i-a", 7),
+        ("i-b", 1),
+        ("i-b", 2),
+    ]
+
+
+async def test_identical_timestamp_pages_walk_every_message_exactly_once(
+    store: SqlInteractionStore,
+) -> None:
+    """三元组游标在整页同 created_at 数据上不重不漏."""
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-a", created_at=NOW, last_event_sequence=3),
+            messages=tuple(
+                message(f"m-{letter}", "i-a", index, created_at=NOW)
+                for index, letter in enumerate(("c", "b", "a"), start=1)
+            ),
+        )
+    )
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-b", created_at=NOW, last_event_sequence=2),
+            messages=(
+                message("m-z", "i-b", 1, created_at=NOW),
+                message("m-y", "i-b", 2, created_at=NOW),
+            ),
+        )
+    )
+
+    seen: list[tuple[str, int]] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page = await store.list_messages(OWNER, SESSION, limit=2, cursor=cursor)
+        seen.extend((str(item.interaction_id), item.sequence) for item in page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+
+    assert cursor is None
+    assert seen == [
+        ("i-a", 1),
+        ("i-a", 2),
+        ("i-a", 3),
+        ("i-b", 1),
+        ("i-b", 2),
+    ]
+
+
+async def test_a_legacy_message_cursor_is_rejected_as_malformed(
+    store: SqlInteractionStore,
+) -> None:
+    """旧版二元组游标在新排序语义下不可续页，显式报错让客户端从头重拉."""
+    await store.commit(
+        InteractionCommit(
+            interaction=interaction("i-1"),
+            messages=(message("m-1", "i-1", 1),),
+        )
+    )
+    legacy = queries.encode_cursor(NOW, "m-1")
+
+    with pytest.raises(queries.CursorError):
+        await store.list_messages(OWNER, SESSION, limit=10, cursor=legacy)
+
+
 async def test_deleting_a_session_cascades_to_messages_and_events(
     store: SqlInteractionStore,
 ) -> None:
@@ -558,9 +665,7 @@ async def test_conversation_aggregates_skip_phase_and_pick_the_newest_rows(
                 state=SessionState.ANSWERED,
                 created_at=later,
             ),
-            messages=(
-                conversation_message("m-4", "i-2", 1, text="第二个问题", created_at=later),
-            ),
+            messages=(conversation_message("m-4", "i-2", 1, text="第二个问题", created_at=later),),
         )
     )
 

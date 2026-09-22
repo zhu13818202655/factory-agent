@@ -29,6 +29,7 @@ from factory_agent.application.usage import pseudonymous_subject
 from factory_agent.domain import (
     INTERACTION_ANSWER,
     INTERACTION_CLARIFICATION,
+    INTERACTION_HEARTBEAT,
     INTERACTION_PHASE,
     INTERACTION_PROGRESS,
     INTERACTION_RESULT,
@@ -240,7 +241,18 @@ async def drain(
     stream = service.stream(
         credential(), interaction_id, after_sequence=after_sequence, history=history
     )
-    return [event async for event in stream]
+    return persisted([event async for event in stream])
+
+
+def persisted(events: list[SessionEvent]) -> list[SessionEvent]:
+    """Drop wire-only heartbeats.
+
+    A heartbeat repeats the last seen sequence and is never stored, so
+    assertions over drained streams describe the persisted event log only.
+    The narration interleaving loop can hold a commit for one tick, which is
+    exactly the quiet pass a heartbeat exists to cover.
+    """
+    return [event for event in events if event.name != INTERACTION_HEARTBEAT]
 
 
 @pytest.mark.asyncio

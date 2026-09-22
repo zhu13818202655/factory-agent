@@ -44,23 +44,16 @@ class SessionLimits:
     #: Reasoning-transcript narration (``interaction.thinking``). On by
     #: default: it exists to cover the windows the caller would otherwise
     #: watch in silence, and those windows are ordinary rather than
-    #: exceptional. Disabling it removes the extra narration call entirely.
+    #: exceptional. Disabling it removes the transcript entirely.
     thinking_enabled: bool = True
-    #: Wall-clock ceiling on one narration call. A narration that outlives the
-    #: work it describes is abandoned rather than awaited — it must never be
-    #: the reason an answer is late.
-    thinking_timeout_seconds: float = 20.0
     #: Poll interval of the interleaving loop: how often the pipeline looks at
-    #: the transcript and at the fetch counters while work is in flight.
+    #: the watch's fixed sentences while work is in flight.
     thinking_tick_seconds: float = 0.25
-    #: Interval of the temporal wait sentence. A fetch that never pages — one
-    #: large request answered in a single round trip — publishes no counters, so
-    #: without this the longest window in the run narrates nothing at all.
-    #: ``0`` leaves the fetch narrated by its counters only.
+    #: Interval of the fixed temporal wait sentence. A fetch that never pages —
+    #: one large request answered in a single round trip — publishes no
+    #: counters, so without this the longest window in the run narrates
+    #: nothing at all. ``0`` leaves the fetch narrated by its counters only.
     thinking_wait_seconds: float = 5.0
-    #: Output cap for one narration call; short by design, since the transcript
-    #: describes the current step rather than the answer.
-    thinking_max_output_tokens: int = 160
 
 
 EMPTY_BUSINESS_FILTERS = ResolvedBusinessFilters(

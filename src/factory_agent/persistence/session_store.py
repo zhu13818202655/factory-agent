@@ -268,7 +268,7 @@ class SqlInteractionStore:
         cursor: str | None = None,
         exclude_kinds: frozenset[MessageKind] = frozenset(),
     ) -> MessagePage:
-        decoded = queries.decode_cursor(cursor) if cursor else None
+        decoded = queries.decode_message_cursor(cursor) if cursor else None
         async with self._engine.connect() as connection:
             rows = (
                 (
@@ -288,7 +288,11 @@ class SqlInteractionStore:
             )
         page = rows[:limit]
         next_cursor = (
-            queries.encode_cursor(page[-1]["created_at"], str(page[-1]["message_id"]))
+            queries.encode_message_cursor(
+                page[-1]["created_at"],
+                str(page[-1]["interaction_id"]),
+                int(page[-1]["sequence"]),
+            )
             if len(rows) > limit and page
             else None
         )
@@ -423,9 +427,7 @@ class SqlInteractionStore:
             # only dependable "I created it" signal.
             inserted = (
                 await connection.execute(
-                    queries.insert_conversation(
-                        tenant_id, user_id, str(session_id), created_at=now
-                    )
+                    queries.insert_conversation(tenant_id, user_id, str(session_id), created_at=now)
                 )
             ).scalar_one_or_none()
             row = (

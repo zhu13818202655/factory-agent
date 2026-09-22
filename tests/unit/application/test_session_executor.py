@@ -209,10 +209,17 @@ async def test_disconnected_claimer_does_not_kill_the_run() -> None:
     stream = cast(AsyncGenerator[SessionEvent, None], service.stream(credential(), interaction_id))
     first = await stream.__anext__()
     assert first.name == "interaction.started"
+    # The executor task reaches the intent call a few scheduling hops after
+    # the claim; wait for it so the disconnect below lands mid-run rather
+    # than mid-startup, without depending on exact hop counts.
+    for _ in range(200):
+        if gateway.entered:
+            break
+        await asyncio.sleep(0.005)
+    assert gateway.entered
     # Simulate a client disconnect (front-end timeout, proxy cut, browser close)
     # while the pipeline is still executing.
     await stream.aclose()
-    assert gateway.entered
 
     gateway.gate.set()
     await service.shutdown(timeout=2.0)
@@ -237,7 +244,10 @@ async def test_two_connections_share_one_execution_and_one_terminal() -> None:
 
     async def drain() -> list[SessionEvent]:
         stream = service.stream(credential(), interaction_id)
-        return [event async for event in stream]
+        # Wire-only heartbeats repeat the last seen sequence and are never
+        # stored; the narration interleaving loop can hold a commit for one
+        # tick, which is the quiet pass a heartbeat exists to cover.
+        return [event async for event in stream if event.name != "interaction.heartbeat"]
 
     first, second = await asyncio.gather(drain(), drain())
 

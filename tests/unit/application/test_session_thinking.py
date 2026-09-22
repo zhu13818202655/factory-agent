@@ -8,12 +8,15 @@ Two layers are covered separately, because they fail differently:
   ordering — its tests run a real round and assert that a transcript arrives
   *before* the result, closes with one ``done`` frame, is persisted once for
   history restore, and never shortens or fails the answer it describes.
+
+Every frame is a fixed reviewed sentence: no model call narrates anything, so
+the wiring tests also assert the narration spends nothing.
 """
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import pytest
@@ -34,7 +37,6 @@ from factory_agent.application.intent import (
 )
 from factory_agent.application.session import SessionLimits, SessionService, StartRequest
 from factory_agent.application.session.thinking import (
-    COALESCE_CHARS,
     MAX_FRAME_CHARS,
     FetchProgressWatch,
     ThinkingCoalescer,
@@ -62,11 +64,8 @@ from factory_agent.ports import (
     CapabilityRunRequest,
     CapabilityRunResult,
     MesFetchProgress,
-    ModelDelta,
-    ModelErrorCategory,
-    ModelGatewayError,
     ModelRequest,
-    ModelStage,
+    ModelResponse,
 )
 from factory_agent.ports.contracts import TrustedCredential
 from tests.support.authorization import (
@@ -154,7 +153,7 @@ def test_widening_keeps_first_seen_order_and_ignores_repeats() -> None:
     facts = _facts("第一句。")
 
     assert facts.widened("第二句。").lines == ("第一句。", "第二句。")
-    # Idempotent: a sentence already allowed does not grow the prompt.
+    # Idempotent: a sentence already allowed does not grow the allowlist.
     assert facts.widened("第一句。") is facts
 
 
@@ -180,67 +179,7 @@ def test_merging_a_later_step_never_drops_the_earlier_steps_facts() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_coalescer_holds_deltas_until_the_coalescing_threshold() -> None:
-    coalescer = ThinkingCoalescer()
-    coalescer.feed("正在" * 10)
-
-    assert coalescer.take(_facts("正在取数。")) == ()
-    # The forced sweep is what the terminal path uses, so nothing is lost.
-    assert coalescer.take(_facts("正在取数。"), force=True) != ()
-
-
-def test_coalescer_emits_a_frame_once_the_threshold_is_reached() -> None:
-    coalescer = ThinkingCoalescer()
-    coalescer.feed("正" * (COALESCE_CHARS + 1))
-
-    frames = coalescer.take(_facts("正在取数。"))
-
-    assert len(frames) == 1
-    assert coalescer.text == frames[0]
-
-
-def test_coalescer_holds_back_a_token_a_frame_boundary_would_cut() -> None:
-    """Two individually clean frames must not reassemble into a blocked token."""
-    coalescer = ThinkingCoalescer(coalesce_chars=10)
-    # Padding puts the frame boundary in the middle of the identifier.
-    coalescer.feed("。" * 20 + "piecework_records")
-
-    frames = coalescer.take(_facts("正在取数。"))
-
-    assert frames == ("。" * 20,)
-    assert coalescer.stopped is False
-    # Held back, then refused whole on the next sweep rather than rewritten.
-    assert coalescer.take(_facts("正在取数。"), force=True) == ()
-    assert coalescer.stopped is True
-
-
-def test_coalescer_stops_the_source_after_a_rejected_frame() -> None:
-    coalescer = ThinkingCoalescer()
-    coalescer.feed("正在读 piecework_records 表。")
-
-    assert coalescer.take(_facts("正在取数。"), force=True) == ()
-    assert coalescer.stopped is True
-    # Once abandoned, the source can never contribute again this round.
-    coalescer.feed("正常的话。")
-    assert coalescer.take(_facts("正在取数。"), force=True) == ()
-
-
-def test_coalescer_caps_the_transcript_and_flags_truncation() -> None:
-    coalescer = ThinkingCoalescer(max_total_chars=100, coalesce_chars=10)
-
-    for index in range(20):
-        # Distinct characters per chunk: identical chunks would be deduplicated
-        # as repeats and never spend the budget at all.
-        coalescer.feed("".join(chr(0x4E00 + index * 20 + offset) for offset in range(20)))
-        coalescer.take(_facts("正在取数。"))
-        if coalescer.truncated:
-            break
-
-    assert coalescer.truncated is True
-    assert len(coalescer.text) <= 100
-
-
-def test_commit_sends_a_whole_sentence_without_waiting_for_the_threshold() -> None:
+def test_commit_sends_a_whole_sentence_without_waiting_for_anything() -> None:
     coalescer = ThinkingCoalescer()
 
     frames = coalescer.commit(_facts("正在取数。"), transcript_line("正在查看本人产量。"))
@@ -274,7 +213,7 @@ def test_a_repeated_row_is_sent_once() -> None:
 
 
 def test_commit_still_gates_a_caller_authored_sentence() -> None:
-    """Being written here rather than by the model is not a reason to trust it."""
+    """The numbers a sentence restates come from a slow external system."""
     coalescer = ThinkingCoalescer()
 
     frames = coalescer.commit(_facts("正在取数。"), transcript_line("共 4321 行。"))
@@ -284,7 +223,7 @@ def test_commit_still_gates_a_caller_authored_sentence() -> None:
 
 
 def test_a_frame_never_exceeds_the_contract_frame_limit() -> None:
-    coalescer = ThinkingCoalescer(coalesce_chars=10)
+    coalescer = ThinkingCoalescer()
 
     frames = coalescer.commit(_facts("正在取数。"), transcript_line("正" * 500))
 
@@ -293,8 +232,24 @@ def test_a_frame_never_exceeds_the_contract_frame_limit() -> None:
     assert "".join(frames).strip() == "正" * 500
 
 
+def test_commit_caps_the_transcript_and_flags_truncation() -> None:
+    coalescer = ThinkingCoalescer(max_total_chars=100)
+
+    for index in range(20):
+        # Distinct sentences: identical ones would be deduplicated as repeats
+        # and never spend the budget at all.
+        coalescer.commit(
+            _facts("正在取数。"), transcript_line(f"第 {index} 句：" + chr(0x4E00 + index) * 10)
+        )
+        if coalescer.truncated:
+            break
+
+    assert coalescer.truncated is True
+    assert len(coalescer.text) <= 100
+
+
 # --------------------------------------------------------------------------- #
-# engine: the pager's fact sentences
+# engine: the watch's fact sentences
 # --------------------------------------------------------------------------- #
 
 
@@ -384,6 +339,38 @@ def test_the_wait_sentence_stays_off_until_it_is_asked_for() -> None:
     assert watch.fresh_sentence() is None
 
 
+def test_the_wait_sentence_is_the_stage_s_own_fixed_script() -> None:
+    """The parse wait and the fetch wait describe different work."""
+    clock = _SteppingClock()
+    watch = FetchProgressWatch(
+        wait_seconds=5.0,
+        wait_sentence=lambda elapsed: f"正在理解您的问题，已等待 {elapsed} 秒。",
+        monotonic=clock,
+    )
+
+    clock.advance(5.0)
+    sentence = watch.fresh_sentence()
+
+    assert sentence is not None
+    assert sentence == "正在理解您的问题，已等待 5 秒。"
+
+
+def test_a_watch_without_a_pager_is_a_pure_wait_clock() -> None:
+    """The parse call has no pager: no observation ever arrives, and the
+    watch degenerates into the wait sentence alone."""
+    clock = _SteppingClock()
+    watch = FetchProgressWatch(wait_seconds=5.0, monotonic=clock)
+
+    clock.advance(3.0)
+    assert watch.fresh_sentence() is None
+    clock.advance(2.0)
+    first = watch.fresh_sentence()
+    assert first is not None and "已等待 5 秒" in first
+    clock.advance(5.0)
+    second = watch.fresh_sentence()
+    assert second is not None and "已等待 10 秒" in second
+
+
 # --------------------------------------------------------------------------- #
 # wiring: a round that narrates
 # --------------------------------------------------------------------------- #
@@ -402,30 +389,15 @@ class _SlowRunner(RecordingCapabilityRunner):
 
 
 @dataclass
-class _StreamingGateway:
-    """Narration gateway double: scripted deltas, one script per call.
+class _SlowIntentGateway(ScriptedModelGateway):
+    """Intent gateway whose model call takes long enough to narrate over."""
 
-    ``delay_seconds`` is what makes interleaving observable at all: frames are
-    only flushed from *inside* a wait, so an instantaneous stream would arrive
-    in the single closing sweep and the test could not tell interleaving apart
-    from buffering.
-    """
-
-    scripts: list[list[str]] = field(default_factory=lambda: [])
-    failures: list[Exception | None] = field(default_factory=lambda: [])
-    requests: list[ModelRequest] = field(default_factory=lambda: [])
     delay_seconds: float = 0.0
 
-    async def stream(self, request: ModelRequest) -> AsyncIterator[ModelDelta]:
-        self.requests.append(request)
-        index = len(self.requests) - 1
-        if index < len(self.failures) and self.failures[index] is not None:
-            raise self.failures[index]  # pyright: ignore[reportGeneralTypeIssues]
-        script = self.scripts[min(index, len(self.scripts) - 1)] if self.scripts else []
-        for piece in script:
-            if self.delay_seconds:
-                await asyncio.sleep(self.delay_seconds)
-            yield ModelDelta(text=piece)
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
+        return await super().complete(request)
 
 
 def _credential() -> TrustedCredential:
@@ -450,13 +422,13 @@ async def _no_sleep(_: float) -> None:
 
 def build(
     *,
-    stream_gateway: _StreamingGateway | None = None,
     limits: SessionLimits | None = None,
     runner: RecordingCapabilityRunner | None = None,
     store: InMemoryInteractionStore | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
+    parser: CapabilityIntentParser | None = None,
 ) -> tuple[SessionService, InMemoryInteractionStore]:
-    parser = CapabilityIntentParser(
+    resolved_parser = parser or CapabilityIntentParser(
         ScriptedModelGateway(contents=[INTENT_PAYLOAD]),
         CATALOG,
         model_alias="factory-fast",
@@ -466,14 +438,13 @@ def build(
     service = SessionService(
         resolved_store,
         _authorization(),
-        parser,
+        resolved_parser,
         runner or RecordingCapabilityRunner(),
         FrozenClock(NOW),
         new_id=SequentialIds(),
         limits=limits,
         sleep=sleep or _no_sleep,
         business_filters=BusinessFilterResolver(_EmptyDirectory()),
-        stream_gateway=stream_gateway,
     )
     return service, resolved_store
 
@@ -502,10 +473,8 @@ def _result(events: list[SessionEvent]) -> SessionEvent:
     return matches[0]
 
 
-async def _run_a_round(
-    *, stream_gateway: _StreamingGateway | None = None
-) -> tuple[list[SessionEvent], InMemoryInteractionStore]:
-    service, store = build(stream_gateway=stream_gateway)
+async def _run_a_round() -> tuple[list[SessionEvent], InMemoryInteractionStore]:
+    service, store = build()
     return await drain(service, await _start(service)), store
 
 
@@ -569,9 +538,9 @@ async def test_the_whole_transcript_lands_before_the_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_round_without_a_streaming_gateway_still_narrates_from_facts() -> None:
-    """Facts alone are a complete transcript; the model only adds wording."""
-    events, _ = await _run_a_round(stream_gateway=None)
+async def test_a_round_narrates_from_fixed_sentences_alone() -> None:
+    """Every stage states its own reviewed script; no model wording anywhere."""
+    events, _ = await _run_a_round()
 
     text = _transcript(events)
 
@@ -631,125 +600,46 @@ async def test_the_fragment_counter_restarts_at_one_every_round() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_narration_call_leaves_the_answer_intact() -> None:
-    """The transcript is an aid; it must never fail the round it describes."""
-    gateway = _StreamingGateway(
-        failures=[ModelGatewayError(ModelErrorCategory.UNAVAILABLE, "gateway request failed")]
-    )
-
-    events, _ = await _run_a_round(stream_gateway=gateway)
-
-    assert _result(events) is not None
-    # The deterministic facts survive the dead narration call.
-    assert _thinking(events)
-
-
-@pytest.mark.asyncio
-async def test_a_failing_stream_still_meters_the_narration_attempt() -> None:
-    """A failed narration is still spend, so it must be recorded either way."""
-    broken = ModelGatewayError(ModelErrorCategory.PROTOCOL, "stream broke")
-    # One entry per narration call (the intent wait and the fetch wait).
-    gateway = _StreamingGateway(failures=[broken, broken])
-    service, store = build(stream_gateway=gateway)
+async def test_narration_meters_no_llm_spend() -> None:
+    """The transcript is fixed script: no model call, no usage event, no cost."""
+    service, store = build()
 
     await drain(service, await _start(service))
 
-    spend = [
-        event
-        for event in store.usage_events
-        if event.payload.get("stage") == ModelStage.THINKING.value
+    thinking_spend = [
+        event for event in store.usage_events if "thinking" in str(event.payload.get("stage"))
     ]
-
-    assert spend
-    assert {event.payload.get("status") for event in spend} == {"failed"}
-
-
-@pytest.mark.asyncio
-async def test_the_narration_call_is_shaped_as_a_bounded_thinking_stage() -> None:
-    gateway = _StreamingGateway()
-    service, _ = build(
-        stream_gateway=gateway,
-        limits=SessionLimits(thinking_max_output_tokens=64, thinking_timeout_seconds=3.0),
-    )
-
-    await drain(service, await _start(service))
-
-    assert gateway.requests
-    request = gateway.requests[0]
-    assert request.stage is ModelStage.THINKING
-    assert request.model_alias == "factory-fast"
-    assert request.max_output_tokens == 64
-    assert request.timeout_seconds == 3.0
-    # The narration prompt is written for the model but disclosed verbatim to
-    # the user, so it carries facts and never business rows.
-    assert request.messages[0].role == "system"
-    assert "事实" in request.messages[1].content
-
-
-#: The marker identifies the model's own prose in the transcript. 128 characters
-#: is past ``COALESCE_CHARS``, so the tick loop releases it as a frame *while*
-#: the fetch is still running rather than only in the closing sweep.
-_FETCH_PROSE = "正在向工厂系统逐页取回所需记录，"
-_MODEL_SCRIPTS = [[_FETCH_PROSE * 8, "工厂系统仍在返回剩余部分，稍后开始汇总。"]]
-
-
-@pytest.mark.asyncio
-async def test_streamed_prose_is_flushed_from_inside_the_wait_it_describes() -> None:
-    """Interleaving: the model's wording arrives before the step it narrates ends.
-
-    The total prose is 149 characters, which fits in one frame (the limit is
-    200). A closing sweep can therefore only ever emit a single frame, so two
-    frames carrying the marker prove that one was released by a tick-loop flush
-    — that is, before the fetch returned.
-    """
-    gateway = _StreamingGateway(scripts=_MODEL_SCRIPTS, delay_seconds=0.002)
-    service, _ = build(
-        stream_gateway=gateway,
-        limits=SessionLimits(
-            thinking_tick_seconds=0.002,
-            # The follower charges one heartbeat interval of its follow budget
-            # per quiet pass, so an immediate no-op sleep would burn the whole
-            # budget in microseconds. A real (tiny) interval keeps the budget
-            # tracking wall-clock time, which is what it models.
-            heartbeat_seconds=0.001,
-        ),
-        runner=_SlowRunner(delay_seconds=0.06),
-        sleep=asyncio.sleep,
-    )
-
-    events = await drain(service, await _start(service))
-
-    frames = _thinking(events)
-    composed_at = next(
-        frame.sequence
-        for frame in frames
-        if "正在汇总本次结果并生成答复" in str(frame.data["text"])
-    )
-    model_frames = [frame for frame in frames if "工厂系统" in str(frame.data["text"])]
-
-    assert len(model_frames) >= 2
-    assert max(frame.sequence for frame in model_frames) < composed_at
-    # Nothing was dropped on the way: the whole scripted script is on screen.
-    assert "".join(_MODEL_SCRIPTS[0]) in _transcript(events)
+    assert thinking_spend == []
 
 
 @pytest.mark.asyncio
 async def test_narration_is_additive_to_the_rounds_own_events() -> None:
-    """The switch removes the extra call, never an event of the answer itself."""
+    """The switch removes the transcript, never an event of the answer itself.
+
+    Heartbeats are excluded on both sides: the interleaving loop's scheduling
+    hops can draw one on the narrated run, and a heartbeat is a transport
+    artifact, not an event of the answer.
+    """
+
+    def names(events: list[SessionEvent]) -> list[str]:
+        return [
+            event.name
+            for event in events
+            if event.name not in (INTERACTION_THINKING, "interaction.heartbeat")
+        ]
+
     on_service, _ = build(limits=SessionLimits(thinking_enabled=True))
     on_events = await drain(on_service, await _start(on_service))
     off_service, _ = build(limits=SessionLimits(thinking_enabled=False))
     off_events = await drain(off_service, await _start(off_service))
 
     assert not _thinking(off_events)
-    assert [event.name for event in off_events] == [
-        event.name for event in on_events if event.name != INTERACTION_THINKING
-    ]
+    assert names(off_events) == names(on_events)
 
 
 @pytest.mark.asyncio
 async def test_a_fetch_that_never_pages_still_narrates_its_wait() -> None:
-    """The counters say nothing when nothing pages; the wait sentence covers it.
+    """The counters say nothing when nothing pages; the fixed wait sentence covers it.
 
     One large request answered in a single round trip is the slowest and
     quietest window of a run: it publishes no page mark at all, so before the
@@ -757,7 +647,6 @@ async def test_a_fetch_that_never_pages_still_narrates_its_wait() -> None:
     opening facts and its result.
     """
     service, _ = build(
-        stream_gateway=_StreamingGateway(),
         limits=SessionLimits(thinking_wait_seconds=1.0, thinking_tick_seconds=0.05),
         runner=_SlowRunner(delay_seconds=1.3),
         sleep=asyncio.sleep,
@@ -765,4 +654,25 @@ async def test_a_fetch_that_never_pages_still_narrates_its_wait() -> None:
 
     events = await drain(service, await _start(service))
 
-    assert "正在等待工厂系统返回数据" in _transcript(events)
+    transcript = _transcript(events)
+    assert "正在取数：个人产量统计，已等待" in transcript
+    assert "正在等待工厂系统返回数据" not in transcript
+
+
+@pytest.mark.asyncio
+async def test_a_slow_parse_narrates_its_fixed_wait() -> None:
+    """The parse wait is covered by the same fixed clock, in the parse wording."""
+    service, _ = build(
+        limits=SessionLimits(thinking_wait_seconds=0.2, thinking_tick_seconds=0.05),
+        parser=CapabilityIntentParser(
+            _SlowIntentGateway(contents=[INTENT_PAYLOAD], delay_seconds=0.6),
+            CATALOG,
+            model_alias="factory-fast",
+            timezone_name="Asia/Shanghai",
+        ),
+        sleep=asyncio.sleep,
+    )
+
+    events = await drain(service, await _start(service))
+
+    assert "正在理解您的问题，已等待" in _transcript(events)

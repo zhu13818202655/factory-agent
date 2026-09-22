@@ -32,6 +32,11 @@ _NUMERIC_COLUMN_TYPES = frozenset({"money", "quantity", "percent"})
 
 _UNAVAILABLE_LABEL = "暂无数据源"
 
+#: Display precision for typed numeric cells (money / quantity / percent):
+#: at most two decimal places, matching the answer-text path
+#: (``summary.format_aggregate_value`` quantizes money to 0.01).
+_DISPLAY_QUANTUM = Decimal("0.01")
+
 
 @dataclass(frozen=True, slots=True)
 class CardColumn:
@@ -430,24 +435,36 @@ def _row_cells(by_name: Mapping[str, CardColumn], row: Mapping[str, object]) -> 
 
 def _cell_text(value: object, column_type: str | None) -> str:
     if isinstance(value, Decimal):
-        return _decimal_str(value)
+        return _decimal_str(value, column_type)
     if isinstance(value, str):
         # Only typed numeric strings are normalised ("001" is a department id,
         # never a number); plain text passes through untouched.
         if column_type in _NUMERIC_COLUMN_TYPES:
-            return _string_cell(value)
+            return _string_cell(value, column_type)
         return value
     return str(value)
 
 
-def _string_cell(value: str) -> str:
+def _string_cell(value: str, column_type: str | None = None) -> str:
     try:
-        return _decimal_str(Decimal(value))
+        return _decimal_str(Decimal(value), column_type)
     except InvalidOperation:
         return value
 
 
-def _decimal_str(value: Decimal) -> str:
+def _decimal_str(value: Decimal, column_type: str | None = None) -> str:
+    """Display text for one numeric cell.
+
+    Typed numeric columns (money / quantity / percent) are rounded to at most
+    two decimal places before rendering, so a computed average such as
+    ``538.9316666...`` never reaches the card; the export file keeps full
+    precision. Untyped values keep the exact trimmed representation.
+    """
+    if column_type in _NUMERIC_COLUMN_TYPES:
+        try:
+            value = value.quantize(_DISPLAY_QUANTUM)
+        except InvalidOperation:
+            pass
     return format(value.normalize(), "f")
 
 

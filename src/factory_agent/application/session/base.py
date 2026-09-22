@@ -46,7 +46,6 @@ from factory_agent.ports import (
     InteractionCommit,
     InteractionOwner,
     InteractionStore,
-    ModelStreamGateway,
     UsageEvent,
 )
 from factory_agent.ports.artifacts import ArtifactExporter
@@ -92,8 +91,6 @@ class SessionCore:
         summarizer: ResultSummarizer | None = None,
         scope_guard: ScopeGuard | None = None,
         validation_mode: str = "strict",
-        stream_gateway: ModelStreamGateway | None = None,
-        thinking_model_alias: str = "factory-fast",
     ) -> None:
         self._store = store
         self._authorization = authorization
@@ -126,12 +123,6 @@ class SessionCore:
         self._violations = violations
         self._audit = audit
         self._validation_mode = validation_mode
-        #: Reasoning-transcript narration (``interaction.thinking``). Optional
-        #: on purpose: a deployment whose gateway cannot stream simply produces
-        #: no model narration, and every narration failure is contained so a
-        #: transcript can never fail the round it describes.
-        self._stream_gateway = stream_gateway
-        self._thinking_model_alias = thinking_model_alias
         # Executor decoupling: claimed runs execute in background
         # tasks owned by the service, never by an SSE connection. The registry
         # keeps strong references (GC + cancel + shutdown drain); the

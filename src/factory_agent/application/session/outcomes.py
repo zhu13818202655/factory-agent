@@ -321,7 +321,7 @@ class SessionOutcomeMixin(SessionCore):
 
         The per-fragment events are the replay path (契约 §3); this single
         ``kind=thinking`` row is what a refreshed client renders collapsed
-        (契约 §4). Written only when the model actually narrated something, so
+        (契约 §4). Written only when the round actually narrated something, so
         a round that produced no transcript leaves no empty block behind.
 
         ``sequence`` reuses the final fragment's event sequence — the same
@@ -369,21 +369,19 @@ class SessionOutcomeMixin(SessionCore):
         transcript: ThinkingTranscript,
         *,
         poll: Callable[[], str | None] | None = None,
-        force: bool = False,
     ) -> AsyncIterator[SessionEvent]:
-        """Emit every frame that is ready, in transcript order.
+        """Emit the sentence the watch made due, in transcript order.
 
-        Facts first: a page that has just landed is the newest thing the user
-        can be told, and the model's own pending clause is older than it.
-        ``poll`` is the pager's own counter reader, passed as a callable so this
-        layer stays independent of whoever is doing the fetching.
+        ``poll`` is the watch's own sentence reader, passed as a callable so
+        this layer stays independent of whoever is doing the waiting. A
+        repeated sentence is dropped by the coalescer, so a poll that finds no
+        news costs one read and no frame.
         """
         frames: list[str] = []
         if poll is not None:
             sentence = poll()
             if sentence is not None:
                 frames.extend(self._commit_fact(transcript, sentence))
-        frames.extend(transcript.coalescer.take(transcript.facts, force=force))
         for frame in frames:
             transcript.seq += 1
             event = await self._thinking(state, frame, sequence=transcript.seq)
@@ -391,7 +389,7 @@ class SessionOutcomeMixin(SessionCore):
             yield event
 
     async def _close_transcript(self, state: RunState) -> AsyncIterator[SessionEvent]:
-        """Finish the transcript: last frames, the end marker, the saved copy.
+        """Finish the transcript: the end marker, the saved copy.
 
         Every terminal path calls this before it allocates the terminal event's
         sequence, which is what keeps thinking frames earlier than ``result``
@@ -406,8 +404,6 @@ class SessionOutcomeMixin(SessionCore):
         transcript.closed = True
         if not transcript.enabled:
             return
-        async for event in self._flush_frames(state, transcript, force=True):
-            yield event
         if not transcript.produced:
             return
         transcript.seq += 1
@@ -434,8 +430,7 @@ class SessionOutcomeMixin(SessionCore):
 
         The allowlist holds the bare sentence while the frame is the sentence
         on its own transcript line: the gate compares numbers, which the line
-        shape does not change, whereas the prompt renders the allowlist back to
-        the model and would show a stray leading newline.
+        shape does not change.
         """
         transcript.facts = transcript.facts.widened(sentence)
         return transcript.coalescer.commit(transcript.facts, transcript_line(sentence))

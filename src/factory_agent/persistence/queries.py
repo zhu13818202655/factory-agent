@@ -50,6 +50,42 @@ def decode_cursor(cursor: str) -> tuple[datetime, str]:
         raise CursorError("pagination cursor is malformed") from exc
 
 
+def encode_message_cursor(created_at: datetime, interaction_id: str, sequence: int) -> str:
+    """Cursor over the message ordering key ``(created_at, interaction_id, sequence)``.
+
+    The message tie-break is the deterministic turn/sequence pair, never the
+    random ``message_id``: two messages committed in the same microsecond (a
+    result card and its answer share one commit) must keep their pipeline order
+    in every later read.
+    """
+    payload = json.dumps(
+        {"at": created_at.isoformat(), "iid": interaction_id, "seq": sequence},
+        sort_keys=True,
+    )
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def decode_message_cursor(cursor: str) -> tuple[datetime, str, int]:
+    try:
+        decoded: object = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+    except (ValueError, binascii.Error) as exc:
+        raise CursorError("pagination cursor is malformed") from exc
+    if not isinstance(decoded, dict):
+        raise CursorError("pagination cursor is malformed")
+    payload = cast("dict[str, object]", decoded)
+    raw_at: object = payload.get("at")
+    raw_iid: object = payload.get("iid")
+    raw_seq: object = payload.get("seq")
+    if not isinstance(raw_at, str) or not isinstance(raw_iid, str):
+        raise CursorError("pagination cursor is malformed")
+    if isinstance(raw_seq, bool) or not isinstance(raw_seq, int):
+        raise CursorError("pagination cursor is malformed")
+    try:
+        return datetime.fromisoformat(raw_at), raw_iid, raw_seq
+    except ValueError as exc:
+        raise CursorError("pagination cursor is malformed") from exc
+
+
 def _owned(table: sa.Table, tenant_id: str, user_id: str) -> sa.ColumnElement[bool]:
     return sa.and_(table.c.tenant_id == tenant_id, table.c.user_id == user_id)
 
@@ -80,10 +116,17 @@ def select_messages(
     user_id: str,
     session_id: str,
     limit: int,
-    cursor: tuple[datetime, str] | None = None,
+    cursor: tuple[datetime, str, int] | None = None,
     exclude_kinds: tuple[str, ...] = (),
 ) -> Select[Any]:
-    """Forward-paged messages of one owned session.
+    """Forward-paged messages of one owned session in deterministic order.
+
+    The ordering key is ``(created_at, interaction_id, sequence)``: the first
+    component orders turns against each other, the last two are the per-turn
+    pipeline order (the same numbers the SSE stream uses). ``message_id`` is a
+    random UUID and must never decide order — messages created inside one
+    commit can share a ``created_at`` value, and a random tie-break would flip
+    them nondeterministically between reads.
 
     ``exclude_kinds`` is a pure subtraction applied in SQL rather than after
     paging, so a page stays dense (a post-filter would return short pages while
@@ -96,13 +139,19 @@ def select_messages(
     if exclude_kinds:
         statement = statement.where(message_table.c.kind.not_in(exclude_kinds))
     if cursor is not None:
-        created_at, message_id = cursor
+        created_at, interaction_id, sequence = cursor
         statement = statement.where(
-            sa.tuple_(message_table.c.created_at, message_table.c.message_id)
-            > sa.tuple_(sa.literal(created_at), sa.literal(message_id))
+            sa.tuple_(
+                message_table.c.created_at,
+                message_table.c.interaction_id,
+                message_table.c.sequence,
+            )
+            > sa.tuple_(sa.literal(created_at), sa.literal(interaction_id), sa.literal(sequence))
         )
     return statement.order_by(
-        message_table.c.created_at.asc(), message_table.c.message_id.asc()
+        message_table.c.created_at.asc(),
+        message_table.c.interaction_id.asc(),
+        message_table.c.sequence.asc(),
     ).limit(limit + 1)
 
 
@@ -114,9 +163,9 @@ def select_latest_message(
 ) -> Select[Any]:
     """Newest message of the given kinds inside one owned session.
 
-    Descending by ``(created_at, message_id)`` with ``LIMIT 1``: the caller
-    needs the most recent row, which ``select_messages`` (forward paging from
-    the oldest row) cannot reach without walking the whole session.
+    Descending by ``(created_at, interaction_id, sequence)`` with ``LIMIT 1``:
+    the caller needs the most recent row, which ``select_messages`` (forward
+    paging from the oldest row) cannot reach without walking the whole session.
     """
     return (
         sa.select(message_table)
@@ -125,7 +174,11 @@ def select_latest_message(
             message_table.c.session_id == session_id,
             message_table.c.kind.in_(kinds),
         )
-        .order_by(message_table.c.created_at.desc(), message_table.c.message_id.desc())
+        .order_by(
+            message_table.c.created_at.desc(),
+            message_table.c.interaction_id.desc(),
+            message_table.c.sequence.desc(),
+        )
         .limit(1)
     )
 
@@ -164,9 +217,7 @@ def select_conversations(
     first, which is what the history panel shows — and the cursor predicate is
     therefore strictly *before* the last seen key.
     """
-    statement = sa.select(conversation_table).where(
-        _owned(conversation_table, tenant_id, user_id)
-    )
+    statement = sa.select(conversation_table).where(_owned(conversation_table, tenant_id, user_id))
     if cursor is not None:
         updated_at, session_id = cursor
         statement = statement.where(
@@ -187,8 +238,10 @@ def select_conversation(tenant_id: str, user_id: str, session_id: str) -> Select
 
 def count_conversations(tenant_id: str, user_id: str) -> Select[Any]:
     """An owner's conversation count, used to enforce the per-user cap."""
-    return sa.select(sa.func.count()).select_from(conversation_table).where(
-        _owned(conversation_table, tenant_id, user_id)
+    return (
+        sa.select(sa.func.count())
+        .select_from(conversation_table)
+        .where(_owned(conversation_table, tenant_id, user_id))
     )
 
 
@@ -286,7 +339,8 @@ def select_conversation_messages(
         .order_by(
             message_table.c.session_id,
             message_table.c.created_at.desc(),
-            message_table.c.message_id.desc(),
+            message_table.c.interaction_id.desc(),
+            message_table.c.sequence.desc(),
         )
     )
 
@@ -311,7 +365,8 @@ def select_conversation_first_questions(
         .order_by(
             message_table.c.session_id,
             message_table.c.created_at.asc(),
-            message_table.c.message_id.asc(),
+            message_table.c.interaction_id.asc(),
+            message_table.c.sequence.asc(),
         )
     )
 
@@ -525,6 +580,8 @@ __all__ = [
     "decode_cursor",
     "delete_session",
     "encode_cursor",
+    "encode_message_cursor",
+    "decode_message_cursor",
     "fail_abandoned_interaction_runs",
     "fail_stale_interaction_runs",
     "insert_conversation",
