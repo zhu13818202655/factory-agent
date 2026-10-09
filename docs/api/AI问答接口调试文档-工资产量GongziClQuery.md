@@ -1,0 +1,150 @@
+# AI 问答接口调试文档 — 工资产量查询（明细/汇总）GongziClQuery
+
+> 用途：查询员工工资/产量，支持「明细」与「按维度汇总」两种模式；AI 智能体做工资/产量 问答时调用。
+> 文档版本 2026-09-22（按实际代码核对修正）
+
+---
+
+## 一、接口概览
+
+| 项 | 值 |
+|---|---|
+| 请求地址 | `POST {MES服务地址}/api/NetYf/Sclzd/v2/GongziClQuery` |
+| 当前联调地址 | `http://localhost:53785/api/NetYf/Sclzd/v2/GongziClQuery` |
+| Content-Type | `application/json` |
+| 鉴权 | `Authorization: Bearer <accessToken>` + 请求体 `app_key / timestamp / sign` |
+| **重要** | **本接口不分页，符合条件的数据一次性全量返回**（page/size 参数当前未生效） |
+
+---
+
+## 二、调用三步
+
+### 1. 换 accessToken
+```
+POST {MES服务地址}/api/system/token
+{ "app_key": "<AES加密串>" }
+```
+返回 `accessToken`（2 小时有效）。加密串明文：`app_key=<账套GUID>;user=<工号>;password=<移动密码>;userType=小程序用户`
+
+### 2. 算签名
+```
+sign = MD5( SECRET + "app_key=" + 明文账套GUID + "timestamp=" + 当前Unix秒 )  // 小写
+SECRET = 4fU5aP8xR2tY7kLlzQ9sW5eH7cB3nM6vD8
+```
+timestamp 时间差 > 7200 秒 → 报「请求已过期」。
+
+### 3. 带 Bearer 调用
+Header：`Authorization: Bearer <accessToken>`；Body 必须含 `app_key/timestamp/sign`。
+
+---
+
+## 三、请求参数（Body JSON）
+
+### 3.1 鉴权 + 时间
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|:---:|---|
+| app_key | string | ✅ | AES 加密串 |
+| timestamp | int64 | ✅ | 当前 Unix 秒 |
+| sign | string | ✅ | 签名 |
+| dates | date | 否 | 开始日期，默认本月 1 日，`yyyy-MM-dd` |
+| datee | date | 否 | 结束日期，默认今天，`yyyy-MM-dd` |
+
+> `page/size/queryFooter/` 当前版本**未生效**（代码已注释分页逻辑），传了也忽略。
+
+### 3.2 过滤条件（**只有下面这几项真正生效**）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| uid | string | 员工工号，指定查某员工（传字符串） |
+| Flag | string | `0`=按录入时间；`1`=按审核时间且已审核；其他/空=**未审核** |
+| Type | string | 工资类型，逗号拼接：`0`扫码产量 / `1`吊挂产量 / `2`手工账产量 |
+| bbreed | string | **货号名称**（如 `纯棉T恤`），自动转货号编号过滤；注意传名称不是编号 |
+| wtname | string | **工序名称**（如 `裁剪`），自动转工序编号过滤 |
+| chuanghao | string | 床号，**模糊匹配** |
+
+
+### 3.3 汇总控制（可选）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| groupbyFields | string[] |  根据卡片所示字段进行传参  **不传/空 = 明细模式**；传入则按维度汇总。可选：`inputdate`、`jhdh`(计划号/订单号)、`chuanghao`(床号)、`huohao`(货号编码)、`bbreed`(货号名称)、`type`(工资类型)、`worktype`(工序编码)、`wtname`(工序名称)、`price`、`uid`(员工工号)、`uname`(员工姓名)、`dept`(部门编码)、`deptname`(部门名称)、`color`、`chima` |
+| orderbyFields | string[] | 排序项，如 `["je:desc","chuanghao:asc"]` |
+
+---
+
+## 四、返回结构
+
+```json
+{
+  "code": 1,
+  "msg": "ok",
+  "data": {
+    "list": [ { ... }, { ... } ],
+    "total": 120,
+    "footer": { "bs_total": 120, "je_total": 5200.00 }
+  }
+}
+```
+
+- **`list`**：每行一个字典。**列 = groupbyFields（明细模式用默认列）**
+  - 名称列已自动翻译：`bbreed`=货号名、`wtname`=工序名、`uname`=员工姓名、`deptname`=部门名
+  - 日期列输出 `yyyy-MM-dd`
+- **`total`**：行数
+- **`footer`**：合计，**只含 sum/count 聚合列**，列名 = `聚合别名 + "_total"`（avg/max/min 不参与合计）
+
+---
+
+## 五、权限分级（服务端强制）
+
+| 角色 | 编码 | 数据范围 |
+|---|:---:|---|
+| 员工 | 00 | **仅本人** |
+| 组长 | 01 | **本部门**（dept 等于登录用户部门） |
+| 管理 | 02 | **可管辖部门**（员工「部门绑定」配置范围） |
+| 老板 | 99 | 全部 |
+
+按 JWT 身份自动过滤，忽略请求体里越权的 uid。
+
+---
+
+## 六、请求示例
+
+### 示例 1：当月明细
+```json
+{
+  "app_key": "<AES加密串>",
+  "timestamp": 1758528000,
+  "sign": "<小写MD5>",
+  "dates": "2026-09-01",
+  "datee": "2026-09-22",
+  "uid": "001",
+  "Flag": "0",
+  "Type": "0,1,2",
+  "groupbyFields": [ "jhdh", "chuanghao", "baohao","inputtime_raw","cid","sffb","fbid","rq","check_time","check_time_raw","id","ischeck", 
+  "inputdate","inputtime", "huohao", "bbreed", "uid", "uname","dept", "deptname", "type", "worktype", "wtname", "price","color","chima"],
+  "orderbyFields": ["je:desc"]
+}
+```
+
+### 示例 2：按员工汇总（每人笔数+件数+金额，金额降序）
+```json
+{
+  "app_key": "<AES加密串>",
+  "timestamp": 1758528000,
+  "sign": "<小写MD5>",
+  "dates": "2026-09-01",
+  "datee": "2026-09-22",
+  "groupbyFields": ["uid", "uname", "deptname"],
+  "orderbyFields": ["je:desc"]
+}
+```
+
+## 七、错误码
+
+| code | 含义 | 处理 |
+|:---:|---|---|
+| 1 | 成功 | — |
+| 0 | 失败 | 看 msg（如「请求已过期」「请求参数缺少app_key、timestamp、sign」「无效的分组字段：xxx」） |
+| -403 | 无权限 | 换有权限用户 |
+| 401 | token 失效 | 重新换 token |

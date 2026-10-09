@@ -16,6 +16,7 @@ dist/
 # Anchored: only the repository-root runtime output directory, never fixtures
 # such as tests/data/.
 /data/
+.cache/
 
 # agent memory
 .workbuddy/
