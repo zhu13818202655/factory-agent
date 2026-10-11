@@ -2,9 +2,9 @@
 
 Follow the repository root `AGENTS.md` and the nearest scoped `AGENTS.md`.
 
-Implement the numbered Stories under `.github/story/` in order. The current Story is the
-lowest-numbered Story with unfinished checklist items. Work only on that Story unless the user
-explicitly changes the scope, and mark an item complete only after its implementation is finished.
+Implement the requirement tracked in the open GitHub Issue that the user designates as current.
+Work only on that Issue unless the user explicitly changes the scope, and mark an item complete
+only after its implementation is finished.
 
 When customer APIs or business rules are unavailable, follow the customer
 interface contract in `docs/product/AI问答对外接口-整理.md`. Confirmed customer facts live in
@@ -13,7 +13,7 @@ confirmed customer behavior. Unconfirmed calculations must surface as an explici
 state rather than a fabricated number. Never invent permission, tenant-isolation, or sensitive-data
 rules.
 
-Stories use human-reviewed checklists and may include nested implementation items, ADO-style state,
+Issues use human-reviewed checklists and may include nested implementation items, ADO-style state,
 dependencies, acceptance criteria, risks/open decisions, Technology Notes, and Release Notes. These
 sections support implementation and review; they are not machine-evaluated gates and never override
 checklist evidence. Mark a child item complete only after its implementation is finished and a parent

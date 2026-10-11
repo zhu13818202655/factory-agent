@@ -9,13 +9,18 @@ reproducible answers grounded in validated API data.
 
 Use these sources in order when requirements conflict:
 
-1. The current numbered Story under `.github/story/`, including its scope, assumptions, and tasks.
-2. `SECURITY.md` and accepted permission/data-classification ADRs.
-3. Accepted customer requirements and the customer MES interface contract under `docs/product/`
+1. `SECURITY.md` and accepted permission/data-classification ADRs.
+2. Accepted customer requirements and the customer MES interface contract under `docs/product/`
    (`需求及方案整理.md`, `AI问答对外接口-整理.md`).
-4. `ARCHITECTURE.md` and accepted ADRs under `docs/adr/`.
-5. This file and the nearest scoped `AGENTS.md`.
-6. Existing implementation patterns.
+3. `ARCHITECTURE.md` and accepted ADRs under `docs/adr/`.
+4. This file and the nearest scoped `AGENTS.md`.
+5. Existing implementation patterns.
+
+The current open GitHub Issue defines the **active work scope** (what to implement now,
+assumptions, and checklist). The Issue body carries the full requirement context; GitHub
+natively retains the record, so no local file is created or deleted. Persistent documents
+(ADRs, design docs, API docs, code comments) must not reference Issue numbers or titles,
+because Issues are one-off requirement tickets, not durable design rationale.
 
 Superseded requirements, plans, and customer documents stay recoverable through git history and are
 not kept as live provenance copies.
@@ -83,26 +88,35 @@ gate (ADR-0003 §4.3). The whole database is built by **one** Alembic baseline
 (`alembic_version`, single value). Read the nearest scoped `AGENTS.md` before modifying a governed
 directory.
 
-## Story Workflow
+## Requirement Workflow
 
-1. Work through `.github/story/#1.md`, `#2.md`, and so on in numeric order.
-2. Read the whole current Story, then implement its checklist directly. A Story may group work in
+Requirements are tracked as **GitHub Issues** on this repository. The Issue body carries the
+full scope, assumptions, checklist, risks, and release notes for one increment of work.
+GitHub natively retains the record — no local file is created or deleted. Persistent documents
+must not reference Issue numbers or titles.
+
+1. Work on the open GitHub Issue that the user designates as the current requirement. If
+   multiple Issues are open, the user selects which one is active.
+2. Read the whole Issue body, then implement its checklist directly. An Issue may group work in
    parent and child checklist items and may include ADO-style state, dependencies, acceptance
    criteria, risks/open decisions, Technology Notes, and Release Notes when they improve execution
    or review.
 3. Checklist evidence remains the completion source of truth. Mark a child item `[x]` only after its
    implementation is complete, and mark a parent item `[x]` only after all of its child items are
-   complete. Leave unfinished items unchecked.
-4. When a Story uses ADO-style state, use `New -> Active -> Resolved -> Closed`: implementation starts
+   complete. Leave unfinished items unchecked. Update the Issue body on GitHub as items are
+   completed.
+4. When an Issue uses ADO-style state, use `New -> Active -> Resolved -> Closed`: implementation starts
    at `Active`, reaches `Resolved` only after its checklist and relevant engineering checks are
    complete, and reaches `Closed` only after human review. State never overrides checklist evidence.
 5. When a customer API or business rule is unavailable, follow the customer interface contract
    in `docs/product/AI问答对外接口-整理.md`, and keep the temporary assumption
-   visible in the Story or relevant product document. Confirmed customer facts live in
+   visible in the Issue or relevant product document. Confirmed customer facts live in
    `docs/product/需求及方案整理.md`; unconfirmed calculations must surface as an explicit
    `unavailable` state rather than a fabricated number.
-6. After the Story checklist is complete, summarize the result for the user. The user reviews the
-   implementation manually and decides whether follow-up changes are needed.
+6. After the Issue checklist is complete, summarize the result for the user. The user reviews the
+   implementation manually and decides whether follow-up changes are needed. Upon review, close
+   the Issue; any durable rationale it contained is already captured in ADRs, product documents,
+   or code comments.
 
 ## Development Commands
 
@@ -118,7 +132,7 @@ make check
 ```
 
 Run the repository commands relevant to the code changed. `make check` remains the convenient full
-code-quality check; it does not evaluate Story status or decide whether a Story is complete.
+code-quality check; it does not evaluate Issue status or decide whether a requirement is complete.
 
 ## Git Commit Workflow
 
@@ -140,7 +154,16 @@ Since code modifications are typically performed under the `root` user, but the 
 - Use `Decimal` with explicit rounding for money and timezone-aware datetimes.
 - Do not add an abstraction without a current second use or a boundary reason.
 - Generated clients and `uv.lock` change only through their generators or uv.
-- **Do NOT add changelog-style or historical comments in code.** Code must reflect only the current intended behavior. Never annotate what a previous implementation looked like, when or why something was changed, or what a customer originally specified versus what they later revised. If the rationale for a non-obvious decision is not evident from the code itself, record it in an ADR or Story checklist—not in inline comments. Git history and Story files are the sole provenance for change context.
+- **Comments express the current state and its reason, not the change history.** Code and its
+  comments must reflect only the current intended behavior. Never annotate what a previous
+  implementation looked like, when or why something was changed, or what a customer originally
+  specified versus what they later revised. Do not reference Issue numbers, Issue titles, or
+  one-off requirement tickets in comments. If a decision changed from A to B, the comment states
+  the current state B and why B is correct now; it does not narrate the A→B transition. For a
+  large breaking change where the prior state is non-obvious, a brief note of what the prior
+  behavior was and why it changed is acceptable, but still without Issue references. If the
+  rationale for a non-obvious decision is not evident from the code itself, record it in an ADR—
+  not in inline comments. Git history is the sole provenance for change context.
 
 ## Permission and Privacy Tests
 
@@ -171,8 +194,8 @@ Stop for human approval before changing role/scope semantics, sensitive-field cl
 retention, outbound hosts, credentials, DuckDB filesystem access, destructive migrations,
 major dependencies, model providers, customer environments, or deployment state.
 
-## Story Review
+## Requirement Review
 
-Stories have no machine status, score, risk assessment, or automated completion gate. Keep the
+Issues have no machine status, score, risk assessment, or automated completion gate. Keep the
 checklist honest, record any remaining assumptions, run relevant engineering checks, and hand the
 result to the user for manual review.

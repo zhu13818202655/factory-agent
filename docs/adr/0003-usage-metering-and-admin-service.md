@@ -455,7 +455,7 @@ GET    /v1/statistics/exports/{export_id}/download
 未实施（依赖产品确认与测量证据）：
 
 - `registration_mode=allowlist` 分支（只留开关读取与测试位）。
-- `usage_event` 旧分区的归档 / 删除（数据保留策略，另开 Story）。
+- `usage_event` 旧分区的归档 / 删除（数据保留策略，后续单独处理）。
 - 正式计费：收费单位、免费额度、套餐、账期、价格版本与客户可见范围（§13）；不可变账单
   ledger 需经财务、合同、隐私与安全评审；不因当前客户 API 缺失而阻塞，也不在商业规则
   确认前实现。

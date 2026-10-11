@@ -13,9 +13,13 @@
 
 ## 权威顺序
 
-发生冲突时依次采用：当前 Story、`SECURITY.md` 与已接受 ADR、`docs/product/`（客户已确认口径
+发生冲突时依次采用：`SECURITY.md` 与已接受 ADR、`docs/product/`（客户已确认口径
 与接口契约）、`ARCHITECTURE.md`、仓库规则文件、现有实现。仍未确认的口径只允许产生显式
 `unavailable` 状态，不得自行补齐或编造数字冒充。
+
+需求以本仓库的 **GitHub Issue** 承载：Issue 正文定义**本次工作的范围**（做什么、假设、
+清单），GitHub 原生保留记录，无需在仓库内落文件。持久文档（ADR、设计文档、API 文档、代码
+注释）不得引用 Issue 编号或标题。
 
 ## 新增文档原则
 

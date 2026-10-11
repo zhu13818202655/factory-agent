@@ -1,5 +1,5 @@
-## Story
-- Story: `#N`
+## Issue
+- Issue: `#N`
 - Summary: _One-sentence description of what this PR delivers._
 
 ## What Changed
@@ -14,7 +14,7 @@
 
 ## How It Was Verified
 - [ ] Tests pass locally (`command`)
-- [ ] Manually verified against the story acceptance criteria
+- [ ] Manually verified against the issue acceptance criteria
 - [ ] No regressions in related flows
 
 _Evidence: test output, screenshots (for UI), or repro steps._
