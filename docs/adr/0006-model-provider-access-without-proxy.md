@@ -2,6 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-08-25
+- 修订：2026-10-12 —— 新增 §2.6「端点健康探测」的单一出站客户端例外，§3 对应约束加注例外指向
 - 所有者：项目维护者
 - 关联：ADR-0004（LLM 供应商配置边界以本文档为准）
 
@@ -29,6 +30,30 @@
    可见的模型标识，业务代码不认识具体供应商。
 5. **兼容既有 Proxy 形态**。Router 的一个部署项可以指向 LiteLLM Proxy；若未来引入
    Proxy，仅需把 `models.yaml` 收敛为单个指向 Proxy 的部署项，无需改动业务代码。
+6. **端点健康探测持有唯一的例外出站客户端**（2026-10-12 修订）。`llm/health.py`
+   的 `HttpModelsProbe` 直接对供应商端点发 `GET {api_base}/models`，因此它既构造
+   原始 URL 也构造 `Authorization` 头——正是 §3 所禁止的那两件事。
+
+   为什么要开这个口子：litellm 的冷却记忆很短，一个不可达端点要等到请求先付出
+   `1 + num_retries` 次失败尝试才会被发现，稀疏流量下这笔代价每次都落在调用者身上；
+   后台探测把它从用户等待里移走。而探测**不能**用 completion 实现——那会计入
+   `llm_call_fact`，等于把健康检查当业务用量计费。
+
+   例外边界（**越界即视为架构违规**）：
+
+   - **范围**：只允许 `src/factory_agent/llm/health.py` 一个模块。放行是**文件级**
+     而非包级——`llm` 包整体不在 `HTTP_BOUNDARY_PACKAGES` 内。由
+     `tests/security/test_package_boundaries.py` 的 `HTTP_BOUNDARY_MODULES` 强制，
+     被第二个 `llm/` 模块借用即失败。
+   - **形状**：只发 `GET {api_base}/models`，无请求体、不做模型补全，因此不进入
+     `llm_call_fact` / `usage_event`。
+   - **时限**：必须有超时上限（当前 3s）；探测抛错按「探测失败」处理，只降级答复、
+     绝不终止进程。
+   - **日志**：URL 与密钥不进日志、trace、错误消息或测试快照；只记录脱敏事实
+     （端点标识、连续失败次数，以及降级 / 恢复 / 探测自身出错三类事件，同一
+     episode 只记一次）。
+   - **不得扩大**：其余 LLM 出站流量仍一律走 `litellm` SDK。把本例外当作先例扩到
+     第二个模块，需要新的 ADR 修订。
 
 ## 3. 不变的约束
 
@@ -38,7 +63,8 @@
   测试快照；`litellm` 的全局 callback 与 verbose 日志必须显式关闭。
 - 应用只记录脱敏事实：逻辑别名、实际模型名、尝试次数、token 数、耗时、fallback 原因、
   错误类别。
-- LLM 不得构造原始 URL、鉴权头或不受限 SQL。
+- LLM 不得构造原始 URL、鉴权头或不受限 SQL。**唯一例外**见 §2.6（端点健康探测，
+  且例外边界不得扩大）。
 - 模型网关仍然只通过 `ModelGateway` port 暴露；`application/` 不认识 `litellm`。
 - schema 校验与至多一次语义修复仍属于应用，不属于 Router。
 

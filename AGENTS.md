@@ -184,7 +184,9 @@ Every data capability must prove:
 - Product code calls one LiteLLM OpenAI-compatible gateway using logical model aliases.
 - Provider credentials, network retries, and provider fallback belong to LiteLLM.
 - Schema validation and at most one semantic repair belong to the application.
-- An LLM cannot construct raw URLs, auth headers, or unrestricted SQL.
+- An LLM cannot construct raw URLs, auth headers, or unrestricted SQL. The single
+  exception is the endpoint health probe (ADR-0006 §2.6): `src/factory_agent/llm/health.py`
+  may own one bounded `GET /models` client — that file only, never another module in `llm/`.
 - Final answers cite only values from `ResultTable` or approved metadata.
 - Unit tests inject an in-process fake. Routing tests start temporary upstream processes.
 

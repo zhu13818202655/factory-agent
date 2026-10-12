@@ -16,7 +16,9 @@ ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     "persistence": {"config", "domain", "observability", "ports"},
     # health.py / router_gateway.py log endpoint health verdicts through the
     # same cross-cutting observability logger used by application/data_api/
-    # persistence/export/execution (matching that established pattern).
+    # persistence/export/execution (matching that established pattern). The
+    # outbound client that logging accompanies is bounded separately, by
+    # HTTP_BOUNDARY_MODULES below — see ADR-0006 §2.6.
     "llm": {"domain", "observability", "ports"},
     # local_store.py/s3_store.py log store anomalies (corrupt metadata, purge
     # failures) through observability.logging_adapter, the same cross-cutting
@@ -39,11 +41,17 @@ STATISTICS_FORBIDDEN_PACKAGES: set[str] = {"data_api"}
 #: runtime knows nothing about platform reporting.
 STATISTICS_UNREACHABLE_FROM: set[str] = {"application", "domain"}
 
-#: Packages allowed to own an outbound HTTP client. ``data_api`` is the only one
-#: permitted to reach MES endpoints. ``llm`` routes model traffic through the
-#: litellm SDK, but ``health.py`` probes LLM endpoints directly (bounded
-#: timeout, no payload) — it owns the only other outbound client.
-HTTP_BOUNDARY_PACKAGES: set[str] = {"data_api", "llm"}
+#: Packages allowed to own an outbound HTTP client. ``data_api`` is the only
+#: package permitted to reach MES endpoints (AGENTS.md architecture invariant 3).
+HTTP_BOUNDARY_PACKAGES: set[str] = {"data_api"}
+
+#: Individual modules outside those packages that may own one. ADR-0006 §2.6
+#: grants exactly one: ``llm/health.py`` probes LLM endpoints with a bounded
+#: ``GET /models`` so an unreachable host is demoted before a caller pays
+#: ``1 + num_retries`` failed attempts. Deliberately file-level, not ``llm``
+#: as a package — the exception must not be borrowed by a second module, so
+#: adding another entry here is an ADR amendment, not a local edit.
+HTTP_BOUNDARY_MODULES: frozenset[str] = frozenset({"src/factory_agent/llm/health.py"})
 
 #: Only the model gateway adapter may import the litellm SDK (ADR-0006).
 LLM_SDK_PACKAGES: set[str] = {"llm"}
@@ -92,11 +100,13 @@ def test_product_does_not_import_external_application_packages() -> None:
     assert offenders == []
 
 
-def test_only_http_boundary_packages_may_import_httpx() -> None:
+def test_only_boundary_packages_and_modules_may_import_httpx() -> None:
     offenders = [
         str(path.relative_to(REPOSITORY_ROOT))
         for path in python_files(REPOSITORY_ROOT / "src" / "factory_agent")
-        if "httpx" in imported_roots(path) and not HTTP_BOUNDARY_PACKAGES & set(path.parts)
+        if "httpx" in imported_roots(path)
+        and not HTTP_BOUNDARY_PACKAGES & set(path.parts)
+        and str(path.relative_to(REPOSITORY_ROOT)) not in HTTP_BOUNDARY_MODULES
     ]
 
     assert offenders == []
