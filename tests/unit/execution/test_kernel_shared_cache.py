@@ -390,6 +390,8 @@ CASES = [
 async def seed_snapshots(
     mode: ResultCacheMode,
     wages: tuple[dict[str, object], ...] = WAGES,
+    *,
+    progress_rows: tuple[dict[str, object], ...] = PROGRESS,
 ) -> tuple[V2ResultCache, MemoryStore]:
     store = MemoryStore()
     cache = V2ResultCache(
@@ -403,9 +405,174 @@ async def seed_snapshots(
     assert await cache.write(
         TENANT, "GongziClQuery", wages, None, PAYROLL_PARAMS, window, source="precompute"
     )
-    assert await cache.write(TENANT, "ScjdQuery", PROGRESS, None, {}, window, source="precompute")
+    assert await cache.write(
+        TENANT, "ScjdQuery", progress_rows, None, {}, window, source="precompute"
+    )
     assert len(store.values) == 2
     return cache, store
+
+
+def plan_group_contribution(
+    sheet: str,
+    plan: str | None,
+    style: str,
+    bed: str,
+    dept: str,
+    issued: str,
+    received: str,
+    packages: str,
+    worktypes: str,
+    worktype: str,
+) -> dict[str, object]:
+    return progress(
+        dh=sheet,
+        jhdh=plan,
+        chuanghao=bed,
+        huohao=style,
+        bbreed=style,
+        dept=dept,
+        deptname=dept,
+        uid="E1" if dept else "",
+        uname="Sample E1" if dept else "",
+        baohao=worktype,
+        userid=f"M-{worktype}",
+        color="C1",
+        chima="S",
+        worktype=worktype,
+        wtname=worktype,
+        wsort="1",
+        bs=packages,
+        fhsl=issued,
+        sssl=received,
+        zpsl=received,
+        wts=worktypes,
+        wgs="0",
+        wcl="0",
+    )
+
+
+PLAN_GROUP_DETAIL = (
+    plan_group_contribution("20260701001", "P1", "S1", "1", "D1", "60", "6", "1", "1", "W1"),
+    plan_group_contribution("20260701001", "P1", "S1", "1", "D1", "40", "4", "1", "1", "W2"),
+    plan_group_contribution("20260701001", "P1", "S1", "1", "D2", "20", "20", "1", "1", "W3"),
+    plan_group_contribution("20260702001", "P1", "S2", "2", "D2", "80", "70", "3", "3", "W4"),
+    plan_group_contribution("20260703001", None, "S3", "3", "D1", "10", "10", "1", "1", "W5"),
+    plan_group_contribution("20260704001", "", "S4", "4", "D2", "90", "0", "2", "2", "W6"),
+    plan_group_contribution("20260705001", "   ", "S5", "5", "", "50", "40", "4", "4", "W7"),
+    plan_group_contribution(
+        "20260706001", "未关联计划号", "S6", "6", "D1", "25", "25", "1", "1", "W8"
+    ),
+    plan_group_contribution("20260707001", "P2", "S7", "7", "D2", "30", "0", "1", "1", "W9"),
+)
+
+
+class PlanGroupLiveExecutor(LiveExecutor):
+    async def execute_full_step(
+        self,
+        filters: NarrowedFilters,
+        request: CacheableRequest,
+        active_scope: Any | None = None,
+        extra_params: Mapping[str, Any] | None = None,
+    ) -> ResourceFetchResult:
+        assert request.operation_id == "ScjdQuery"
+        assert request.role is Role.OWNER
+        assert filters.order_codes is filters.style_codes is None
+        assert frozenset((extra_params or {}).get("groupbyFields", ())) == frozenset(M7)
+        self.calls.append(request.operation_id)
+        first = plan_group_contribution(
+            "20260701001", "P1", "S1", "1", "D1", "100", "10", "2", "2", "W1"
+        )
+        return fetch_result((first, *PLAN_GROUP_DETAIL[2:]))
+
+
+@pytest.mark.parametrize("fr", ("FR-005", "FR-009"))
+@pytest.mark.parametrize("mode", (ResultCacheMode.READ, ResultCacheMode.SHADOW))
+@pytest.mark.asyncio
+async def test_plan_group_progress_keeps_one_row_per_plan_from_shared_detail(
+    fr: str, mode: ResultCacheMode
+) -> None:
+    cache, store = await seed_snapshots(mode, progress_rows=PLAN_GROUP_DETAIL)
+    source = PlanGroupLiveExecutor() if mode is ResultCacheMode.SHADOW else NoMesExecutor()
+    request = request_for(fr, RECIPE_BY_FR[fr], Role.OWNER)
+    result = await runner(ResultCacheExecutor(source, cache)).run(request)
+    rows = [dict(zip(result.column_names, row, strict=True)) for row in result.rows]
+    assert len(rows) == 4
+    assert result.incomplete is False
+    assert result.cache_source is not None
+    assert result.cache_source["sources"] == ["precompute"]
+    assert len(store.values) == 2
+    assert result.api_call_count == (1 if mode is ResultCacheMode.SHADOW else 0)
+    assert source.calls == (["ScjdQuery"] if mode is ResultCacheMode.SHADOW else [])
+    assert all(row["order_count"] == Decimal("1") for row in rows)
+
+    joined = next(row for row in rows if row["order_code"] == "P1")
+    assert joined["sheet_count"] == Decimal("2")
+    assert joined["package_count"] == Decimal("6")
+    assert joined["issued_qty"] == Decimal("200")
+    assert joined["worktype_count"] == Decimal("6")
+    assert Decimal(str(joined["progress_ratio"])) == Decimal("50")
+    assert joined["finish_state"] == "未完工"
+    assert all(
+        joined[name] is None for name in ("sheet_code", "style_code", "bed_code", "created_date")
+    )
+
+    unlabeled = [row for row in rows if row["order_code"] == "未关联计划号"]
+    assert len(unlabeled) == 2
+    empty_plan = next(row for row in unlabeled if row["sheet_count"] == Decimal("3"))
+    assert empty_plan["package_count"] == Decimal("7")
+    assert empty_plan["issued_qty"] == Decimal("150")
+    assert empty_plan["worktype_count"] == Decimal("7")
+    assert Decimal(str(empty_plan["progress_ratio"])) == Decimal("33.33")
+    assert empty_plan["finish_state"] == "未完工"
+    assert all(
+        empty_plan[name] is None
+        for name in ("sheet_code", "style_code", "bed_code", "created_date")
+    )
+    literal_plan = next(row for row in unlabeled if row["sheet_count"] == Decimal("1"))
+    assert literal_plan["sheet_code"] == "20260706001"
+    assert literal_plan["style_code"] == "S6"
+    assert literal_plan["bed_code"] == "6"
+    assert literal_plan["created_date"] == "2026-07-06"
+    assert literal_plan["issued_qty"] == Decimal("25")
+    assert literal_plan["finish_state"] == "已完工"
+
+    assert sum(cast(Decimal, row["sheet_count"]) for row in rows) == Decimal("7")
+    assert sum(cast(Decimal, row["package_count"]) for row in rows) == Decimal("15")
+    assert sum(cast(Decimal, row["issued_qty"]) for row in rows) == Decimal("405")
+    if mode is ResultCacheMode.SHADOW:
+        live = await runner(PlanGroupLiveExecutor()).run(request)
+        assert result.rows == live.rows
+        assert result.totals == live.totals
+        assert result.card == live.card
+
+
+@pytest.mark.parametrize("fr", ("FR-005", "FR-009"))
+@pytest.mark.asyncio
+async def test_style_selection_narrows_cached_progress_without_splitting_the_empty_plan(
+    fr: str,
+) -> None:
+    cache, store = await seed_snapshots(ResultCacheMode.READ, progress_rows=PLAN_GROUP_DETAIL)
+    request = request_for(fr, RECIPE_BY_FR[fr], Role.OWNER)
+    request = replace(
+        request,
+        filters=replace(request.filters, style_codes=frozenset({"S3", "S4", "S5"})),
+    )
+    no_mes = NoMesExecutor()
+    result = await runner(ResultCacheExecutor(no_mes, cache)).run(request)
+    assert len(result.rows) == 1
+    row = dict(zip(result.column_names, result.rows[0], strict=True))
+    assert row["order_code"] == "未关联计划号"
+    assert row["order_count"] == Decimal("1")
+    assert row["sheet_count"] == Decimal("3")
+    assert row["style_code"] is None
+    assert row["package_count"] == Decimal("7")
+    assert row["issued_qty"] == Decimal("150")
+    assert Decimal(str(row["progress_ratio"])) == Decimal("33.33")
+    assert result.api_call_count == 0
+    assert result.incomplete is False
+    assert result.cache_source is not None
+    assert no_mes.calls == []
+    assert len(store.values) == 2
 
 
 @pytest.mark.parametrize(("fr", "recipe", "role"), CASES)

@@ -188,11 +188,20 @@ def default_metric_registry() -> MetricRegistry:
             ),
             MetricDefinition(
                 name="progress_order_count",
-                version="factory-progress-v1",
-                description="Distinct flowcard count aggregated for one style",
+                version="factory-progress-v2",
+                description="Plan groups, including one group for unlinked flowcards",
                 status="confirmed",
                 assumption_status=(
-                    "我方计算：款号视图的订单数 = COUNT(DISTINCT dh)（实测平均 7.03 单/款号）"
+                    "按计划号分组，每组计 1；空计划号统一计一个统计组，不等同于已关联计划订单数"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_sheet_count",
+                version="factory-progress-v1",
+                description="Distinct nonempty flowcard IDs within each plan group",
+                status="confirmed",
+                assumption_status=(
+                    "我方计算：制单数 = COUNT(DISTINCT 非空 dh)，同制单跨部门不重复计数"
                 ),
             ),
             MetricDefinition(

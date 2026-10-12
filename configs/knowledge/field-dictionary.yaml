@@ -200,8 +200,11 @@ confirmed_metrics:
     formula: ScjdQuery.zsl（= 该单裁剪数量，实测 = Σ制单 fhsl）
     source: AI问答对外接口 §12.1
   progress.order_count:
-    formula: COUNT(DISTINCT dh)
-    source: 我方计算（款号视图的订单数）
+    formula: 按 jhdh 归组，每组计 1；空值统一计一个统计组
+    source: 需求及方案整理（计划号维度口径）；空值组不表示已关联计划订单
+  progress.sheet_count:
+    formula: COUNT(DISTINCT 非空 dh)
+    source: 我方计算（计划号统计组内的制单数，同制单跨部门不重复计数）
   progress.worktype_count:
     formula: ScjdQuery.wts / ScjdDetailQuery.wts
     source: AI问答对外接口 §12.1/§12.2

@@ -349,21 +349,22 @@ async def test_fr005_order_progress_reads_the_flowcard_list_in_one_call() -> Non
 
     rows = {row[0]: row for row in result.rows}
     # Columns: order_code, sheet_code, style_code, bed_code, created_date,
-    # order_count, package_count, issued_qty, progress_ratio, worktype_count,
+    # order_count, sheet_count, package_count, issued_qty, progress_ratio, worktype_count,
     # finish_state.
     assert rows["DH-1"][1] == "20260701001"  # 制单号
     assert rows["DH-1"][2] == "HH001"
     assert rows["DH-1"][4] == "2026-07-01"  # dh 前 8 位派生制单日期
-    assert rows["DH-1"][5] == Decimal("1")  # 订单数
-    assert rows["DH-1"][6] == Decimal("4")  # Σ包数 bs
-    assert rows["DH-1"][7] == Decimal("100")  # Σ发卡 fhsl
+    assert rows["DH-1"][5] == Decimal("1")  # 订单统计组数
+    assert rows["DH-1"][6] == Decimal("1")  # 制单数
+    assert rows["DH-1"][7] == Decimal("4")  # Σ包数 bs
+    assert rows["DH-1"][8] == Decimal("100")  # Σ发卡 fhsl
     # percent 列以字符串返回（kernel 只对 money/quantity 做数值归一）。
-    assert Decimal(str(rows["DH-1"][8])) == Decimal("50")  # 50/100 × 100 进度
-    assert rows["DH-1"][9] == Decimal("3")  # Σ工序数 wts
-    assert rows["DH-1"][10] == "未完工"
+    assert Decimal(str(rows["DH-1"][9])) == Decimal("50")  # 50/100 × 100 进度
+    assert rows["DH-1"][10] == Decimal("3")  # Σ工序数 wts
+    assert rows["DH-1"][11] == "未完工"
 
-    assert Decimal(str(rows["DH-2"][8])) == Decimal("100")
-    assert rows["DH-2"][10] == "已完工"
+    assert Decimal(str(rows["DH-2"][9])) == Decimal("100")
+    assert rows["DH-2"][11] == "已完工"
     assert result.incomplete is False
 
 
@@ -385,7 +386,7 @@ async def test_fr005_binds_order_and_style_filters_into_local_compute() -> None:
     )
     assert [row[0] for row in by_order.rows] == ["DH-1"]
 
-    # 只给款号时合并到款号粒度：进度按 Σ实收/Σ发卡 重算，不是各行 wcl 平均。
+    # 款号仅筛选参与计划号汇总的数据，进度按 Σ实收/Σ发卡 重算。
     by_style = await runner.run(
         CapabilityRunRequest(
             capability_id=CapabilityId("fr005_order_progress"),
@@ -400,12 +401,13 @@ async def test_fr005_binds_order_and_style_filters_into_local_compute() -> None:
     )
     assert len(by_style.rows) == 1
     row = by_style.rows[0]
-    assert row[0] == "DH-1"  # 款号视图仍保留订单号（一行一订单×款号）
-    assert row[1] is None  # 制单号在款号粒度不输出
+    assert row[0] == "DH-1"  # 一行一个计划号组
+    assert row[1] == "20260701001"  # 唯一且完整的制单号可展示
     assert row[2] == "HH001"
-    assert row[5] == Decimal("1")  # 该款号下 1 个订单
-    assert row[6] == Decimal("4")  # Σ包数
-    assert Decimal(str(row[8])) == Decimal("50")  # Σ实收 50 ÷ Σ发卡 100
+    assert row[5] == Decimal("1")  # 该款号下 1 个计划号组
+    assert row[6] == Decimal("1")  # 制单数
+    assert row[7] == Decimal("4")  # Σ包数
+    assert Decimal(str(row[9])) == Decimal("50")  # Σ实收 50 ÷ Σ发卡 100
 
 
 @pytest.mark.asyncio
@@ -428,6 +430,7 @@ async def test_fr009_order_overview_shares_the_progress_column_set() -> None:
         "bed_code",
         "created_date",
         "order_count",
+        "sheet_count",
         "package_count",
         "issued_qty",
         "progress_ratio",
@@ -436,6 +439,189 @@ async def test_fr009_order_overview_shares_the_progress_column_set() -> None:
     )
     assert {row[0] for row in result.rows} == {"DH-1", "DH-2"}
     assert result.incomplete is False
+
+
+@pytest.mark.parametrize("capability", ["fr005_order_progress", "fr009_factory_order_overview"])
+@pytest.mark.asyncio
+async def test_progress_orders_merge_sheets_by_plan_and_keep_one_unlinked_group(
+    capability: str,
+) -> None:
+    class PlanExecutor(FakeMultiRowExecutor):
+        async def execute_full_step(
+            self,
+            filters: Any,
+            request: ExecutionRequest,
+            active_scope: Any | None = None,
+            extra_params: dict[str, Any] | None = None,
+        ) -> ResourceFetchResult:
+            from factory_agent.data_api.schemas import ScjdV2Row
+
+            self.calls.append((request.operation_id, dict(extra_params or {})))
+            base = _SCJD_ROWS[0]
+            overrides: tuple[dict[str, Any], ...] = (
+                {"jhdh": ""},
+                {"jhdh": "", "dept": "dept-a2", "fhsl": "20", "sssl": "20", "bs": "0", "wts": "1"},
+                {
+                    "jhdh": None,
+                    "dh": "20260702001",
+                    "bbreed": "HH002",
+                    "chuanghao": "2",
+                    "fhsl": "80",
+                    "sssl": "0",
+                    "bs": "2",
+                    "wts": "5",
+                },
+                {
+                    "jhdh": " ",
+                    "dh": "20260703001",
+                    "bbreed": "HH003",
+                    "chuanghao": "3",
+                    "fhsl": "0",
+                    "sssl": "0",
+                    "bs": "0",
+                    "wts": "0",
+                },
+                {
+                    "jhdh": "PLAN-A",
+                    "dh": "20260704001",
+                    "chuanghao": "4",
+                    "fhsl": "10",
+                    "sssl": "10",
+                    "bs": "1",
+                    "wts": "1",
+                },
+                {
+                    "jhdh": "PLAN-A",
+                    "dh": "20260705001",
+                    "chuanghao": "4",
+                    "fhsl": "30",
+                    "sssl": "0",
+                    "bs": "3",
+                    "wts": "2",
+                },
+                {
+                    "jhdh": "未关联计划号",
+                    "dh": "20260706001",
+                    "bbreed": "HH004",
+                    "chuanghao": "5",
+                    "fhsl": "5",
+                    "sssl": "5",
+                    "bs": "1",
+                    "wts": "1",
+                },
+                {
+                    "jhdh": " PLAN-A ",
+                    "dh": "20260707001",
+                    "fhsl": "15",
+                    "sssl": "0",
+                    "bs": "1",
+                    "wts": "1",
+                },
+            )
+            rows = tuple(
+                dict(ScjdV2Row.model_validate({**base, **row}).model_dump()) for row in overrides
+            )
+            return ResourceFetchResult(rows=rows, total=len(rows), pages_fetched=1, complete=True)
+
+    executor = PlanExecutor()
+    result = await _runner(executor).run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId(capability), filters=_filters(), time_range=_range()
+        )
+    )
+    rows = [dict(zip(result.column_names, row, strict=True)) for row in result.rows]
+    assert len(rows) == 4
+    unlinked = next(
+        row
+        for row in rows
+        if row["order_code"] == "未关联计划号" and row["issued_qty"] == Decimal("200")
+    )
+    assert unlinked["order_count"] == Decimal("1")
+    assert unlinked["sheet_count"] == Decimal("3")
+    assert unlinked["package_count"] == Decimal("6")
+    assert Decimal(str(unlinked["progress_ratio"])) == Decimal("35")
+    assert unlinked["worktype_count"] == Decimal("9")
+    assert unlinked["finish_state"] == "未完工"
+    assert all(
+        unlinked[name] is None for name in ("sheet_code", "style_code", "bed_code", "created_date")
+    )
+    plan = next(row for row in rows if row["order_code"] == "PLAN-A")
+    assert plan["order_count"] == Decimal("1")
+    assert plan["sheet_count"] == Decimal("2")
+    assert plan["sheet_code"] is None
+    assert plan["created_date"] is None
+    assert plan["style_code"] == "HH001"
+    assert plan["bed_code"] == "4"
+    assert Decimal(str(plan["progress_ratio"])) == Decimal("25")
+    literal = next(row for row in rows if row["issued_qty"] == Decimal("5"))
+    assert literal["order_code"] == "未关联计划号"
+    assert literal["sheet_code"] == "20260706001"
+    assert literal["finish_state"] == "已完工"
+    assert any(row["order_code"] == " PLAN-A " for row in rows)
+    assert result.totals["order_count"] == Decimal("4")
+    assert result.totals["sheet_count"] == Decimal("7")
+    assert result.totals["package_count"] == Decimal("12")
+    assert result.totals["issued_qty"] == Decimal("260")
+    assert result.incomplete is False
+    assert [op for op, _ in executor.calls] == ["ScjdQuery"]
+    filtered = await _runner(executor).run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId(capability),
+            filters=NarrowedFilters(
+                tenant_id=TenantId("APPKEY-A"),
+                employee_ids=None,
+                dept_ids=None,
+                order_codes=frozenset({" PLAN-A "}),
+            ),
+            time_range=_range(),
+        )
+    )
+    assert len(filtered.rows) == 1
+    assert filtered.rows[0][0] == " PLAN-A "
+
+
+@pytest.mark.parametrize("capability", ["fr005_order_progress", "fr009_factory_order_overview"])
+@pytest.mark.asyncio
+async def test_progress_plan_does_not_present_partial_dimensions_as_complete(
+    capability: str,
+) -> None:
+    class MissingDimensionExecutor(FakeMultiRowExecutor):
+        async def execute_full_step(
+            self,
+            filters: Any,
+            request: ExecutionRequest,
+            active_scope: Any | None = None,
+            extra_params: dict[str, Any] | None = None,
+        ) -> ResourceFetchResult:
+            from factory_agent.data_api.schemas import ScjdV2Row
+
+            self.calls.append((request.operation_id, dict(extra_params or {})))
+            base = _SCJD_ROWS[0]
+            rows = tuple(
+                dict(ScjdV2Row.model_validate(row).model_dump())
+                for row in (
+                    base,
+                    {**base, "dept": "dept-a2", "bbreed": None, "chuanghao": None},
+                )
+            )
+            return ResourceFetchResult(rows=rows, total=len(rows), pages_fetched=1, complete=True)
+
+    executor = MissingDimensionExecutor()
+    result = await _runner(executor).run(
+        CapabilityRunRequest(
+            capability_id=CapabilityId(capability), filters=_filters(), time_range=_range()
+        )
+    )
+    assert len(result.rows) == 1
+    row = dict(zip(result.column_names, result.rows[0], strict=True))
+    assert row["sheet_code"] == "20260701001"
+    assert row["created_date"] == "2026-07-01"
+    assert row["style_code"] is None
+    assert row["bed_code"] is None
+    assert row["sheet_count"] == Decimal("1")
+    assert row["issued_qty"] == Decimal("200")
+    assert result.incomplete is False
+    assert [op for op, _ in executor.calls] == ["ScjdQuery"]
 
 
 @pytest.mark.asyncio
@@ -875,16 +1061,17 @@ async def test_fr005_zero_package_count_reports_zero_not_unavailable() -> None:
             time_range=_range(),
         )
     )
-    # 款号粒度合并的分母是 Σ发卡；Σ发卡 = 0 时进度回落 0，既不除零也不报 unavailable。
+    # 分母是 Σ发卡；Σ发卡 = 0 时进度回落 0，既不除零也不报 unavailable。
     assert len(result.rows) == 1
     row = result.rows[0]
     assert row[0] == "DH-9"
     assert row[2] == "HH009"
-    assert row[6] == Decimal("0")  # 包数
-    assert row[7] == Decimal("0")  # 发卡数量
-    assert Decimal(str(row[8])) == Decimal("0")  # 进度（percent 列字符串）
-    assert row[9] == Decimal("0")  # 工序数
-    assert row[10] == "未完工"
+    assert row[6] == Decimal("1")  # 制单数
+    assert row[7] == Decimal("0")  # 包数
+    assert row[8] == Decimal("0")  # 发卡数量
+    assert Decimal(str(row[9])) == Decimal("0")  # 进度（percent 列字符串）
+    assert row[10] == Decimal("0")  # 工序数
+    assert row[11] == "未完工"
 
 
 @pytest.mark.asyncio
