@@ -50,9 +50,21 @@ from factory_agent.ports.session import CapabilityRunRequest, CapabilityRunResul
 _METADATA_TABLE = "_meta"
 
 #: Reviewed filter params a recipe step may declare; they are never scope or
-#: credential identifiers.
+#: credential identifiers. ``groupbyFields`` is the V2 server-side grouping
+#: contract (List<string>, sent as a JSON array).
 _FILTER_PARAM_KEYS = frozenset(
-    {"scheme", "Type", "Flag", "queryFooter", "userid", "huohao", "dh", "detailId"}
+    {
+        "scheme",
+        "Type",
+        "Flag",
+        "queryFooter",
+        "userid",
+        "huohao",
+        "dh",
+        "jhdh",
+        "detailId",
+        "groupbyFields",
+    }
 )
 
 _LOGGER = get_logger("factory_agent.execution.kernel")
@@ -315,7 +327,7 @@ class KernelCapabilityRunner:
         self,
         sandbox: InteractionSandbox,
         step: Any,
-        static_params: dict[str, str],
+        static_params: dict[str, Any],
         filters: Any,
         time_range: TimeRange,
         call_count: int,
@@ -402,7 +414,7 @@ class KernelCapabilityRunner:
         operation_id: str,
         filters: Any,
         time_range: TimeRange,
-        extra_params: Mapping[str, str] | None = None,
+        extra_params: Mapping[str, Any] | None = None,
         role: Any | None = None,
     ) -> ResourceFetchResult:
         return await self._executor.execute_full_step(
@@ -417,14 +429,17 @@ class KernelCapabilityRunner:
         )
 
     @staticmethod
-    def _reviewed_params(params: dict[str, str] | None) -> dict[str, str]:
+    def _reviewed_params(params: dict[str, str | tuple[str, ...]] | None) -> dict[str, Any]:
         """Only reviewed filter keys may pass; scope/credential keys are refused."""
         if not params:
             return {}
         unknown = set(params) - _FILTER_PARAM_KEYS
         if unknown:
             raise InvalidRequestError(f"recipe params contain non-filter keys: {sorted(unknown)}")
-        return dict(params)
+        return {
+            key: (list(value) if isinstance(value, tuple) else value)
+            for key, value in params.items()
+        }
 
     # ------------------------------------------------------------------
     # Table construction.

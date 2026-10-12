@@ -46,6 +46,7 @@ from factory_agent.domain.queries import (
     ResultPage,
     TimeRange,
     TimeRangeError,
+    local_calendar_dates,
 )
 from factory_agent.domain.session import (
     INTERACTION_ANSWER,
@@ -158,5 +159,6 @@ __all__ = [
     "assert_transition",
     "can_transition",
     "is_terminal",
+    "local_calendar_dates",
     "terminal_event_name",
 ]

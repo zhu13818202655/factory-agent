@@ -123,6 +123,22 @@ async def test_store_unavailable_falls_back_to_source_of_truth() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ping_reports_store_reachability_without_raising() -> None:
+    """启动探测：可达返回 True；存储故障返回 False 而非抛出。
+
+    这是 2026-10-11 端口配错事故的防线：缓存读会退化成源、写会吞异常，只有
+    一次显式的可达性探测能把「静默失效」变成启动日志里的一行 warning。
+    """
+    cache, store = make_cache()
+
+    assert await cache.ping() is True
+
+    store.failure = RuntimeError("redis unreachable")
+
+    assert await cache.ping() is False
+
+
+@pytest.mark.asyncio
 async def test_invalidate_scope_evicts_only_that_scope() -> None:
     cache, store = make_cache()
     fp_1 = cache.scope_fingerprint(make_scope("scope-1"))

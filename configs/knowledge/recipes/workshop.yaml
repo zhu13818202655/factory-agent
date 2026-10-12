@@ -1,42 +1,42 @@
 # Reviewed L1 workshop recipes. File changes are semantics changes
 # and require human review.
 #
-# 口径来源：``docs/design/进度与产量功能重梳方案.md``（唯一现行依据，2026-09-15 拍板）、
-# ``docs/product/需求及方案整理.md``、``docs/product/AI问答对外接口-整理.md`` §9.1。
+# 口径来源：``docs/design/V2接口取数重构与缓存加速方案.md``（2026-10-11 换代，
+# 附录 C.3 + §7 G.5 拍板）、``docs/api/工资产量-V2.md``。
 #
-# 产量主源 = ``YskQuery``（生产查询-已扫描，拍板 1）：它是唯一同时带 ``dept``（切部门）、
-# ``uid``（算人数）、``huohao``（款号）、``sl``（产量）的接口。``BarcodeClQuery`` 实测是
-# ``YskQuery`` 的子集（Σ 1,034,082 < 2,126,116，偏低约 51%），**不在任何链路里与主源相加**。
+# 产量主源 = ``GongziClQuery`` V2（工资产量）：``groupbyFields`` 直接含
+# ``dept``/``deptname``，行集自带部门名——``DeptQuery`` 关联取消（C.3：V1 的
+# ``YskQuery`` + ``DeptQuery`` 两跳合并为一跳）。行集粒度 = 「部门 × 部门名 ×
+# 大货款号 × uid」（C.3 表分组键 + 要点 1 的 uid）：数值列（sl/je）由服务端合计，
+# ``uid`` 拉进行集用于本地 COUNT(DISTINCT)（「参与人数/人均产量」分母）。
 #
-# 部门名必须由 ``DeptQuery`` 关联得到：``YskQuery`` 只返回 ``dept``（部门编号），
-# 响应里**没有** ``deptname``。``COALESCE`` 回落到编号，避免名称缺失时整列变空。
+# 部门可见范围仍由 MES 按角色行级过滤（组长=本组、管理=绑定部门、老板=全厂，
+# mes_filtered），我方 ``requested_dept_ids`` 只做可选收窄（本地过滤，GongziClQuery
+# 无 dept 服务端过滤参数），永不放大。
 #
-# 车间维度拿不到「裁剪/计划数量」：``ScjdQuery`` / ``ScjdFzHzQuery`` 都没有 ``dept`` 字段，
-# 因此本文件只给报工人数可切的口径（报工产量 / 参与人数 / 人均产量）；裁剪数量与包完工率
-# 在款号级 / 全厂视图（进度族）里给。
+# 款号过滤（style_codes）同时匹配 ``bbreed``（大货款号）与 ``huohao``（款号），
+# 与产量族同法（C.3 口径词差宽容）。
 #
-# 可见部门数 N 由后端按聚合结果行数判定，前端只消费：
-#   N == 0  → 空结果，不下发 card，按「该时间范围内没有产量记录」处理
-#   N == 1  → 单部门形态：名次列输出 unavailable（无横向可比对象），走 FR-010 表格视图
-#   N >= 2  → 对比形态：名次 + 人均，按产量降序，走 FR-007 排名视图
-# 数据范围恒由 MES 按角色行级过滤（组长=本组、管理=绑定部门、老板=全厂，mes_filtered），
-# 我方 ``requested_dept_ids`` 只做可选收窄，永不放大。
-version: 2
+# 排序本地做（§3.2⑤ / C.3）：产量降序；FR-007 的名次窗口只按产量排序（允许并列），
+# 行序以 dept_id 升序打破（G.5 显式 tie-break）。
+# 可见部门数 N 的形态判定不变：N==0 空结果；N==1 单部门形态（名次列 unavailable，
+# 走 FR-010 表格视图）；N>=2 对比形态（名次 + 人均，FR-007 排名视图）。
+version: 3
 capabilities:
   - capability_id: fr007_workshop_output_comparison
     title: 小组/车间产量对比
     required_slots: [time_range]
     steps:
-      - step_id: fetch_ysk
+      - step_id: fetch_cl
         kind: api
-        operation_id: YskQuery
-      - step_id: fetch_dept
-        kind: api
-        operation_id: DeptQuery
-        depends_on: [fetch_ysk]
+        operation_id: GongziClQuery
+        params:
+          Flag: "0"
+          Type: "0,1,2"
+          groupbyFields: [dept, deptname, bbreed, uid]
       - step_id: compute
         kind: local
-        depends_on: [fetch_ysk, fetch_dept]
+        depends_on: [fetch_cl]
         filter_bindings:
           requested_dept_ids: requested_dept_ids
           style_codes: style_codes
@@ -47,41 +47,49 @@ capabilities:
           style_codes AS (
             SELECT unnest($style_codes) AS c
           ),
+          scoped AS (
+            SELECT * FROM fetch_cl
+            WHERE COALESCE(dept, '') <> ''
+              AND ((SELECT COUNT(*) FROM requested_depts) = 0
+                   OR dept IN (SELECT c FROM requested_depts))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0
+                   OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes)
+                   OR COALESCE(huohao, '') IN (SELECT c FROM style_codes))
+          ),
           agg AS (
             SELECT
-              y.dept AS dept_id,
-              COALESCE(NULLIF(d.name, ''), y.dept) AS dept_name,
-              SUM(CAST(COALESCE(TRY_CAST(y.sl AS DECIMAL), 0) AS DECIMAL)) AS output_qty,
-              COUNT(DISTINCT y.uid) AS participant_count
-            FROM fetch_ysk y
-            LEFT JOIN fetch_dept d ON d.id = y.dept
-            WHERE COALESCE(y.dept, '') <> ''
-              AND ((SELECT COUNT(*) FROM requested_depts) = 0
-                   OR y.dept IN (SELECT c FROM requested_depts))
-              AND ((SELECT COUNT(*) FROM style_codes) = 0
-                   OR y.huohao IN (SELECT c FROM style_codes))
-            GROUP BY y.dept, COALESCE(NULLIF(d.name, ''), y.dept)
+              dept AS dept_id,
+              COALESCE(NULLIF(deptname, ''), dept) AS dept_name,
+              SUM(CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL)) AS output_qty_num,
+              COUNT(DISTINCT CASE WHEN COALESCE(uid, '') <> '' THEN uid END)
+                AS participant_count
+            FROM scoped
+            GROUP BY 1, 2
           ),
           counted AS (
             SELECT *, COUNT(*) OVER () AS dept_total FROM agg
           )
           SELECT
             CASE WHEN dept_total > 1
-                 THEN CAST(RANK() OVER (ORDER BY output_qty DESC) AS VARCHAR)
+                 THEN CAST(RANK() OVER (ORDER BY output_qty_num DESC) AS VARCHAR)
                  ELSE 'unavailable' END AS rank_position,
+            dept_id,
             dept_name,
-            CAST(output_qty AS VARCHAR) AS output_qty,
+            CAST(output_qty_num AS VARCHAR) AS output_qty,
             CAST(participant_count AS VARCHAR) AS participant_count,
             CASE WHEN participant_count > 0
-                 THEN CAST(output_qty / CAST(participant_count AS DECIMAL) AS VARCHAR)
+                 THEN CAST(output_qty_num / CAST(participant_count AS DECIMAL) AS VARCHAR)
                  ELSE 'unavailable' END AS per_capita
           FROM counted
-          ORDER BY output_qty DESC
+          ORDER BY output_qty_num DESC, dept_id
     result_columns:
       - name: rank_position
         title: 名次
         source_step: compute
         metric: workshop_rank
+      - name: dept_id
+        title: 车间/小组编号
+        source_step: compute
       - name: dept_name
         title: 车间/小组
         source_step: compute
@@ -104,8 +112,8 @@ capabilities:
         column_type: quantity
         unit: 件/人
     metric_versions:
-      workshop_rank: factory-rank-v1
-      output_reported_qty: customer-ysk-v1
+      workshop_rank: factory-rank-v2
+      output_reported_qty: customer-cl-v2
       workshop_effective_headcount: factory-effective-headcount-v1
       workshop_output_per_capita: factory-per-capita-v1
     degradation: incomplete_marker
@@ -116,23 +124,23 @@ capabilities:
       rank_column: rank_position
       notes:
         - "「名次」只在可见范围内有 2 个及以上部门时给出；范围内只有 1 个部门（如组长看本组）时该列为空——没有可比对象，此时看「小组/车间产量」视图更合适。"
-        - "「报工产量」是 Σ 已扫描记录数量，按工序累计：同一件衣服做 3 道工序就有 3 条记录，因此它是工序口径工作量，不是完工件数。"
+        - "「报工产量」是 Σ 报工数量，按工序累计：同一件衣服做 3 道工序就有 3 条报工，因此它是工序口径工作量，不是完工件数。"
         - "「参与人数」是该范围内有报工记录的去重人数；「人均产量」= 报工产量 ÷ 参与人数，0 人时输出「暂无数据源」，不伪造 0。"
 
   - capability_id: fr010_workshop_output_overview
     title: 小组/车间产量
     required_slots: [time_range]
     steps:
-      - step_id: fetch_ysk
+      - step_id: fetch_cl
         kind: api
-        operation_id: YskQuery
-      - step_id: fetch_dept
-        kind: api
-        operation_id: DeptQuery
-        depends_on: [fetch_ysk]
+        operation_id: GongziClQuery
+        params:
+          Flag: "0"
+          Type: "0,1,2"
+          groupbyFields: [dept, deptname, bbreed, uid]
       - step_id: compute
         kind: local
-        depends_on: [fetch_ysk, fetch_dept]
+        depends_on: [fetch_cl]
         filter_bindings:
           requested_dept_ids: requested_dept_ids
           style_codes: style_codes
@@ -144,27 +152,33 @@ capabilities:
             SELECT unnest($style_codes) AS c
           )
           SELECT
-            COALESCE(NULLIF(d.name, ''), y.dept) AS dept_name,
-            y.huohao AS style_code,
-            CAST(SUM(CAST(COALESCE(TRY_CAST(y.sl AS DECIMAL), 0) AS DECIMAL)) AS VARCHAR)
+            COALESCE(NULLIF(deptname, ''), dept) AS dept_name,
+            dept AS dept_id,
+            bbreed AS style_code,
+            CAST(SUM(CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL)) AS VARCHAR)
               AS output_qty,
-            CAST(COUNT(DISTINCT y.uid) AS VARCHAR) AS participant_count,
-            CASE WHEN COUNT(DISTINCT y.uid) > 0
-                 THEN CAST(SUM(CAST(COALESCE(TRY_CAST(y.sl AS DECIMAL), 0) AS DECIMAL))
-                           / CAST(COUNT(DISTINCT y.uid) AS DECIMAL) AS VARCHAR)
+            CAST(COUNT(DISTINCT CASE WHEN COALESCE(uid, '') <> '' THEN uid END) AS VARCHAR)
+              AS participant_count,
+            CASE WHEN COUNT(DISTINCT CASE WHEN COALESCE(uid, '') <> '' THEN uid END) > 0
+                 THEN CAST(SUM(CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL))
+                           / CAST(COUNT(DISTINCT CASE WHEN COALESCE(uid, '') <> '' THEN uid END)
+                                   AS DECIMAL) AS VARCHAR)
                  ELSE 'unavailable' END AS per_capita
-          FROM fetch_ysk y
-          LEFT JOIN fetch_dept d ON d.id = y.dept
-          WHERE COALESCE(y.dept, '') <> ''
+          FROM fetch_cl
+          WHERE COALESCE(dept, '') <> ''
             AND ((SELECT COUNT(*) FROM requested_depts) = 0
-                 OR y.dept IN (SELECT c FROM requested_depts))
+                 OR dept IN (SELECT c FROM requested_depts))
             AND ((SELECT COUNT(*) FROM style_codes) = 0
-                 OR y.huohao IN (SELECT c FROM style_codes))
-          GROUP BY COALESCE(NULLIF(d.name, ''), y.dept), y.huohao
-          ORDER BY output_qty DESC
+                 OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes)
+                 OR COALESCE(huohao, '') IN (SELECT c FROM style_codes))
+          GROUP BY 1, 2, 3
+          ORDER BY CAST(output_qty AS DECIMAL) DESC, dept_id, style_code
     result_columns:
       - name: dept_name
         title: 车间/小组
+        source_step: compute
+      - name: dept_id
+        title: 车间/小组编号
         source_step: compute
       - name: style_code
         title: 款号
@@ -188,7 +202,7 @@ capabilities:
         column_type: quantity
         unit: 件/人
     metric_versions:
-      output_reported_qty: customer-ysk-v1
+      output_reported_qty: customer-cl-v2
       workshop_effective_headcount: factory-effective-headcount-v1
       workshop_output_per_capita: factory-per-capita-v1
     degradation: incomplete_marker
@@ -198,5 +212,5 @@ capabilities:
       preview_max_rows: 10
       notes:
         - "按「车间/小组 × 款号」展开，按报工产量降序；表内「参与人数 / 人均产量」是这一行（该款号在该部门）的口径，不是整个部门的汇总。"
-        - "「报工产量」是 Σ 已扫描记录数量，按工序累计，不是完工件数；要按工序拆开看请直接问「哪个工序做得多」（走订单/款号产量）。"
+        - "「报工产量」是 Σ 报工数量，按工序累计，不是完工件数；要按工序拆开看请直接问「哪个工序做得多」（走订单/款号产量）。"
         - "车间维度没有裁剪数量 / 计划数量 / 完工数量来源（按部门切分的接口不带这些字段），要看进度请按款号或全厂问。"

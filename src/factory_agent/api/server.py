@@ -84,6 +84,18 @@ async def _lifespan(app: FastAPI):
     """
     container = cast(ApplicationContainer, app.state.container)
     settings = cast(FactoryAgentSettings, app.state.settings)
+    # 缓存可达性探测：配了 Redis 却连不上时，结果集缓存/基础数据缓存会静默退化
+    # 为实时（读 miss、写吞异常），只有启动日志能戳破它（2026-10-11 端口配错的
+    # 真实事故就是这么隐身的）。探测有界、失败不阻断启动。
+    cache = container.cache
+    if cache is not None:
+        if await cache.ping():
+            _logger.info("cache.store.reachable")
+        else:
+            _logger.warning(
+                "cache.store.unreachable",
+                extra={"hint": "检查 FACTORY_AGENT_REDIS_URL；缓存当前静默退化为实时"},
+            )
     debug_trace = container.debug_trace
     if debug_trace is not None:
         try:
@@ -152,9 +164,23 @@ async def _lifespan(app: FastAPI):
                 rollup.run_forever(),
                 name="usage-rollup",
             )
+    # 夜间预取 + 启动预热（V2 结果集缓存方案 §4.3）：worker 启动即以 99 老板
+    # 视角整刷一轮两族预取结果集（异步任务，不阻塞服务就绪），随后每天 02:00
+    # （部署时区）+ 租户抖动再整刷。worker 自带轮询节流与失败告警；预热失败也
+    # 只记日志——缓存是优化，不是闸门。
+    prefetch = container.v2_prefetch
+    prefetch_task: asyncio.Task[None] | None = None
+    if prefetch is not None:
+        prefetch_task = asyncio.create_task(
+            prefetch.run_warmup_then_forever(),
+            name="v2-result-prefetch",
+        )
     try:
         yield
     finally:
+        if prefetch_task is not None:
+            prefetch_task.cancel()
+            await asyncio.gather(prefetch_task, return_exceptions=True)
         if rollup_task is not None:
             rollup_task.cancel()
             await asyncio.gather(rollup_task, return_exceptions=True)

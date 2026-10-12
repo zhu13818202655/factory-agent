@@ -85,6 +85,49 @@ def _access_is_worth_forwarding(record: logging.LogRecord) -> bool:
     return status >= _ACCESS_ERROR_FLOOR
 
 
+#: ``LogRecord`` attributes that are **not** caller-supplied ``extra`` fields.
+#: Everything outside this set reached the record through
+#: ``logger.<level>(..., extra={...})`` and has to be carried across the
+#: stdlib → Loguru boundary: the JSON sink reads those keys off
+#: ``record["extra"]``, so dropping them here silently discards every structured
+#: field the application attaches (operation, reason, rows, …) and leaves only
+#: the rendered event name — which is exactly the "looks logged, tells nothing"
+#: failure this module exists to prevent.
+_RESERVED_RECORD_ATTRS: frozenset[str] = frozenset(
+    {
+        "name",
+        "msg",
+        "args",
+        "levelname",
+        "levelno",
+        "pathname",
+        "filename",
+        "module",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+        "lineno",
+        "funcName",
+        "created",
+        "msecs",
+        "relativeCreated",
+        "thread",
+        "threadName",
+        "processName",
+        "process",
+        "taskName",
+        "message",
+    }
+)
+
+
+def _forwarded_extra(record: logging.LogRecord) -> dict[str, Any]:
+    """Caller-supplied ``extra`` fields carried by a stdlib record."""
+    return {
+        key: value for key, value in record.__dict__.items() if key not in _RESERVED_RECORD_ATTRS
+    }
+
+
 class _InterceptHandler(logging.Handler):
     """Forward standard logging records into the Loguru sink."""
 
@@ -100,9 +143,15 @@ class _InterceptHandler(logging.Handler):
             # the caller frame when the stack happens to line up, and the
             # library's own name and line number are dropped outright — which is
             # what made the forwarded transport chatter impossible to attribute.
-            loguru_logger.bind(origin=f"{record.name}:{record.lineno}").opt(
-                depth=6, exception=record.exc_info
-            ).log(record.levelname, redact_url_query(record.getMessage()))
+            #
+            # ``extra`` is carried for the same reason: it is where the caller
+            # put the identifiers and counts the sink renders as structured
+            # fields. It must not be able to override ``origin``.
+            fields = _forwarded_extra(record)
+            fields["origin"] = f"{record.name}:{record.lineno}"
+            loguru_logger.bind(**fields).opt(depth=6, exception=record.exc_info).log(
+                record.levelname, redact_url_query(record.getMessage())
+            )
         except Exception:
             logging.getLogger(__name__).debug("log forwarding dropped a record")
 

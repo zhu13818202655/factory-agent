@@ -8,6 +8,10 @@
 # - parameter_sources: credential（只能来自 MesCredentialBundle）/ scope（只能来自
 #   DataScope）/ filter / clock。凭据参数绝不可来自 filter 或模型输出。
 # - pagination: none 或 list_total（result.list/result.total，累计到 total 结束）。
+#   2026-10-11 V2 换代：进度/产量/工资三族主取数已切到两个 V2 接口
+#   （GongziClQuery / ScjdQuery v2 路径），声明 pagination: none（page/size 未生效）；
+#   被 V2 覆盖的 V1 接口整体置 enabled: false 退役，YskQuery / HuohaoWtCLQuery
+#   保留启用作灰度期三方对账锚点（docs/design/V2接口取数重构与缓存加速方案.md 附录 D）。
 # - MoveMenuQuery 登记为 enabled: false：加载器允许存在但运行时拒绝调用。
 # - usage_category: MES 调用统计的计费分类（口径见 docs/api/统计与运营接口.md）：
 #   output（产量）/ payroll（工资）/ order（订单）/ other（其他：认证2+基础数据9+吊挂3）。
@@ -208,6 +212,7 @@ operations:
     path: /api/NetYf/Sclzd/GridPageList
     kind: resource
     resource: sclzd
+    enabled: false   # 2026-10-11 V2 换代退役：id → dh 映射桥取消，订单维度改由 GongziClQuery/ScjdQuery V2 的 jhdh 直出
     required_params: [dates, datee]
     parameter_sources:
       app_key: credential
@@ -257,37 +262,49 @@ operations:
     related_keys: [dh, id, uid]
 
   # ------------------------------------------------------------ 缝制进度 (4)
-  # 进度能力的唯一取数族（口径见 docs/design/进度与产量功能重梳方案.md §1.1/§3）。
-  # 登记范围 = 该节的「3 必需 + 1 可选」；「缝制详细进度」ScjdFzMxQuery 与
-  # 「缝制工序总体进度」ScjdFzHzWorktypeQuery 暂不登记：本厂无实测响应样本，且客户
-  # 示例自相矛盾（sksl+wsksl 恒为 220 而 sssl 为 214/214/220），抽样确认后再登记。
-  # 进度族统一 usage_category: order（进度 = 订单维度；产量族才是 output）。
+  # V2 取数重构（docs/design/V2接口取数重构与缓存加速方案.md，2026-10-11）：
+  # 进度族主取数 = ``ScjdQuery`` V2（服务端 groupbyFields 聚合 + 不分页），
+  # 合并原「缝制生产进度 / 详情 / 工序进度」三个 V1 接口；旧 V1 接口整体退役
+  # （先置 enabled: false，不删登记条目——条目仍在 mes_operation_category 种子与
+  # 统计面分类映射里）。进度族统一 usage_category: order（进度 = 订单维度）。
   - operation_id: ScjdQuery
-    path: /api/NetYf/Sclzd/ScjdQuery
+    path: /api/NetYf/Sclzd/v2/ScjdQuery
     kind: resource
-    resource: scjd
+    resource: scjd_v2
     required_params: [dates, datee]
     parameter_sources:
       app_key: credential
       timestamp: credential
       sign: credential
-      page: filter
-      size: filter
       dates: filter
       datee: filter
-    pagination: list_total
-    # 实测响应是 result.main[]（流程卡行）+ result.detail（当页汇总）+ result.total，
-    # 不是通用 result.list 外壳；list_key 因此指 main。
-    list_key: main
+      # 业务过滤值全部由适配层从 NarrowedFilters 下推（订单/款号/物料编号），
+      # 绝不来自模型文本；dh/jhdh 是等值过滤，chuanghao/color/chima 是模糊匹配。
+      dh: filter
+      jhdh: filter
+      chuanghao: filter
+      huohao: filter
+      bbreed: filter
+      worktype: filter
+      wtname: filter
+      uid: filter
+      dept: filter
+      # 服务端动态分组：List<string>，必须发 JSON 数组（发逗号拼接字符串会被判为
+      # 参数非法）。排序参数（orderbyFields/orderByType）一律不下发——排序全部
+      # 在 recipe 本地 SQL 完成（方案 §3.2⑤）。
+      groupbyFields: filter
+    pagination: none
+    list_key: list
     usage_category: order
-    timeout_seconds: 10.0
+    timeout_seconds: 30.0
     sensitive_fields: []
-    related_keys: [dh, huohao]
+    related_keys: [dh, jhdh, huohao]
 
   - operation_id: ScjdDetailQuery
     path: /api/NetYf/Sclzd/ScjdDetailQuery
     kind: resource
     resource: scjd_detail
+    enabled: false   # 2026-10-11 V2 换代退役：包级下钻改由 ScjdQuery V2 的 dh 过滤承接
     # dh 来自 NarrowedFilters.order_codes（单订单场景），由适配层下推；与
     # HuohaoWtCLQuery.huohao 的服务端下推同法，业务值绝不来自模型文本。
     required_params: [dates, datee, dh]
@@ -310,6 +327,7 @@ operations:
     path: /api/NetYf/Sclzd/ScjdGxQuery
     kind: resource
     resource: scjd_gx
+    enabled: false   # 2026-10-11 V2 换代退役：工序级下钻改由 ScjdQuery V2 的 userid 过滤承接
     # 客户契约无 page/size（一次返回该包全部已刷卡工序），也无 dates/datee；
     # 这两个参数未登记即被 _build_body 丢弃，不会误发。userid = 物料编号，
     # 来自 NarrowedFilters.material_ids（包级下钻到工序级）。
@@ -330,6 +348,7 @@ operations:
     path: /api/NetYf/Sclzd/ScjdFzHzQuery
     kind: resource
     resource: scjd_fz_hz
+    enabled: false   # 2026-10-11 V2 换代退役：缝制总进度由 ScjdQuery V2 聚合承接
     required_params: [dates, datee]
     parameter_sources:
       app_key: credential
@@ -346,10 +365,14 @@ operations:
     related_keys: [huohao, chuanghao]
 
   # -------------------------------------------------------- 产量与进度 (6)
+  # 2026-10-11 V2 换代：产量族主源换为 GongziClQuery V2（工资产量，服务端聚合 +
+  # 不分页）。YskQuery / HuohaoWtCLQuery 保留登记且保持启用，作为 V2 灰度期的
+  # 三方对账锚点（方案附录 D.3）；BarcodeClQuery 退役。
   - operation_id: BarcodeClQuery
     path: /api/NetYf/Sclzd/BarcodeClQuery
     kind: resource
     resource: barcode_cl
+    enabled: false   # 2026-10-11 V2 换代退役：YskQuery 的真子集，产量主源已换 GongziClQuery V2
     required_params: [dates, datee]
     parameter_sources:
       app_key: credential
@@ -415,6 +438,7 @@ operations:
     path: /api/NetYf/Sclzd/WorktypeProgressQuery
     kind: resource
     resource: worktype_progress
+    enabled: false   # 2026-10-11 V2 换代退役：与 ScjdGxQuery 同形，工序级下钻由 ScjdQuery V2 承接
     # customer doc says uid is optional (可为空); userid (material id)
     # is required. uid stays scope-sourced and is injected only when the scope
     # resolves to a single employee.
@@ -477,10 +501,47 @@ operations:
     related_keys: [id, huohao, worktype]
 
   # ---------------------------------------------------------- 工资与排名 (2)
+  # 2026-10-11 V2 换代：工资族主源 = GongziClQuery V2（工资产量，明细/汇总双模式，
+  # 不分页）。GongziMxQuery / GongziJeOrderQuery 退役；GongziClQuery 对 00 员工
+  # 不报无权限、静默返回本人范围（方案 §7.1 T9 实测），该族的服务端拒绝不可依赖，
+  # 能力矩阵必须在本地拒绝 00（FR-004/008）。
+  - operation_id: GongziClQuery
+    path: /api/NetYf/Sclzd/v2/GongziClQuery
+    kind: resource
+    resource: gongzi_cl
+    required_params: [dates, datee]
+    parameter_sources:
+      app_key: credential
+      timestamp: credential
+      sign: credential
+      dates: filter
+      datee: filter
+      # uid 来自 DataScope/NarrowedFilters（个人能力=本人、点名查人=目标工号），
+      # 绝不来自模型文本；bbreed 取值是货号名称、wtname 是工序名称（服务端自动
+      # 转编号过滤）；chuanghao 为模糊匹配。
+      uid: filter
+      Flag: filter
+      Type: filter
+      bbreed: filter
+      wtname: filter
+      chuanghao: filter
+      # List<string>，必须发 JSON 数组；不传 = 明细模式（工资族预取粒度）。
+      groupbyFields: filter
+    pagination: none   # 实测 page/size 未生效，符合条件的数据一次性全量返回
+    list_key: list
+    supports_footer: true
+    usage_category: payroll
+    # 全年明细一次拉取实测 48 s / 60 MB（老板视角预取成本），超时须覆盖最慢路径；
+    # 交互路径（单日/单月）远低于此。
+    timeout_seconds: 60.0
+    sensitive_fields: [price, je, sl]
+    related_keys: [uid, dept, jhdh, huohao, worktype]
+
   - operation_id: GongziMxQuery
     path: /api/NetYf/Sclzd/GongziMxQuery
     kind: resource
     resource: gongzi_mx
+    enabled: false   # 2026-10-11 V2 换代退役：工资明细/汇总由 GongziClQuery V2 承接
     # Uid is scope-sourced and optional (客户确认 2026-09-06): 传员工工号按该员工
     # 查询；不传则由 MES 按当前角色过滤返回。产品端仅在单员工场景（个人本人/点名
     # 查某员工）注入 Uid，来源只能是 NarrowedFilters.employee_ids。
@@ -510,6 +571,7 @@ operations:
     path: /api/NetYf/Sclzd/GongziJeOrderQuery
     kind: resource
     resource: gongzi_je_order
+    enabled: false   # 2026-10-11 V2 换代退役：工资排名由 GongziClQuery V2 的 uid/dept 分组承接
     required_params: [queryFooter, dates, datee]
     parameter_sources:
       app_key: credential

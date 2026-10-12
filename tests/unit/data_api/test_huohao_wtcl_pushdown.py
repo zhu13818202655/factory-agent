@@ -124,10 +124,16 @@ async def test_no_style_codes_sends_no_filter() -> None:
 
 @pytest.mark.asyncio
 async def test_barcode_cl_query_is_never_pushed_down() -> None:
+    """BarcodeClQuery 在 V2 换代后登记保留但停用（enabled: false）：运行时
+    在 HTTP 之前直接拒绝，「服务端静默忽略过滤」的场景随操作一并退役。"""
+    from factory_agent.domain.errors import UnsupportedOperationError
+
     transport = _CapturingTransport(_EMPTY_ENVELOPE)
     adapter = _adapter(transport)
 
-    await adapter.fetch_resource("BarcodeClQuery", _filters(frozenset({"86B"})), _range(), 2000)
+    with pytest.raises(UnsupportedOperationError):
+        await adapter.fetch_resource(
+            "BarcodeClQuery", _filters(frozenset({"86B"})), _range(), 2000
+        )
 
-    assert transport.requests, "no MES request was sent"
-    assert "huohao" not in transport.requests[0]
+    assert transport.requests == [], "disabled operation must not reach HTTP"

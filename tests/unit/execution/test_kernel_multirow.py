@@ -1,14 +1,23 @@
 """Multi-row kernel tests: multi-row computed tables, business-filter binding,
 unavailable columns, and the progress/output chains.
 
-Uses a fake step executor returning golden rows per operation so the reviewed
-recipe DAGs (缝制进度族 + 已扫描产量族) are exercised offline.
+Uses a fake step executor returning golden rows per operation **and per
+``groupbyFields`` grain** so the reviewed V2 recipe DAGs are exercised offline.
+
+V2 换代（2026-10-11）后的取数粒度（方案附录 C + 二次拍板）：
+- 进度族统一 ``ScjdQuery``：列表层 = 制单×部门（M7），包级 = dh×baohao×userid，
+  工序级 = userid×worktype×wsort；订单维度 = ``jhdh``（R3）；
+- 工资/产量族统一 ``GongziClQuery``：**FR-002/003/004/008/011/012 全部明细模式**
+  （不传 groupbyFields = 工资族预取粒度，人员/部门聚合在本地 compute 完成，
+  2026-10-11 二次拍板：原分组下推实测 ~90s 且服务端未执行分组），
+  FR-007/010/013 = dept×款号分组，FR-006 = jhdh×款号×工序×uid 分组；
+- ``DeptQuery`` 只剩产量族探针在用（部门名由 V2 行集直出）。
 """
 
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -23,126 +32,191 @@ from factory_agent.ports.contracts import ResourceFetchResult
 from factory_agent.ports.session import CapabilityRunRequest
 from tests.support.payload import as_dict, as_list
 
-#: 缝制生产进度流程卡行（ScjdQuery）：``bbreed`` 是款号，``wcl`` 是包完工率。
+#: 生产进度 V2（ScjdQuery）列表层行集：粒度 = 制单 × 部门（方案 M7）。
+#: 订单维度 = ``jhdh``（R3 拍板）；制单日期由 ``dh`` 前 8 位派生（附录 A.5）；
+#: 发卡数量 fhsl / 实收数量 sssl 是可加度量，行级 wcl 仅作参考（列表按 Σ 重算）。
 _SCJD_ROWS: tuple[dict[str, Any], ...] = (
     {
-        "dh": "DH-1",
+        "dh": "20260701001",
+        "jhdh": "DH-1",
         "chuanghao": "1",
-        "rq": "2026-07-01",
         "huohao": "HH001",
         "bbreed": "HH001",
-        "description": "模拟款A",
-        "zbs": "4",
-        "zsl": "100",
-        "sfwg": "0",
-        "wcl": "50",
+        "dept": "dept-a1",
+        "deptname": "一车间",
+        "bs": "4",
+        "fhsl": "100",
+        "sssl": "50",
         "wts": "3",
+        "wcl": "50",
     },
     {
-        "dh": "DH-2",
+        "dh": "20260705001",
+        "jhdh": "DH-2",
         "chuanghao": "2",
-        "rq": "2026-07-05",
         "huohao": "HH002",
         "bbreed": "HH002",
-        "description": "模拟款B",
-        "zbs": "2",
-        "zsl": "40",
-        "sfwg": "1",
-        "wcl": "100",
+        "dept": "dept-a2",
+        "deptname": "二车间",
+        "bs": "2",
+        "fhsl": "40",
+        "sssl": "40",
         "wts": "5",
+        "wcl": "100",
     },
 )
 
-#: 缝制生产进度详情（ScjdDetailQuery）：一行一个包，``wcs`` 是「总数/完成数」。
-_SCJD_DETAIL_ROWS: tuple[dict[str, Any], ...] = (
+#: 包级下钻行集：粒度 = dh × baohao × userid × color × chima（方案 C.2）。
+_SCJD_PACKAGE_ROWS: tuple[dict[str, Any], ...] = (
     {
-        "id": "1001",
+        "dh": "20260701001",
+        "jhdh": "DH-1",
         "baohao": "1",
+        "userid": "1001",
         "color": "红",
         "chima": "S",
-        "ganghao": "G1",
         "fhsl": "30",
+        "sssl": "15",
         "wts": "3",
-        "wcs": "90/45",
+        "wgs": "1",
         "wcl": "50",
     },
     {
-        "id": "1002",
+        "dh": "20260705001",
+        "jhdh": "DH-2",
         "baohao": "2",
+        "userid": "1002",
         "color": "蓝",
         "chima": "M",
-        "ganghao": "G2",
         "fhsl": "10",
+        "sssl": "10",
         "wts": "3",
-        "wcs": "30/30",
+        "wgs": "3",
         "wcl": "100",
     },
 )
 
-#: 缝制工序进度（ScjdGxQuery）：只有已刷卡的工序，``uid`` 非空即视为该道已完成。
-_SCJD_GX_ROWS: tuple[dict[str, Any], ...] = (
+#: 工序级下钻行集：粒度 = userid × uid × ... × wsort（方案 C.2）。
+#: uid 为空 = 未刷卡的待做工序行（V2 契约行为，附录 A.4）。
+_SCJD_WORKTYPE_ROWS: tuple[dict[str, Any], ...] = (
     {
         "userid": "1001",
         "worktype": "WT01",
-        "name": "平车",
+        "wtname": "平车",
         "uid": "01001",
         "uname": "模拟员工甲",
         "dept": "dept-a1",
-        "inputtime": "2026-07-02 08:00",
+        "deptname": "一车间",
         "fhsl": "30",
         "zpsl": "30",
-        "wsort": 1,
+        "wsort": "1",
     },
     {
         "userid": "1001",
         "worktype": "WT02",
-        "name": "手工钉扣",
+        "wtname": "手工钉扣",
         "uid": "",
         "uname": "",
         "dept": "dept-a1",
-        "inputtime": "",
+        "deptname": "一车间",
         "fhsl": "30",
         "zpsl": "0",
-        "wsort": 2,
+        "wsort": "2",
     },
 )
 
-#: 生产查询-已扫描（YskQuery，产量主源）：``huohao`` 是款号，``sl`` 是报工产量。
-_YSK_ROWS: tuple[dict[str, Any], ...] = (
+#: 工资产量 V2（GongziClQuery）订单粒度行集（FR-006）：
+#: jhdh × chuanghao × huohao × bbreed × worktype × wtname × uid（方案 C.3）。
+_GONGZI_CL_ORDER_ROWS: tuple[dict[str, Any], ...] = (
     {
-        "inputtime": "2026-07-02 08:00",
-        "uname": "模拟员工甲",
-        "uid": "01001",
-        "dept": "dept-a1",
-        "id": "1001",
+        "jhdh": "DH-1",
         "chuanghao": "1",
-        "baohao": "1",
         "huohao": "HH001",
+        "bbreed": "HH001",
         "worktype": "裁剪",
-        "fhsl": "9",
+        "wtname": "裁剪",
+        "uid": "01001",
         "sl": "9",
         "je": "9",
     },
     {
-        "inputtime": "2026-07-03 08:00",
-        "uname": "模拟员工乙",
-        "uid": "01002",
-        "dept": "dept-a2",
-        "id": "1002",
+        "jhdh": "DH-2",
         "chuanghao": "2",
-        "baohao": "1",
         "huohao": "HH002",
+        "bbreed": "HH002",
         "worktype": "裁剪",
-        "fhsl": "3",
+        "wtname": "裁剪",
+        "uid": "01002",
         "sl": "3",
         "je": "3",
     },
 )
 
-#: 生产制单（SclzdGridPageList）：产量挂订单的唯一桥（``Ysk.id`` → ``dh``）。
-_SCLZD_ROWS: tuple[dict[str, Any], ...] = (
-    {"id": "1001", "dh": "DH-1", "huohao": "HH001", "description": "模拟款A", "fhsl": "30"},
-    {"id": "1002", "dh": "DH-2", "huohao": "HH002", "description": "模拟款B", "fhsl": "10"},
+#: 工资产量 V2 部门粒度行集（FR-007/010；带 inputdate 亦服务 FR-013 日序列）。
+_GONGZI_CL_DEPT_ROWS: tuple[dict[str, Any], ...] = (
+    {
+        "inputdate": "2026-07-02",
+        "dept": "dept-a1",
+        "deptname": "一车间",
+        "bbreed": "HH001",
+        "uid": "01001",
+        "sl": "9",
+        "je": "9",
+    },
+    {
+        "inputdate": "2026-07-03",
+        "dept": "dept-a2",
+        "deptname": "二车间",
+        "bbreed": "HH002",
+        "uid": "01002",
+        "sl": "3",
+        "je": "3",
+    },
+)
+
+#: 工资产量 V2 明细模式行集（FR-002/003/004/008/011/012 共用底料：
+#: 不传 groupbyFields = 工资族预取粒度；人员/部门聚合在配方本地 compute 完成）。
+#: 01001（dept-a1）je 12.40+7.60=20.00、bs 3+2=5；01002（dept-a2）je 3.75、bs 1。
+_GONGZI_CL_DETAIL_ROWS: tuple[dict[str, Any], ...] = (
+    {
+        "inputdate": "2026-07-02",
+        "uid": "01001",
+        "uname": "模拟员工甲",
+        "dept": "dept-a1",
+        "deptname": "一车间",
+        "huohao": "HH001",
+        "wtname": "裁剪",
+        "sl": "20",
+        "price": "1.0825",
+        "je": "12.40",
+        "bs": "3",
+    },
+    {
+        "inputdate": "2026-07-02",
+        "uid": "01001",
+        "uname": "模拟员工甲",
+        "dept": "dept-a1",
+        "deptname": "一车间",
+        "huohao": "HH001",
+        "wtname": "锁边",
+        "sl": "8",
+        "price": "0.95",
+        "je": "7.60",
+        "bs": "2",
+    },
+    {
+        "inputdate": "2026-07-03",
+        "uid": "01002",
+        "uname": "模拟员工乙",
+        "dept": "dept-a2",
+        "deptname": "二车间",
+        "huohao": "HH002",
+        "wtname": "裁剪",
+        "sl": "3",
+        "price": "1.25",
+        "je": "3.75",
+        "bs": "1",
+    },
 )
 
 _DEPT_ROWS: tuple[dict[str, Any], ...] = (
@@ -151,59 +225,71 @@ _DEPT_ROWS: tuple[dict[str, Any], ...] = (
 )
 
 
+def _group(params: dict[str, Any]) -> tuple[str, ...]:
+    group: Any = params.get("groupbyFields")
+    if isinstance(group, (list, tuple)):
+        items = cast("list[Any] | tuple[Any, ...]", group)
+        return tuple(str(item) for item in items)
+    if isinstance(group, str) and group:
+        return (group,)
+    return ()
+
+
+def _resource_by_operation() -> dict[str, str]:
+    catalog = load_catalog()
+    return {
+        operation_id: catalog.get(operation_id).resource or ""
+        for operation_id in catalog.operation_ids
+    }
+
+
+_RESOURCE_BY_OPERATION = _resource_by_operation()
+
+
 class FakeMultiRowExecutor:
-    """Serves the golden rows per operation for the reviewed progress/output recipes."""
+    """Serves the golden rows per operation + ``groupbyFields`` grain.
+
+    Rows are validated + serialized through the V2 row models exactly like the
+    real adapter path, so every fetch table carries the full schema column set
+    (缺列的行集在真实链路里不会出现).
+    """
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, str]]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     async def execute_full_step(
         self,
         filters: Any,
         request: ExecutionRequest,
         active_scope: Any | None = None,
-        extra_params: dict[str, str] | None = None,
+        extra_params: dict[str, Any] | None = None,
     ) -> ResourceFetchResult:
+        from factory_agent.data_api.schemas import ROW_MODEL_BY_RESOURCE
+
         params = dict(extra_params or {})
         self.calls.append((request.operation_id, params))
         operation = request.operation_id
         rows: tuple[dict[str, Any], ...]
         if operation == "ScjdQuery":
-            rows = _SCJD_ROWS
-        elif operation == "ScjdDetailQuery":
-            rows = _SCJD_DETAIL_ROWS
-        elif operation == "ScjdGxQuery":
-            rows = _SCJD_GX_ROWS
-        elif operation == "YskQuery":
-            rows = _YSK_ROWS
-        elif operation == "SclzdGridPageList":
-            rows = _SCLZD_ROWS
+            group = _group(params)
+            if "baohao" in group:
+                rows = _SCJD_PACKAGE_ROWS
+            elif "wsort" in group:
+                rows = _SCJD_WORKTYPE_ROWS
+            else:
+                rows = _SCJD_ROWS
+        elif operation == "GongziClQuery":
+            group = _group(params)
+            if not group:
+                # 明细模式 = FR-002/003/004/008/011/012 的统一底料（预取粒度）。
+                rows = _GONGZI_CL_DETAIL_ROWS
+            elif "jhdh" in group:
+                rows = _GONGZI_CL_ORDER_ROWS
+            else:
+                # inputdate / dept×bbreed 分组：FR-007/010/013 的部门×款号粒度。
+                rows = _GONGZI_CL_DEPT_ROWS
         elif operation == "DeptQuery":
             rows = _DEPT_ROWS
-        elif operation == "GongziMxQuery":
-            # Wage recipes fetch detail (scheme="") and aggregate locally; the
-            # fake only serves the uid/dept/je/sl columns the aggregate needs.
-            rows = (
-                {"uid": "01001", "dept": "dept-a1", "je": "21.65", "sl": "20"},
-                {"uid": "01002", "dept": "dept-a2", "je": "3.75", "sl": "3"},
-            )
-        elif operation == "GongziJeOrderQuery":
-            rows = (
-                {
-                    "uid": "01001",
-                    "uname": "模拟员工甲",
-                    "dept": "dept-a1",
-                    "bs": "5",
-                    "je": "20.00",
-                },
-                {
-                    "uid": "01002",
-                    "uname": "模拟员工乙",
-                    "dept": "dept-a2",
-                    "bs": "1",
-                    "je": "3.75",
-                },
-            )
         elif operation == "EmployeeQuery":
             rows = (
                 {"uid": "01001", "uname": "模拟员工甲", "dept": "dept-a1"},
@@ -212,6 +298,13 @@ class FakeMultiRowExecutor:
             )
         else:
             rows = ()
+        resource = _RESOURCE_BY_OPERATION.get(operation)
+        model = ROW_MODEL_BY_RESOURCE.get(resource) if resource else None
+        # 只对 V2 动态分组行（gongzi_cl / scjd_v2）做 model_dump 序列化（生产
+        # 路径行为，行集带全字段）；EmployeeQuery/DeptQuery 等基础数据模型字段
+        # 必填，fake 行保持原样。
+        if model is not None and rows and resource in {"gongzi_cl", "scjd_v2"}:
+            rows = tuple(dict(model.model_validate(row).model_dump()) for row in rows)
         return ResourceFetchResult(
             rows=tuple(rows),
             total=len(rows),
@@ -244,7 +337,7 @@ def _runner(executor: FakeMultiRowExecutor) -> KernelCapabilityRunner:
 
 @pytest.mark.asyncio
 async def test_fr005_order_progress_reads_the_flowcard_list_in_one_call() -> None:
-    """进度列表 = ScjdQuery 单次分页；不再逐单 fan-out 工序进度."""
+    """进度列表 = ScjdQuery V2 单次 M7 拉取；订单号取 jhdh，进度按 Σ实收/Σ发卡重算."""
 
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -255,24 +348,26 @@ async def test_fr005_order_progress_reads_the_flowcard_list_in_one_call() -> Non
             time_range=_range(),
         )
     )
-    # One paginated flow-card fetch; no per-order follow-up call.
+    # One M7 flow-card fetch; no per-order follow-up call.
     assert [op for op, _ in executor.calls] == ["ScjdQuery"]
 
     rows = {row[0]: row for row in result.rows}
-    # Columns: order_code, style_code, product_name, bed_code, cut_date,
-    # order_count, package_count, cut_qty, finished_packages, progress_ratio,
-    # worktype_count, finish_state.
-    assert rows["DH-1"][1] == "HH001"
+    # Columns: order_code, sheet_code, style_code, bed_code, created_date,
+    # order_count, package_count, issued_qty, progress_ratio, worktype_count,
+    # finish_state.
+    assert rows["DH-1"][1] == "20260701001"  # 制单号
+    assert rows["DH-1"][2] == "HH001"
+    assert rows["DH-1"][4] == "2026-07-01"  # dh 前 8 位派生制单日期
     assert rows["DH-1"][5] == Decimal("1")  # 订单数
-    assert rows["DH-1"][6] == Decimal("4")  # 包数 zbs
-    assert rows["DH-1"][7] == Decimal("100")  # 裁剪数量 zsl
-    assert rows["DH-1"][8] == Decimal("2")  # round(50/100 x 4) 完工包数
-    assert rows["DH-1"][9] == Decimal("50")  # 包完工率 wcl，原值即进度
-    assert rows["DH-1"][10] == Decimal("3")  # 工序数 wts
-    assert rows["DH-1"][11] == "未完工"
+    assert rows["DH-1"][6] == Decimal("4")  # Σ包数 bs
+    assert rows["DH-1"][7] == Decimal("100")  # Σ发卡 fhsl
+    # percent 列以字符串返回（kernel 只对 money/quantity 做数值归一）。
+    assert Decimal(str(rows["DH-1"][8])) == Decimal("50")  # 50/100 × 100 进度
+    assert rows["DH-1"][9] == Decimal("3")  # Σ工序数 wts
+    assert rows["DH-1"][10] == "未完工"
 
-    assert rows["DH-2"][9] == Decimal("100")
-    assert rows["DH-2"][11] == "已完工"
+    assert Decimal(str(rows["DH-2"][8])) == Decimal("100")
+    assert rows["DH-2"][10] == "已完工"
     assert result.incomplete is False
 
 
@@ -294,7 +389,7 @@ async def test_fr005_binds_order_and_style_filters_into_local_compute() -> None:
     )
     assert [row[0] for row in by_order.rows] == ["DH-1"]
 
-    # 只给款号时合并到款号粒度：一行一款号，进度按包数加权。
+    # 只给款号时合并到款号粒度：进度按 Σ实收/Σ发卡 重算，不是各行 wcl 平均。
     by_style = await runner.run(
         CapabilityRunRequest(
             capability_id=CapabilityId("fr005_order_progress"),
@@ -309,17 +404,17 @@ async def test_fr005_binds_order_and_style_filters_into_local_compute() -> None:
     )
     assert len(by_style.rows) == 1
     row = by_style.rows[0]
-    assert row[0] is None  # 款号视图没有单一订单号
-    assert row[1] == "HH001"
+    assert row[0] == "DH-1"  # 款号视图仍保留订单号（一行一订单×款号）
+    assert row[1] is None  # 制单号在款号粒度不输出
+    assert row[2] == "HH001"
     assert row[5] == Decimal("1")  # 该款号下 1 个订单
     assert row[6] == Decimal("4")  # Σ包数
-    assert row[8] == Decimal("2")  # Σ完工包数
-    assert row[9] == Decimal("50")  # 2/4 加权后的包完工率
+    assert Decimal(str(row[8])) == Decimal("50")  # Σ实收 50 ÷ Σ发卡 100
 
 
 @pytest.mark.asyncio
 async def test_fr009_order_overview_shares_the_progress_column_set() -> None:
-    """全厂总览与订单进度用同一套列定义，且不再有交期族列."""
+    """全厂总览与订单进度用同一套列定义（V2 列：发卡/实收口径，无交期族列）."""
 
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -332,14 +427,13 @@ async def test_fr009_order_overview_shares_the_progress_column_set() -> None:
     )
     assert result.column_names == (
         "order_code",
+        "sheet_code",
         "style_code",
-        "product_name",
         "bed_code",
-        "cut_date",
+        "created_date",
         "order_count",
         "package_count",
-        "cut_qty",
-        "finished_packages",
+        "issued_qty",
         "progress_ratio",
         "worktype_count",
         "finish_state",
@@ -350,7 +444,7 @@ async def test_fr009_order_overview_shares_the_progress_column_set() -> None:
 
 @pytest.mark.asyncio
 async def test_fr005_package_detail_exposes_piece_worktype_units() -> None:
-    """包级「总数/完成数」是件·工序口径，且物料编号可再下钻."""
+    """包级明细 = ScjdQuery V2 包粒度拉取；完成率 = 实收 ÷ 发卡."""
 
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -366,20 +460,20 @@ async def test_fr005_package_detail_exposes_piece_worktype_units() -> None:
             time_range=_range(),
         )
     )
-    assert [op for op, _ in executor.calls] == ["ScjdDetailQuery"]
-    # Columns: material_id, package_no, color, size, batch_no, cut_qty,
-    # worktype_count, total_units, done_units, progress_ratio.
+    assert [op for op, _ in executor.calls] == ["ScjdQuery"]
+    # Columns: material_id, package_no, color, size, issued_qty, received_qty,
+    # worktype_count, done_worktype_count, progress_ratio.
     first = result.rows[0]
     assert first[0] == "1001"
-    assert first[5] == Decimal("30")  # fhsl
-    assert first[7] == Decimal("90")  # wcs 前段 = 30 x 3
-    assert first[8] == Decimal("45")  # wcs 后段
-    assert first[9] == Decimal("50")  # wcl
+    assert first[4] == Decimal("30")  # 发卡 fhsl
+    assert first[5] == Decimal("15")  # 实收 sssl
+    assert first[7] == Decimal("1")  # 已完工工序数 wgs
+    assert Decimal(str(first[8])) == Decimal("50")  # wcl = 15/30 × 100
 
 
 @pytest.mark.asyncio
 async def test_fr005_worktype_detail_lists_scanned_worktypes_only() -> None:
-    """工序明细只列已刷卡工序，部门名由 DeptQuery 关联得到."""
+    """工序明细 = ScjdQuery V2 工序粒度拉取；部门名由行集 deptname 直出（无 DeptQuery）."""
 
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -395,25 +489,21 @@ async def test_fr005_worktype_detail_lists_scanned_worktypes_only() -> None:
             time_range=_range(),
         )
     )
-    assert [op for op, _ in executor.calls] == ["ScjdGxQuery", "DeptQuery"]
+    assert [op for op, _ in executor.calls] == ["ScjdQuery"]
     # Columns: worktype, worktype_order, is_done, issued_qty, done_qty,
-    # operator, dept_name, input_time.
+    # operator, dept_name.
     assert [row[0] for row in result.rows] == ["平车", "手工钉扣"]
-    assert result.rows[0][2] == "是"
+    assert result.rows[0][2] == "是"  # uid 非空 = 已刷卡
     assert result.rows[1][2] == "否"
+    assert result.rows[0][3] == Decimal("30")  # fhsl
     assert result.rows[0][4] == Decimal("30")  # zpsl
-    assert result.rows[0][6] == "一车间"  # dept dept-a1 -> DeptQuery.name
+    assert result.rows[0][6] == "一车间"  # deptname 直出
     assert result.rows[1][5] is None  # 未刷卡 -> 无操作人
 
 
 @pytest.mark.asyncio
 async def test_fr009_empty_window_yields_no_rows_and_no_fabrication() -> None:
-    """空窗口是正常的空结果：不返回行，也不编造一个 0。
-
-    调用预算（``KernelSettings.max_api_calls``）只约束 fan-out 步；进度族现在是
-    单次列表拉取，因此不再有「预算耗尽」的运行时分支——fan-out 覆盖由
-    ``test_kernel_fanout_concurrency.py`` 的探针 recipe 守护。
-    """
+    """空窗口是正常的空结果：不返回行，也不编造一个 0。"""
 
     class VoidFlowcardExecutor(FakeMultiRowExecutor):
         async def execute_full_step(
@@ -421,7 +511,7 @@ async def test_fr009_empty_window_yields_no_rows_and_no_fabrication() -> None:
             filters: Any,
             request: ExecutionRequest,
             active_scope: Any | None = None,
-            extra_params: dict[str, str] | None = None,
+            extra_params: dict[str, Any] | None = None,
         ) -> ResourceFetchResult:
             if request.operation_id == "ScjdQuery":
                 return ResourceFetchResult(rows=(), total=0, pages_fetched=1, complete=True)
@@ -487,7 +577,7 @@ capabilities:
 
 @pytest.mark.asyncio
 async def test_fr007_ranks_depts_by_reported_output() -> None:
-    """产量主源换成 YskQuery.sl（Σ 报工产量），且不再有达成率列."""
+    """产量主源 = GongziClQuery V2（dept×款号×uid 分组），部门名行集直出."""
 
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -501,19 +591,20 @@ async def test_fr007_ranks_depts_by_reported_output() -> None:
     assert result.incomplete is False
     assert result.column_names == (
         "rank_position",
+        "dept_id",
         "dept_name",
         "output_qty",
         "participant_count",
         "per_capita",
     )
-    # 2 个可见部门 -> 给出名次，按报工产量降序。
-    assert [row[1] for row in result.rows] == ["一车间", "二车间"]
+    # 2 个可见部门 -> 给出名次，按报工产量降序、dept_id 升序打破并列（G.5）。
+    assert [row[2] for row in result.rows] == ["一车间", "二车间"]
     assert result.rows[0][0] == "1"
     assert result.rows[1][0] == "2"
-    assert result.rows[0][2] == Decimal("9")  # Σ Ysk.sl (dept-a1)
-    assert result.rows[1][2] == Decimal("3")  # Σ Ysk.sl (dept-a2)
-    assert result.rows[0][3] == Decimal("1")  # COUNT(DISTINCT uid)
-    assert result.rows[0][4] == Decimal("9")  # 人均产量
+    assert result.rows[0][3] == Decimal("9")  # Σ sl (dept-a1)
+    assert result.rows[1][3] == Decimal("3")  # Σ sl (dept-a2)
+    assert result.rows[0][4] == Decimal("1")  # COUNT(DISTINCT uid)
+    assert result.rows[0][5] == Decimal("9")  # 人均产量
 
 
 @pytest.mark.asyncio
@@ -535,14 +626,14 @@ async def test_fr007_single_visible_dept_reports_unavailable_rank() -> None:
         )
     )
     assert len(result.rows) == 1
-    assert result.rows[0][1] == "一车间"
+    assert result.rows[0][2] == "一车间"
     assert result.rows[0][0] == UNAVAILABLE_VALUE
-    assert result.rows[0][2] == Decimal("9")
+    assert result.rows[0][3] == Decimal("9")
 
 
 @pytest.mark.asyncio
 async def test_fr010_expands_reported_output_by_style() -> None:
-    """单部门/自范围视图：按「车间/小组 × 款号」展开报工产量."""
+    """单部门/自范围视图：按「车间/小组 × 款号」展开报工产量（GongziClQuery 单调用）."""
 
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -555,15 +646,16 @@ async def test_fr010_expands_reported_output_by_style() -> None:
     )
     assert result.column_names == (
         "dept_name",
+        "dept_id",
         "style_code",
         "output_qty",
         "participant_count",
         "per_capita",
     )
-    assert [op for op, _ in executor.calls] == ["YskQuery", "DeptQuery"]
-    assert [(row[0], row[1]) for row in result.rows] == [
-        ("一车间", "HH001"),
-        ("二车间", "HH002"),
+    assert [op for op, _ in executor.calls] == ["GongziClQuery"]
+    assert [(row[0], row[1], row[2]) for row in result.rows] == [
+        ("一车间", "dept-a1", "HH001"),
+        ("二车间", "dept-a2", "HH002"),
     ]
     # 车间维度没有裁剪/计划数量来源，列定义里不得出现。
     assert "plan_qty" not in result.column_names
@@ -571,8 +663,8 @@ async def test_fr010_expands_reported_output_by_style() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fr006_output_attaches_orders_through_the_material_bridge() -> None:
-    """产量明细按「订单×款号×工序」展开，订单号经 Sclzd.id -> dh 关联."""
+async def test_fr006_output_reads_orders_from_jhdh_without_material_bridge() -> None:
+    """产量明细按「订单×款号×工序」展开，订单号 = jhdh（Sclzd 桥已取消）."""
 
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -583,11 +675,10 @@ async def test_fr006_output_attaches_orders_through_the_material_bridge() -> Non
             time_range=_range(),
         )
     )
-    assert [op for op, _ in executor.calls] == ["YskQuery", "SclzdGridPageList", "ScjdQuery"]
+    assert [op for op, _ in executor.calls] == ["GongziClQuery", "ScjdQuery"]
     assert result.column_names == (
         "order_code",
         "style_code",
-        "product_name",
         "worktype",
         "output_qty",
         "participant_count",
@@ -598,14 +689,15 @@ async def test_fr006_output_attaches_orders_through_the_material_bridge() -> Non
     first = result.rows[0]
     assert first[0] == "DH-1"
     assert first[1] == "HH001"
-    assert first[2] == "模拟款A"
-    assert first[4] == Decimal("9")
-    assert first[6] == Decimal("9")  # je 合计
-    # 工序占比 = 该工序报工产量 ÷ 该单裁剪数量（ScjdQuery.zsl = 100）。
+    assert first[2] == "裁剪"
+    assert first[3] == Decimal("9")
+    assert first[4] == Decimal("1")  # COUNT(DISTINCT uid)
+    assert first[5] == Decimal("9")  # je 合计
+    # 工序占比 = 该工序报工产量 ÷ 该计划号 Σ发卡（ScjdQuery fhsl = 100）。
     # percent 列一旦带条件 unavailable 分支，整列就是 VARCHAR，数值以字符串返回
     # （与 fr007 名次列同法），由卡片层归一化展示。
-    assert Decimal(str(first[7])) == Decimal("9")
-    assert Decimal(str(result.rows[1][7])) == Decimal("7.5")
+    assert Decimal(str(first[6])) == Decimal("9")
+    assert Decimal(str(result.rows[1][6])) == Decimal("7.5")  # 3 / 40
 
 
 @pytest.mark.asyncio
@@ -639,12 +731,12 @@ async def test_unavailable_metric_columns_surface_sentinel_not_number(tmp_path: 
 
 @pytest.mark.asyncio
 async def test_fr011_groups_payroll_by_dept_with_confirmed_headcount() -> None:
-    """FR-011 修订：在册人数来自 EmployeeQuery 全量，人均工资 = 应发合计 ÷ 在册.
+    """FR-011：工资 = 明细模式底料 + 本地按部门聚合，在册人数来自 EmployeeQuery 全量.
 
     The fake executor returns two dept-a1 employees (01001, 01003) and one
-    dept-a2 employee (01002) for EmployeeQuery, and je 20.00 / 3.75 for the
-    two departments — so headcount and avg_wage are confirmed numbers, never
-    the ``unavailable`` sentinel.
+    dept-a2 employee (01002) for EmployeeQuery, and locally aggregated je
+    20.00 / 3.75 for the two departments — so headcount and avg_wage are
+    confirmed numbers, never the ``unavailable`` sentinel.
     """
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -676,11 +768,11 @@ async def test_fr011_groups_payroll_by_dept_with_confirmed_headcount() -> None:
 
 @pytest.mark.asyncio
 async def test_fr004_group_income_rank_locates_own_row_and_group() -> None:
-    """FR-004 收入排名：MES 返回可见列表后按本人工号定位、按组过滤组内名次.
+    """FR-004 收入排名：明细模式底料 + 本地按人聚合，位次 = 本地排序（je 降序）.
 
-    Fake visible ranking: 01001 (dept-a1, 20.00) above 01002 (dept-a2, 3.75).
-    The caller 01001 self_dept=dept-a1 → group_size counts dept-a1 peers only;
-    only the caller's own result row is emitted.
+    Fake detail rows aggregate to: 01001 (dept-a1, je 20.00) above
+    01002 (dept-a2, 3.75). The caller 01001 self_dept=dept-a1 → group_size
+    counts dept-a1 peers only; only the caller's own result row is emitted.
     """
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -724,18 +816,19 @@ async def test_fr012_target_employee_recipe_runs() -> None:
             time_range=_range(),
         )
     )
-    # The recipe reuses the FR-002 fetch + local-aggregate path (scheme="");
-    # the real-MES summary mode (hz) is defective and no recipe uses it.
-    # Uid injection is adapter-side and covered by integration/adapter tests.
-    gongzi_calls = [p for op, p in executor.calls if op == "GongziMxQuery"]
+    # The recipe reuses the FR-002 fetch + local-aggregate path (明细模式,
+    # 不传 groupbyFields = 工资族预取粒度)。uid 注入由适配层完成，
+    # 覆盖于 integration/adapter 测试。fake 底料全量 SUM(je) = 23.75。
+    gongzi_calls = [p for op, p in executor.calls if op == "GongziClQuery"]
     assert gongzi_calls
-    assert all(p.get("scheme") == "" for p in gongzi_calls)
-    assert result.rows[0][0] == Decimal("25.40")
+    assert all(p.get("Flag") == "0" for p in gongzi_calls)
+    assert all("groupbyFields" not in p for p in gongzi_calls)
+    assert result.rows[0][0] == Decimal("23.75")
 
 
 @pytest.mark.asyncio
 async def test_fr005_zero_package_count_reports_zero_not_unavailable() -> None:
-    """包数为 0 的流程卡不得除零，也不得伪造一个完成率."""
+    """发卡数量为 0 的制单不得除零，也不得伪造一个完成率."""
 
     class ZeroPackagesExecutor(FakeMultiRowExecutor):
         async def execute_full_step(
@@ -743,23 +836,24 @@ async def test_fr005_zero_package_count_reports_zero_not_unavailable() -> None:
             filters: Any,
             request: ExecutionRequest,
             active_scope: Any | None = None,
-            extra_params: dict[str, str] | None = None,
+            extra_params: dict[str, Any] | None = None,
         ) -> ResourceFetchResult:
             if request.operation_id == "ScjdQuery":
                 return ResourceFetchResult(
                     rows=(
                         {
-                            "dh": "DH-9",
+                            "dh": "20260709001",
+                            "jhdh": "DH-9",
                             "chuanghao": "9",
-                            "rq": "2026-07-09",
                             "huohao": "HH009",
                             "bbreed": "HH009",
-                            "description": "模拟款C",
-                            "zbs": "0",
-                            "zsl": "0",
-                            "sfwg": "0",
-                            "wcl": "",
+                            "dept": "dept-a1",
+                            "deptname": "一车间",
+                            "bs": "0",
+                            "fhsl": "0",
+                            "sssl": "0",
                             "wts": "0",
+                            "wcl": "",
                         },
                     ),
                     total=1,
@@ -784,22 +878,25 @@ async def test_fr005_zero_package_count_reports_zero_not_unavailable() -> None:
             time_range=_range(),
         )
     )
-    # 款号粒度合并的分母是 Σ包数；Σ包数 = 0 时进度回落 0，既不除零也不报 unavailable。
+    # 款号粒度合并的分母是 Σ发卡；Σ发卡 = 0 时进度回落 0，既不除零也不报 unavailable。
     assert len(result.rows) == 1
     row = result.rows[0]
-    assert row[1] == "HH009"
+    assert row[0] == "DH-9"
+    assert row[2] == "HH009"
     assert row[6] == Decimal("0")  # 包数
-    assert row[8] == Decimal("0")  # 完工包数
-    assert row[9] == Decimal("0")  # 进度
-    assert row[11] == "未完工"
+    assert row[7] == Decimal("0")  # 发卡数量
+    assert Decimal(str(row[8])) == Decimal("0")  # 进度（percent 列字符串）
+    assert row[9] == Decimal("0")  # 工序数
+    assert row[10] == "未完工"
 
 
 @pytest.mark.asyncio
 async def test_fr013_dashboard_combines_ranking_kpis_and_daily_chart() -> None:
     """FR-013 综合看板：主表车间排名 + aux KPI（总产量/在产订单/人均月产）+ 日序列 chart.
 
-    Fake 数据：YskQuery 两车间报工（dept-a1 sl=9 @07-02、dept-a2 sl=3 @07-03）、
-    EmployeeQuery 在册 3 人、ScjdQuery 中 DH-1（wcl=50）未完工。
+    Fake 数据：GongziClQuery 部门粒度两车间报工（dept-a1 sl=9 @07-02、
+    dept-a2 sl=3 @07-03）、EmployeeQuery 在册 3 人、ScjdQuery M7 中
+    DH-1（Σ实收 50 < Σ发卡 100）未完工。
     """
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -822,12 +919,12 @@ async def test_fr013_dashboard_combines_ranking_kpis_and_daily_chart() -> None:
 
     card = result.card
     assert card is not None
-    # aux KPI（D-2 口径：wcl<100% 的制单去重 = DH-1 一单）。
+    # aux KPI（D-2 口径 + T1 换代：Σ实收 < Σ发卡 的制单去重 = DH-1 一单）。
     kpis = {item["label"]: item for item in as_list(card["metrics"])}
     assert kpis["总产量"]["value"] == "12"
     assert kpis["在产订单"]["value"] == "1"
     assert kpis["人均月产"]["value"] == "4"
-    # 日序列 chart：按 inputtime 归日，62 点内保持日粒度。
+    # 日序列 chart：按 inputdate 归日，62 点内保持日粒度；标签由卡片层归一化为 MM-DD。
     chart = as_dict(card["chart"])
     assert chart["type"] == "bar"
     assert chart["granularity"] == "day"

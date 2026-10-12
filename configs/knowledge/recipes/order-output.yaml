@@ -1,47 +1,54 @@
 # Reviewed L1 order output recipe. File changes are semantics changes
 # and require human review.
 #
-# 口径来源：``docs/design/进度与产量功能重梳方案.md`` §4（唯一现行依据，2026-09-15 拍板 1）、
-# ``docs/product/需求及方案整理.md``、``docs/product/AI问答对外接口-整理.md`` §9.1。
+# 口径来源：``docs/design/V2接口取数重构与缓存加速方案.md``（2026-10-11 换代，
+# 附录 C.3 + §7 R3/T5 拍板）、``docs/api/工资产量-V2.md``、``docs/api/生产进度-V2.md``。
 #
-# 产量主源 = ``YskQuery``（生产查询-已扫描）：唯一同时带 ``id``（经制单挂订单 ``dh``）、
-# ``huohao``（款号）、``worktype``（工序名）、``sl``（产量）、``uid``（人数）、``je``（金额）
-# 的接口。两个同源接口都不进本链路：
-#   * ``HuohaoWtCLQuery`` 是 ``YskQuery`` 按「款号×工序」的服务端聚合视图（279/279 组数值
-#     完全相等），运行时再取一遍等于同一份数据读两次，既贵又有重复计数风险；
-#   * ``BarcodeClQuery`` 是 ``YskQuery`` 的**真子集**（Σ 1,034,082 < 2,126,116，偏低约 51%），
-#     单独使用会系统性低估，与主源相加则重复计数。保留登记仅作线下口径对账/回退。
+# 产量主源 = ``GongziClQuery`` V2（工资产量）：``groupbyFields`` 直接含 ``jhdh``，
+# 取消 V1 的 ``SclzdGridPageList``（id → dh）映射桥与本地 JOIN（方案 C.3）。
+# 行集粒度 = 「计划号 × 床号 × 款号 × 大货款号 × 工序 × 工序名 × uid」（C.3 表列出的
+# 分组键 + 要点 1 的 uid）：数值列（sl/je）由服务端按组合计，``uid`` 拉进行集用于本地
+# COUNT(DISTINCT)——footer 只有 sum/count 类合计、没有 COUNT DISTINCT，「参与人数」
+# 必须在本地去重（方案 C.3 要点 1）。
 #
-# 订单归属：``YskQuery`` 没有 ``dh``，只能靠 ``id``（物料编号）经 ``SclzdGridPageList``
-# 映射到订单（实测 ``Ysk.id ⊆ Sclzd.id``，11554/11554 命中）。一个 ``id`` 只属于一个订单，
-# 取 ``MIN(dh)`` 保证映射唯一且确定；映射不到的记录 ``order_code`` 留空而不臆造订单号。
+# 订单维度按 ``jhdh`` 归组（R3 拍板）：有值按值归类、空值统一折叠为「未关联计划号」
+# 同一组（不丢弃、不臆造、不用 dh 冒充）。
 #
-# 裁剪数量（分母）：取自 ``ScjdQuery.zsl``（= 该单裁床数，实测等于 Σ制单 fhsl）。
-# 它**只用于算「工序占比」**，不作为结果列输出——结果是「订单×款号×工序」行，
-# 裁剪数量在这一粒度上会重复出现，一旦作为可求和列就会按工序数被放大。
+# 工序占比分母 = ``ScjdQuery`` V2 的 ``fhsl``（发卡数量，T5 拍板：V1 zsl 裁剪数量退役），
+# 取「同计划号 Σfhsl」按 Σ分子/Σ分母 重算；它只用于算占比，不作为结果列输出——
+# 结果是「订单×款号×工序」行，分母在这一粒度上会重复出现，一旦作为可求和列
+# 就会按工序数被放大。
+#
+# 款号过滤（style_codes）同时匹配 ``huohao``（款号）与 ``bbreed``（大货款号）：
+# 客户侧两种叫法并存（工资产量 V2 两个字段都有），宽松匹配避免口径词差导致空结果。
 #
 # ⚠ 「总产量」不能由各工序产量相加得出：同一件衣服做 3 道工序就有 3 条报工，
 # 相加会按工序数放大。因此卡片只输出工件口径的产值与占比，并强制带口径注记。
-version: 2
+#
+# 排序本地做（§3.2⑤）：产量数值降序，并列以 order_code、worktype 升序打破（G.5）；
+# 排序键不派生名次（本能力无名次列），只决定行序。
+version: 3
 capabilities:
   - capability_id: fr006_order_output
     title: 订单/款号产量
     required_slots: [time_range]
     steps:
-      - step_id: fetch_ysk
+      - step_id: fetch_cl
         kind: api
-        operation_id: YskQuery
-      - step_id: fetch_sclzd
-        kind: api
-        operation_id: SclzdGridPageList
-        depends_on: [fetch_ysk]
+        operation_id: GongziClQuery
+        params:
+          Flag: "0"
+          Type: "0,1,2"
+          groupbyFields: [jhdh, chuanghao, huohao, bbreed, worktype, wtname, uid]
       - step_id: fetch_scjd
         kind: api
         operation_id: ScjdQuery
-        depends_on: [fetch_ysk]
+        depends_on: [fetch_cl]
+        params:
+          groupbyFields: [dh, jhdh, chuanghao, huohao, bbreed, dept, deptname]
       - step_id: compute
         kind: local
-        depends_on: [fetch_ysk, fetch_sclzd, fetch_scjd]
+        depends_on: [fetch_cl, fetch_scjd]
         filter_bindings:
           order_codes: order_codes
           style_codes: style_codes
@@ -52,67 +59,61 @@ capabilities:
           style_codes AS (
             SELECT unnest($style_codes) AS c
           ),
-          material_order AS (
-            SELECT id, MIN(dh) AS dh FROM fetch_sclzd GROUP BY id
-          ),
-          cut AS (
-            SELECT dh, SUM(CAST(COALESCE(TRY_CAST(zsl AS DECIMAL), 0) AS DECIMAL)) AS cut_qty
-            FROM fetch_scjd GROUP BY dh
-          ),
           scoped AS (
-            SELECT
-              mo.dh AS order_code,
-              y.huohao AS style_code,
-              NULLIF(COALESCE(s.description, ''), '') AS product_name,
-              y.worktype,
-              CAST(COALESCE(TRY_CAST(y.sl AS DECIMAL), 0) AS DECIMAL) AS output_qty,
-              CAST(COALESCE(TRY_CAST(y.je AS DECIMAL), 0) AS DECIMAL) AS output_amount,
-              y.uid,
-              CAST(COALESCE(c.cut_qty, 0) AS DECIMAL) AS cut_qty
-            FROM fetch_ysk y
-            LEFT JOIN material_order mo ON mo.id = y.id
-            LEFT JOIN fetch_scjd s ON s.dh = mo.dh
-            LEFT JOIN cut c ON c.dh = mo.dh
+            SELECT * FROM fetch_cl
             WHERE ((SELECT COUNT(*) FROM order_codes) = 0
-                   OR mo.dh IN (SELECT c FROM order_codes))
+                   OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
               AND ((SELECT COUNT(*) FROM style_codes) = 0
-                   OR y.huohao IN (SELECT c FROM style_codes))
+                   OR COALESCE(huohao, '') IN (SELECT c FROM style_codes)
+                   OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes))
+          ),
+          -- 分母：同计划号 Σfhsl（发卡数量）。同样的槽位过滤保持与产量行集同范围，
+          -- 款号在进度侧匹配 bbreed/huohao 两个字段（与产量侧同法）。
+          issued AS (
+            SELECT
+              CASE WHEN COALESCE(jhdh, '') = '' THEN '未关联计划号' ELSE jhdh END
+                AS order_code,
+              SUM(CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL)) AS issued_qty
+            FROM fetch_scjd
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0
+                   OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0
+                   OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes)
+                   OR COALESCE(huohao, '') IN (SELECT c FROM style_codes))
+            GROUP BY 1
           ),
           agg AS (
             SELECT
-              order_code,
-              style_code,
-              MIN(product_name) AS product_name,
-              worktype,
-              SUM(output_qty) AS output_qty,
-              SUM(output_amount) AS output_amount,
-              COUNT(DISTINCT uid) AS participant_count,
-              MIN(cut_qty) AS cut_qty
+              CASE WHEN COALESCE(jhdh, '') = '' THEN '未关联计划号' ELSE jhdh END
+                AS order_code,
+              COALESCE(NULLIF(huohao, ''), bbreed) AS style_code,
+              COALESCE(NULLIF(wtname, ''), worktype) AS worktype,
+              SUM(CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL)) AS output_qty_num,
+              SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) AS output_amount_num,
+              COUNT(DISTINCT CASE WHEN COALESCE(uid, '') <> '' THEN uid END)
+                AS participant_count
             FROM scoped
-            GROUP BY order_code, style_code, worktype
+            GROUP BY 1, 2, 3
           )
           SELECT
-            order_code,
-            style_code,
-            product_name,
-            worktype,
-            CAST(output_qty AS VARCHAR) AS output_qty,
-            CAST(participant_count AS VARCHAR) AS participant_count,
-            CAST(output_amount AS VARCHAR) AS output_amount,
-            CASE WHEN cut_qty > 0
-                 THEN CAST(ROUND(output_qty / cut_qty * 100, 2) AS VARCHAR)
+            a.order_code,
+            a.style_code,
+            a.worktype,
+            CAST(a.output_qty_num AS VARCHAR) AS output_qty,
+            CAST(a.participant_count AS VARCHAR) AS participant_count,
+            CAST(a.output_amount_num AS VARCHAR) AS output_amount,
+            CASE WHEN COALESCE(i.issued_qty, 0) > 0
+                 THEN CAST(ROUND(a.output_qty_num / i.issued_qty * 100, 2) AS VARCHAR)
                  ELSE 'unavailable' END AS output_share
-          FROM agg
-          ORDER BY output_qty DESC, order_code, worktype
+          FROM agg a
+          LEFT JOIN issued i ON i.order_code = a.order_code
+          ORDER BY a.output_qty_num DESC, a.order_code, a.worktype
     result_columns:
       - name: order_code
         title: 订单号
         source_step: compute
       - name: style_code
         title: 款号
-        source_step: compute
-      - name: product_name
-        title: 品名
         source_step: compute
       - name: worktype
         title: 工序
@@ -142,10 +143,10 @@ capabilities:
         column_type: percent
         unit: "%"
     metric_versions:
-      output_reported_qty: customer-ysk-v1
+      output_reported_qty: customer-cl-v2
       output_participant_count: factory-participant-v1
-      output_reported_amount: customer-ysk-v1
-      output_worktype_share: factory-output-share-v1
+      output_reported_amount: customer-cl-v2
+      output_worktype_share: factory-output-share-v2
     degradation: incomplete_marker
     card:
       kind: table
@@ -154,5 +155,6 @@ capabilities:
       notes:
         - "「报工产量」是工序口径工作量（同一件衣服做 3 道工序就有 3 条报工），**不是完工件数**；卡片上的合计数同样是件·工序口径，不要当成做了多少件衣服。"
         - "「参与人数」是该订单×款号×工序下报工的去重人数，同一人在多道工序会分别计入。"
-        - "「工序占比」= 该工序报工产量 ÷ 该单裁剪数量，用于看哪道工序是瓶颈；它按订单各自的裁剪数量计算，不是全厂占比。"
+        - "「工序占比」= 该工序报工产量 ÷ 该订单发卡数量（同一计划号 Σ发卡），用于看哪道工序是瓶颈；它按订单各自的分母计算，不是全厂占比。"
+        - "「订单号」取自计划号（jhdh）；未关联计划号的报工统一归入「未关联计划号」一组展示，不丢弃。"
         - "裁剪数量与包完工率在「订单/款号进度」里给（同一时间区间），本表不重复输出。"

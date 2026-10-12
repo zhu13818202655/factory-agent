@@ -108,76 +108,82 @@ def default_metric_registry() -> MetricRegistry:
             MetricDefinition(
                 name="output_personal",
                 version="customer-output-v1",
-                description="Personal output: sum of sl over the caller's own scanned rows",
+                description="Personal output: sum of sl over the caller's own rows",
                 status="confirmed",
-                assumption_status="客户已确认：个人产量即实收数（合格数），次品不计（客户确认结论）",
+                assumption_status=(
+                    "客户已确认：个人产量即实收数（合格数），次品不计（客户确认结论）；"
+                    "2026-10-11 V2 换代后取数源为 GongziClQuery V2（Type=0,1,2 三来源合并）"
+                ),
             ),
             # 报工产量的组织口径：与 ``output_personal`` 是同一个 ``sl`` 字段的两种
             # 观察面（个人 / 订单·款号·部门），口径一致但产品含义不同，故分别登记。
+            # 2026-10-11 V2 换代：取数源由 YskQuery 换为 GongziClQuery V2（工资产量），
+            # 版本随之 bump 为 customer-cl-v2。
             MetricDefinition(
                 name="output_reported_qty",
-                version="customer-ysk-v1",
-                description="Reported output: sum of sl over YskQuery detail rows",
+                version="customer-cl-v2",
+                description="Reported output: sum of sl over GongziClQuery V2 rows",
                 status="confirmed",
                 assumption_status=(
-                    "客户接口字段：生产查询-已扫描 sl（AI问答对外接口 §9.1，产量主数据源）；"
+                    "客户接口字段：工资产量 V2 sl（Type=0,1,2 三来源合并）；"
                     "件·工序口径，同一件衣服多道工序各计一条，不得当作完工件数"
                 ),
             ),
             MetricDefinition(
                 name="output_reported_amount",
-                version="customer-ysk-v1",
-                description="Reported output amount: sum of je over YskQuery detail rows",
+                version="customer-cl-v2",
+                description="Reported output amount: sum of je over GongziClQuery V2 rows",
                 status="confirmed",
-                assumption_status="客户接口字段：生产查询-已扫描 je（AI问答对外接口 §9.1）",
+                assumption_status="客户接口字段：工资产量 V2 je",
             ),
             MetricDefinition(
                 name="output_worktype_share",
-                version="factory-output-share-v1",
-                description="One worktype's reported output over the order cut quantity",
+                version="factory-output-share-v2",
+                description="One worktype's reported output over the order issued quantity",
                 status="confirmed",
                 assumption_status=(
-                    "我方计算：工序占比 = 该工序报工产量 ÷ 裁剪数量（需求及方案整理·管理功能表）"
+                    "我方计算：工序占比 = 该工序报工产量 ÷ 该计划号 Σ发卡数量（ScjdQuery V2 "
+                    "fhsl，T5 拍板：V1 zsl 裁剪数量退役、分母换源，版本 bump）；"
+                    "按订单各自的分母计算，不是全厂占比"
                 ),
             ),
             MetricDefinition(
                 name="progress_package_ratio",
-                version="customer-progress-v1",
-                description="Package completion ratio (wcl): finished packages over total packages",
+                version="customer-progress-v2",
+                description="Completion ratio (wcl): received quantity over issued quantity",
                 status="confirmed",
                 assumption_status=(
-                    "客户接口字段：缝制生产进度 wcl（= 完工包数 ÷ zbs，"
-                    "实测 527/527 行反推为整数）；进度主列唯一口径，2026-09-15 拍板，"
-                    "不使用数量口径完工率"
+                    "客户接口字段：生产进度 V2 wcl（= sssl ÷ fhsl × 100，实收 ÷ 发卡，"
+                    "分母为 0 时返回 0，保留 2 位小数）；进度主列唯一口径，"
+                    "2026-10-11 拍板（V2 接口换代，包完工率口径作废），不随分组维度变化"
                 ),
             ),
             MetricDefinition(
                 name="progress_package_count",
-                version="customer-progress-v1",
-                description="Package count of one flowcard: ScjdQuery.zbs",
+                version="customer-progress-v2",
+                description="Package count of one flowcard: ScjdQuery V2 bs",
                 status="confirmed",
-                assumption_status=(
-                    "客户接口字段：缝制生产进度 zbs（= 该单包数，实测 527/527 与包级行数一致）"
-                ),
+                assumption_status="客户接口字段：生产进度 V2 bs（该制单包数）",
             ),
             MetricDefinition(
                 name="progress_cut_qty",
-                version="customer-progress-v1",
-                description="Cut quantity: ScjdQuery.zsl / sum of package fhsl",
-                status="confirmed",
+                version="customer-progress-v2",
+                description="Retired with the V1 interface; denominator moved to fhsl",
+                status="unavailable",
                 assumption_status=(
-                    "客户接口字段：缝制生产进度 zsl（= 裁床数，实测 527/527 等于 Σ制单 fhsl）；"
-                    "生产计划接口弃用后，原「计划数量」列改此口径并更名「裁剪数量」"
+                    "2026-10-11 V2 换代退役：V1 的 ``裁剪数量``（ScjdQuery.zsl）不再提供，"
+                    "分母改用发卡数量 fhsl（T5 拍板），列表列更名为「发卡数量」"
+                    "（progress_issued_qty）。保留登记使历史口径可追溯"
                 ),
             ),
             MetricDefinition(
                 name="progress_finished_packages",
                 version="factory-progress-v1",
-                description="Finished packages: round(wcl / 100 x zbs), or packages at wcl = 100",
-                status="confirmed",
+                description="Retired with the V1 interface: wcl no longer derives from zbs",
+                status="unavailable",
                 assumption_status=(
-                    "我方计算：完工包数由包完工率反推（列表层）或按包级 wcl == 100 计数（详情层）；"
-                    "实测两条路逐单相等"
+                    "2026-10-11 V2 换代退役：完工包数 = round(wcl/100 × zbs) 依赖 V1 的 zbs，"
+                    "V2 不提供；进度状态改由 wcl 表达（§3.2④ 拍板）。保留登记使历史口径可追溯"
                 ),
             ),
             MetricDefinition(
@@ -191,19 +197,32 @@ def default_metric_registry() -> MetricRegistry:
             ),
             MetricDefinition(
                 name="progress_worktype_count",
-                version="customer-progress-v1",
-                description="Worktype count of one flowcard or package: wts",
+                version="customer-progress-v2",
+                description="Worktype count of one flowcard: ScjdQuery V2 wts",
                 status="confirmed",
-                assumption_status="客户接口字段：缝制生产进度/详情的 wts（工序道数，0 表示未开工）",
+                assumption_status=(
+                    "客户接口字段：生产进度 V2 wts（总工序数，工序维度参考统计）；"
+                    "V2 行集无独立日期列，制单日期由 dh 前 8 位派生（方案 §4.4）"
+                ),
+            ),
+            MetricDefinition(
+                name="progress_received_qty",
+                version="customer-progress-v2",
+                description="Received quantity (实收数量): ScjdQuery V2 sssl",
+                status="confirmed",
+                assumption_status=(
+                    "客户接口字段：生产进度 V2 sssl（实际做的数量，T3 拍板）；"
+                    "语义备注：sssl 是**截至查询时刻的累计实收量**，不是该窗口内新发生的量"
+                    "（方案附录 A.5），「上个月的进度」= 上月创建的制单截至现在的完成情况"
+                ),
             ),
             MetricDefinition(
                 name="progress_done_worktype_count",
                 version="factory-progress-v1",
-                description="Scanned worktype count of one package (distinct worktype rows)",
+                description="Finished worktype count of one package: ScjdQuery V2 wgs",
                 status="confirmed",
                 assumption_status=(
-                    "我方计算：已完成工序数 = 缝制工序进度里 DISTINCT worktype 计数"
-                    "（uid 非空即视为该道工序已完成）"
+                    "客户接口字段：生产进度 V2 wgs（已完工工序数（已扫码），工序维度参考统计）"
                 ),
             ),
             MetricDefinition(
@@ -215,10 +234,13 @@ def default_metric_registry() -> MetricRegistry:
             ),
             MetricDefinition(
                 name="progress_issued_qty",
-                version="customer-progress-v1",
-                description="Issued quantity of one worktype: fhsl",
+                version="customer-progress-v2",
+                description="Issued quantity (发卡数量): ScjdQuery V2 fhsl",
                 status="confirmed",
-                assumption_status="客户接口字段：缝制工序进度 fhsl（该道工序预发数量）",
+                assumption_status=(
+                    "客户接口字段：生产进度 V2 fhsl（制单流程卡的发卡数量，T3 拍板）；"
+                    "2026-10-11 换代后同时承接原「裁剪数量」的分母口径（T5 拍板）"
+                ),
             ),
             MetricDefinition(
                 name="progress_good_qty",
@@ -270,38 +292,43 @@ def default_metric_registry() -> MetricRegistry:
             ),
             MetricDefinition(
                 name="workshop_rank",
-                version="factory-rank-v1",
+                version="factory-rank-v2",
                 description="Workshop rank by total output, descending (1-based)",
                 status="confirmed",
-                assumption_status="我方计算：名次按总产量排序（需求及方案整理·管理功能表）",
+                assumption_status=(
+                    "2026-10-11 换代：数据源由 YskQuery 换为 GongziClQuery V2（dept 分组），"
+                    "版本随之 bump；排序本地做（§3.2⑤），并列名次允许并列、"
+                    "行序以 dept_id 升序打破（G.5）"
+                ),
             ),
             MetricDefinition(
                 name="payroll_rank_position",
-                version="factory-rank-v1",
-                description="Income rank position over the visible ranked list",
+                version="factory-rank-v2",
+                description="Income rank position over the locally ranked list",
                 status="confirmed",
                 assumption_status=(
-                    "客户接口已按金额倒序返回（AI问答对外接口 §8.2；客户确认结论·接口与字段口径 3）"
+                    "2026-10-11 换代：排序不下发 MES（方案 §3.2⑤），位次 = 本地排序"
+                    "（je 降序，并列以 uid 升序打破）后的先后； GongziClQuery V2 按"
+                    "uid/dept 分组返回行集"
                 ),
             ),
             MetricDefinition(
                 name="payroll_group_rank",
-                version="factory-group-rank-v1",
+                version="factory-rank-v2",
                 description="Caller's income rank inside their own group (dept)",
                 status="confirmed",
                 assumption_status=(
-                    "客户确认：可见列表按 dept 过滤组内名次，无需额外数据"
-                    "（客户确认结论·接口与字段口径 3）"
+                    "我方计算：组内名次 = dept 分窗内按 je 降序、uid 升序的本地排序"
+                    "（并列必须显式打破，方案附录 G.5）"
                 ),
             ),
             MetricDefinition(
                 name="payroll_group_size",
-                version="factory-group-rank-v1",
+                version="factory-rank-v2",
                 description="Total member count of the caller's group (dept)",
                 status="confirmed",
                 assumption_status=(
-                    "客户确认：组内总人数=按 dept 过滤后的可见列表计数"
-                    "（客户确认结论·接口与字段口径 3）"
+                    "我方计算：组内总人数 = dept 分窗行数（GongziClQuery V2 uid 分组）"
                 ),
             ),
             MetricDefinition(
@@ -309,14 +336,14 @@ def default_metric_registry() -> MetricRegistry:
                 version="customer-footer-v1",
                 description="Gross payable total grouped by dept (je total)",
                 status="confirmed",
-                assumption_status="客户接口字段 je 按 dept 汇总（AI问答对外接口 §8.2）",
+                assumption_status="客户接口字段 je 按 dept 汇总（GongziClQuery V2 dept 分组）",
             ),
             MetricDefinition(
                 name="payroll_package_count",
                 version="customer-rank-v1",
-                description="Package count bs returned by GongziJeOrderQuery",
+                description="Piece count bs returned by GongziClQuery V2",
                 status="confirmed",
-                assumption_status="客户接口 bs 字段（AI问答对外接口 §8.2）",
+                assumption_status="客户接口 bs 字段（2026-10-11 换代后取自 GongziClQuery V2）",
             ),
             MetricDefinition(
                 name="payroll_avg_by_dept",

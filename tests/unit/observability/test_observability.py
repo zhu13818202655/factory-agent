@@ -315,6 +315,37 @@ def test_forwarded_records_carry_their_origin(capsys: pytest.CaptureFixture[str]
     assert "'origin': 'uvicorn.error:" in output
 
 
+def test_forwarded_records_carry_their_extra_fields(capsys: pytest.CaptureFixture[str]) -> None:
+    """``extra`` is where the caller puts the fields a line is read for.
+
+    The JSON sink renders them straight off ``record["extra"]``; dropping them
+    at the forwarding boundary would leave every
+    ``logger.warning(..., extra={"operation": ...})`` in the application as an
+    unattributable event name.
+    """
+    configure_logging(_json_settings())
+
+    logging.getLogger("factory_agent.data_api.result_cache").info(
+        "v2_result.hit", extra={"operation": "GongziClQuery", "rows": 42}
+    )
+
+    output = capsys.readouterr().out
+    assert "'event': 'v2_result.hit'" in output
+    assert "'operation': 'GongziClQuery'" in output
+    assert "'rows': 42" in output
+
+
+def test_forwarded_extra_cannot_forge_the_origin(capsys: pytest.CaptureFixture[str]) -> None:
+    """A caller-supplied ``origin`` must not displace the real one."""
+    configure_logging(_json_settings())
+
+    logging.getLogger("uvicorn.error").warning("boom", extra={"origin": "forged:1"})
+
+    output = capsys.readouterr().out
+    assert "forged:1" not in output
+    assert "'origin': 'uvicorn.error:" in output
+
+
 def test_url_query_strings_are_redacted_wherever_they_appear(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -1,29 +1,34 @@
 # Reviewed L1 progress recipes. File changes are semantics changes
 # and require human review.
 #
-# 口径来源：``docs/design/进度与产量功能重梳方案.md``（唯一现行依据，2026-09-15 拍板）、
-# ``docs/product/需求及方案整理.md`` 功能表、``docs/product/AI问答对外接口-整理.md``。
+# 口径来源：``docs/design/V2接口取数重构与缓存加速方案.md``（2026-10-11 换代，
+# 附录 C.2 + §3.2③ + §7 T1/T3/T5 拍板）、``docs/api/生产进度-V2.md``。
 #
-# 进度族三层（§3），列表层与下钻层是**不同的能力、不同的提问**：
-#   ScjdQuery         流程卡层：一行一个 dh（订单号），自带 zbs / zsl / wcl / wts / sfwg
-#   ScjdDetailQuery   包级：传 dh，一行一个包（物料编号 id）
-#   ScjdGxQuery       工序级：传物料编号，一行一道**已刷卡**工序
+# 进度族统一取数 = ``ScjdQuery`` V2，**预取/查询粒度 = 「制单 × 部门」**
+# （groupbyFields = [dh, jhdh, chuanghao, huohao, bbreed, dept, deptname]，方案 M7）：
+# 这是老板缓存的全厂结果集粒度，也是列表层与产置分母的公共底料。列表层/汇总层
+# 由本地 SQL 从该粒度**重聚合**到目标粒度（方案 §4.5）：
+#   - 可加度量直接 SUM（bs / fhsl / sssl / wts，附录 A.3 实测 footer 可加）；
+#   - **比率列按 Σ分子 / Σ分母 重算**（wcl = Σsssl ÷ Σfhsl × 100），绝不对行取平均。
 #
-# 工序明细里部门只有编码（ScjdGxQuery.dept），工序只有编号与名称两个字段
-# （worktype = 编号，name = 名称），因此该层额外关联一次 DeptQuery 取部门名，
-# 展示列取 name、缺失时回落 worktype。
-#
-# 关键设计决定：
-# - 进度主列 = **包完工率 wcl**（拍板 2），直接取接口值，不用数量口径完工率。
-# - 列表层**绝不逐单调 ScjdDetailQuery**（实测一个月 527 单 → 527 次调用）；逐单展开
-#   只在用户点击下钻时发生，那时用「单订单 = ScjdDetailQuery 一次调用」承接：包级聚合
-#   与单级字段数值必然一致（实测 wcl ≡ 完工包数 ÷ zbs，527/527 行）。
-# - 生产计划接口弃用后，交期 / 客户名称 / 计划数量整族删除（拍板 3）；「计划数量」列
-#   由「裁剪数量」（ScjdQuery.zsl，实测 527/527 等于 Σ制单 fhsl）承接。
-# - 进度列取值是 **0~100 的百分数**（wcl 原值），前端按需格式化为「22/23（95.65%）」。
-# - dh 与物料编号都是**业务过滤值**，由适配层从 NarrowedFilters 下推（order_codes /
-#   material_ids），绝不来自模型文本。
-version: 2
+# 口径拍板（2026-10-11）：
+# - 完工率 wcl = sssl ÷ fhsl（实收 ÷ 发卡），不随分组维度变化（T1/T3）；
+#   旧「包完工率 = 完工包数 ÷ zbs」口径作废（R2）。
+# - 旧列删除（§3.2④）：rq（裁剪日期→由 dh 前 8 位派生制单日期）、
+#   description（品名）、sfwg（状态→由 wcl 派生）、zsl（裁剪数量→分母改用 fhsl）。
+# - 订单维度统一以 ``jhdh``（计划号）表达（R3）；空值**统一归入「未关联计划号」
+#   一组**（不丢弃、不臆造、不用 dh 冒充）；制单号 ``dh`` 是 MES 内部字段，
+#   另以「制单号」列输出用于行标识与下钻（T6：dh 与 jhdh 不是一一对应）。
+# - 行集无日期列：制单日期 = dh 前 8 位（附录 A.5 实测零越界），本地派生；
+#   解析失败的行不参与日期筛选（缓存路径整批弃用，见方案 §4.4）。
+# - 进度侧 ``dept``/``uid`` 为空的行是**契约行为**（未扫码工序行，uid/uname 为
+#   null，wgs=0，V2 文档 §6.1 明写）：在老板（全厂）视角保留，在任何部门视角
+#   由范围过滤自然排除（方案 §4.5 / 附录 A.4）。
+# - 下钻槽位不变：包级下钻按 ``jhdh``（订单维度）过滤，工序级下钻按 ``userid``
+#   （物料编号）过滤，均由适配层从 NarrowedFilters 下推（附录 E）。
+# - 排序一律本地做，不下发 ``orderbyFields``（方案 §3.2⑤）；列表层排序键 =
+#   订单号 + 制单号（分组键全集），顺序唯一。
+version: 3
 capabilities:
   - capability_id: fr005_order_progress
     title: 订单/款号进度
@@ -32,6 +37,8 @@ capabilities:
       - step_id: fetch_scjd
         kind: api
         operation_id: ScjdQuery
+        params:
+          groupbyFields: [dh, jhdh, chuanghao, huohao, bbreed, dept, deptname]
       - step_id: compute
         kind: local
         depends_on: [fetch_scjd]
@@ -48,80 +55,116 @@ capabilities:
           scoped AS (
             SELECT * FROM fetch_scjd
             WHERE ((SELECT COUNT(*) FROM order_codes) = 0
-                   OR dh IN (SELECT c FROM order_codes))
+                   OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
               AND ((SELECT COUNT(*) FROM style_codes) = 0
                    OR bbreed IN (SELECT c FROM style_codes))
           ),
-          -- 一行一单。order_count 恒为 1：它让「订单数」在汇总行与列表行之间口径一致。
-          per_order AS (
+          dated AS (
             SELECT
-              dh AS order_code,
+              CASE WHEN COALESCE(jhdh, '') = '' THEN '未关联计划号' ELSE jhdh END
+                AS order_code,
+              dh AS sheet_code,
               bbreed AS style_code,
-              NULLIF(COALESCE(description, ''), '') AS product_name,
               chuanghao AS bed_code,
-              rq AS cut_date,
-              CAST(1 AS DECIMAL) AS order_count,
-              CAST(COALESCE(TRY_CAST(zbs AS DECIMAL), 0) AS DECIMAL) AS package_count,
-              CAST(COALESCE(TRY_CAST(zsl AS DECIMAL), 0) AS DECIMAL) AS cut_qty,
-              CAST(ROUND(COALESCE(TRY_CAST(wcl AS DECIMAL), 0) / 100
-                         * COALESCE(TRY_CAST(zbs AS DECIMAL), 0)) AS DECIMAL) AS finished_packages,
-              CAST(COALESCE(TRY_CAST(wcl AS DECIMAL), 0) AS DECIMAL) AS progress_ratio,
-              CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS worktype_count,
-              CASE WHEN COALESCE(sfwg, '0') = '1' THEN '已完工' ELSE '未完工' END AS finish_state
+              CASE WHEN LENGTH(COALESCE(dh, '')) >= 8
+                        AND TRY_CAST(SUBSTR(dh, 1, 8) AS INTEGER) IS NOT NULL
+                   THEN CONCAT(SUBSTR(dh, 1, 4), '-', SUBSTR(dh, 5, 2), '-',
+                               SUBSTR(dh, 7, 2))
+                   ELSE NULL END AS created_date,
+              CAST(COALESCE(TRY_CAST(bs AS DECIMAL), 0) AS DECIMAL) AS bs,
+              CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS fhsl,
+              CAST(COALESCE(TRY_CAST(sssl AS DECIMAL), 0) AS DECIMAL) AS sssl,
+              CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS wts
             FROM scoped
           ),
-          -- 用户给了款号但没给订单号时合并到款号粒度：进度按**包数加权**
-          -- （完工包数 ÷ 包数），不是各单 wcl 的简单平均。
+          -- 一行一制单。order_count 恒为 1：它让「订单数」在汇总行与列表行之间口径一致。
+          per_sheet AS (
+            SELECT
+              order_code,
+              sheet_code,
+              MIN(style_code) AS style_code,
+              MIN(bed_code) AS bed_code,
+              MIN(created_date) AS created_date,
+              CAST(1 AS DECIMAL) AS order_count,
+              SUM(bs) AS package_count,
+              SUM(fhsl) AS issued_qty,
+              SUM(sssl) AS received_qty,
+              SUM(wts) AS worktype_count
+            FROM dated
+            GROUP BY order_code, sheet_code
+          ),
+          -- 用户给了款号但没给订单号时合并到款号粒度：进度按 Σ实收/Σ发卡 重算，
+          -- 不是各制单 wcl 的简单平均。
           use_style_grain AS (
             SELECT ((SELECT COUNT(*) FROM order_codes) = 0
                     AND (SELECT COUNT(*) FROM style_codes) > 0) AS flag
           ),
           per_style AS (
             SELECT
-              CAST(NULL AS VARCHAR) AS order_code,
-              style_code AS style_code,
-              MIN(product_name) AS product_name,
+              order_code,
+              CAST(NULL AS VARCHAR) AS sheet_code,
+              style_code,
               CAST(NULL AS VARCHAR) AS bed_code,
-              CAST(NULL AS VARCHAR) AS cut_date,
-              CAST(COUNT(DISTINCT order_code) AS DECIMAL) AS order_count,
+              CAST(NULL AS VARCHAR) AS created_date,
+              CAST(COUNT(DISTINCT sheet_code) AS DECIMAL) AS order_count,
               SUM(package_count) AS package_count,
-              SUM(cut_qty) AS cut_qty,
-              SUM(finished_packages) AS finished_packages,
-              CAST(CASE WHEN SUM(package_count) > 0
-                        THEN ROUND(SUM(finished_packages) / SUM(package_count) * 100, 2)
-                        ELSE 0 END AS DECIMAL) AS progress_ratio,
-              MAX(worktype_count) AS worktype_count,
-              CASE WHEN MIN(finish_state) = '已完工' THEN '已完工' ELSE '未完工' END AS finish_state
-            FROM per_order
-            GROUP BY style_code
+              SUM(issued_qty) AS issued_qty,
+              SUM(received_qty) AS received_qty,
+              SUM(worktype_count) AS worktype_count
+            FROM per_sheet
+            GROUP BY order_code, style_code
           )
-          SELECT order_code, style_code, product_name, bed_code, cut_date, order_count,
-                 package_count, cut_qty, finished_packages, progress_ratio, worktype_count,
-                 finish_state
-          FROM per_order
+          SELECT
+            order_code,
+            sheet_code,
+            style_code,
+            bed_code,
+            created_date,
+            CAST(order_count AS VARCHAR) AS order_count,
+            CAST(package_count AS VARCHAR) AS package_count,
+            CAST(issued_qty AS VARCHAR) AS issued_qty,
+            CAST(CASE WHEN issued_qty > 0
+                      THEN ROUND(received_qty / issued_qty * 100, 2)
+                      ELSE 0 END AS VARCHAR) AS progress_ratio,
+            CAST(worktype_count AS VARCHAR) AS worktype_count,
+            CASE WHEN issued_qty > 0 AND received_qty >= issued_qty
+                 THEN '已完工' ELSE '未完工' END AS finish_state
+          FROM per_sheet
           WHERE NOT (SELECT flag FROM use_style_grain)
           UNION ALL
-          SELECT order_code, style_code, product_name, bed_code, cut_date, order_count,
-                 package_count, cut_qty, finished_packages, progress_ratio, worktype_count,
-                 finish_state
+          SELECT
+            order_code,
+            sheet_code,
+            style_code,
+            bed_code,
+            created_date,
+            CAST(order_count AS VARCHAR) AS order_count,
+            CAST(package_count AS VARCHAR) AS package_count,
+            CAST(issued_qty AS VARCHAR) AS issued_qty,
+            CAST(CASE WHEN issued_qty > 0
+                      THEN ROUND(received_qty / issued_qty * 100, 2)
+                      ELSE 0 END AS VARCHAR) AS progress_ratio,
+            CAST(worktype_count AS VARCHAR) AS worktype_count,
+            CASE WHEN issued_qty > 0 AND received_qty >= issued_qty
+                 THEN '已完工' ELSE '未完工' END AS finish_state
           FROM per_style
           WHERE (SELECT flag FROM use_style_grain)
-          ORDER BY style_code, order_code
+          ORDER BY style_code, order_code, sheet_code
     result_columns:
       - name: order_code
         title: 订单号
         source_step: compute
+      - name: sheet_code
+        title: 制单号
+        source_step: compute
       - name: style_code
         title: 款号
-        source_step: compute
-      - name: product_name
-        title: 品名
         source_step: compute
       - name: bed_code
         title: 床号
         source_step: compute
-      - name: cut_date
-        title: 裁剪日期
+      - name: created_date
+        title: 制单日期
         source_step: compute
         column_type: date
       - name: order_count
@@ -136,18 +179,12 @@ capabilities:
         metric: progress_package_count
         column_type: quantity
         unit: 包
-      - name: cut_qty
-        title: 裁剪数量
+      - name: issued_qty
+        title: 发卡数量
         source_step: compute
-        metric: progress_cut_qty
+        metric: progress_issued_qty
         column_type: quantity
         unit: 件
-      - name: finished_packages
-        title: 完工包数
-        source_step: compute
-        metric: progress_finished_packages
-        column_type: quantity
-        unit: 包
       - name: progress_ratio
         title: 进度
         source_step: compute
@@ -165,20 +202,20 @@ capabilities:
         source_step: compute
     metric_versions:
       progress_order_count: factory-progress-v1
-      progress_package_count: customer-progress-v1
-      progress_cut_qty: customer-progress-v1
-      progress_finished_packages: factory-progress-v1
-      progress_package_ratio: customer-progress-v1
-      progress_worktype_count: customer-progress-v1
+      progress_package_count: customer-progress-v2
+      progress_issued_qty: customer-progress-v2
+      progress_package_ratio: customer-progress-v2
+      progress_worktype_count: customer-progress-v2
     degradation: incomplete_marker
     card:
       kind: table
-      metrics: [order_count, package_count, cut_qty, finished_packages]
+      metrics: [order_count, package_count, issued_qty]
       preview_max_rows: 10
       notes:
-        - "「进度」列是包完工率：已做完整包的包数占比（完工包数 ÷ 包数），不是件数百分比。"
-        - "「裁剪数量」是该单裁床数（缝制生产进度 zsl）；原「计划数量 / 完工数量 / 交期」已随生产计划接口弃用删除。"
-        - "按款号查询且未指定订单号时，本表按款号合并为一行，进度按包数加权；「工序数」取该款号下各单的最大值。"
+        - "「进度」列 = 实收数量 ÷ 发卡数量 × 100（完工率，2026-10-11 拍板）；旧「包完工率」口径已随 V1 接口作废。"
+        - "「订单号」是计划号（jhdh）；无计划号的制单统一归入「未关联计划号」，制单号另列展示。"
+        - "「制单日期」由制单号前 8 位派生（流程卡制单日期）；「发卡数量」是该单流程卡的发卡数量（原「裁剪数量」分母口径，T5 拍板）。"
+        - "按款号查询且未指定订单号时，本表按款号合并为一行，进度按 Σ实收 ÷ Σ发卡 重算；「工序数」为各制单之和。"
 
   - capability_id: fr009_factory_order_overview
     title: 全厂订单进度总览
@@ -187,6 +224,8 @@ capabilities:
       - step_id: fetch_scjd
         kind: api
         operation_id: ScjdQuery
+        params:
+          groupbyFields: [dh, jhdh, chuanghao, huohao, bbreed, dept, deptname]
       - step_id: compute
         kind: local
         depends_on: [fetch_scjd]
@@ -203,41 +242,75 @@ capabilities:
           scoped AS (
             SELECT * FROM fetch_scjd
             WHERE ((SELECT COUNT(*) FROM order_codes) = 0
-                   OR dh IN (SELECT c FROM order_codes))
+                   OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
               AND ((SELECT COUNT(*) FROM style_codes) = 0
                    OR bbreed IN (SELECT c FROM style_codes))
+          ),
+          dated AS (
+            SELECT
+              CASE WHEN COALESCE(jhdh, '') = '' THEN '未关联计划号' ELSE jhdh END
+                AS order_code,
+              dh AS sheet_code,
+              bbreed AS style_code,
+              chuanghao AS bed_code,
+              CASE WHEN LENGTH(COALESCE(dh, '')) >= 8
+                        AND TRY_CAST(SUBSTR(dh, 1, 8) AS INTEGER) IS NOT NULL
+                   THEN CONCAT(SUBSTR(dh, 1, 4), '-', SUBSTR(dh, 5, 2), '-',
+                               SUBSTR(dh, 7, 2))
+                   ELSE NULL END AS created_date,
+              CAST(COALESCE(TRY_CAST(bs AS DECIMAL), 0) AS DECIMAL) AS bs,
+              CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS fhsl,
+              CAST(COALESCE(TRY_CAST(sssl AS DECIMAL), 0) AS DECIMAL) AS sssl,
+              CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS wts
+            FROM scoped
+          ),
+          per_sheet AS (
+            SELECT
+              order_code,
+              sheet_code,
+              MIN(style_code) AS style_code,
+              MIN(bed_code) AS bed_code,
+              MIN(created_date) AS created_date,
+              CAST(1 AS DECIMAL) AS order_count,
+              SUM(bs) AS package_count,
+              SUM(fhsl) AS issued_qty,
+              SUM(sssl) AS received_qty,
+              SUM(wts) AS worktype_count
+            FROM dated
+            GROUP BY order_code, sheet_code
           )
           SELECT
-            dh AS order_code,
-            bbreed AS style_code,
-            NULLIF(COALESCE(description, ''), '') AS product_name,
-            chuanghao AS bed_code,
-            rq AS cut_date,
-            CAST(1 AS DECIMAL) AS order_count,
-            CAST(COALESCE(TRY_CAST(zbs AS DECIMAL), 0) AS DECIMAL) AS package_count,
-            CAST(COALESCE(TRY_CAST(zsl AS DECIMAL), 0) AS DECIMAL) AS cut_qty,
-            CAST(ROUND(COALESCE(TRY_CAST(wcl AS DECIMAL), 0) / 100
-                       * COALESCE(TRY_CAST(zbs AS DECIMAL), 0)) AS DECIMAL) AS finished_packages,
-            CAST(COALESCE(TRY_CAST(wcl AS DECIMAL), 0) AS DECIMAL) AS progress_ratio,
-            CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS worktype_count,
-            CASE WHEN COALESCE(sfwg, '0') = '1' THEN '已完工' ELSE '未完工' END AS finish_state
-          FROM scoped
-          ORDER BY order_code
+            order_code,
+            sheet_code,
+            style_code,
+            bed_code,
+            created_date,
+            CAST(order_count AS VARCHAR) AS order_count,
+            CAST(package_count AS VARCHAR) AS package_count,
+            CAST(issued_qty AS VARCHAR) AS issued_qty,
+            CAST(CASE WHEN issued_qty > 0
+                      THEN ROUND(received_qty / issued_qty * 100, 2)
+                      ELSE 0 END AS VARCHAR) AS progress_ratio,
+            CAST(worktype_count AS VARCHAR) AS worktype_count,
+            CASE WHEN issued_qty > 0 AND received_qty >= issued_qty
+                 THEN '已完工' ELSE '未完工' END AS finish_state
+          FROM per_sheet
+          ORDER BY order_code, sheet_code
     result_columns:
       - name: order_code
         title: 订单号
         source_step: compute
+      - name: sheet_code
+        title: 制单号
+        source_step: compute
       - name: style_code
         title: 款号
-        source_step: compute
-      - name: product_name
-        title: 品名
         source_step: compute
       - name: bed_code
         title: 床号
         source_step: compute
-      - name: cut_date
-        title: 裁剪日期
+      - name: created_date
+        title: 制单日期
         source_step: compute
         column_type: date
       - name: order_count
@@ -252,18 +325,12 @@ capabilities:
         metric: progress_package_count
         column_type: quantity
         unit: 包
-      - name: cut_qty
-        title: 裁剪数量
+      - name: issued_qty
+        title: 发卡数量
         source_step: compute
-        metric: progress_cut_qty
+        metric: progress_issued_qty
         column_type: quantity
         unit: 件
-      - name: finished_packages
-        title: 完工包数
-        source_step: compute
-        metric: progress_finished_packages
-        column_type: quantity
-        unit: 包
       - name: progress_ratio
         title: 进度
         source_step: compute
@@ -281,20 +348,19 @@ capabilities:
         source_step: compute
     metric_versions:
       progress_order_count: factory-progress-v1
-      progress_package_count: customer-progress-v1
-      progress_cut_qty: customer-progress-v1
-      progress_finished_packages: factory-progress-v1
-      progress_package_ratio: customer-progress-v1
-      progress_worktype_count: customer-progress-v1
+      progress_package_count: customer-progress-v2
+      progress_issued_qty: customer-progress-v2
+      progress_package_ratio: customer-progress-v2
+      progress_worktype_count: customer-progress-v2
     degradation: incomplete_marker
     card:
       kind: table
-      metrics: [order_count, package_count, cut_qty, finished_packages]
+      metrics: [order_count, package_count, issued_qty]
       preview_max_rows: 10
       notes:
-        - "全厂订单列表，列定义与「订单/款号进度」完全一致；列表只做分页拉取，不会逐单调包级明细。"
-        - "「进度」列是包完工率（完工包数 ÷ 包数），不是件数百分比；「裁剪数量」是该单裁床数。"
-        - "点击某个订单可继续下钻到包级明细、再到工序明细（各是一次新的查询）。"
+        - "全厂订单列表，列定义与「订单/款号进度」完全一致；列表只做一次聚合拉取，不会逐单调包级明细。"
+        - "「进度」列 = 实收数量 ÷ 发卡数量 × 100；点击某个订单可继续下钻到包级明细、再到工序明细（各是一次新的查询）。"
+        - "「sssl」是截至查询时刻的累计实收量：「上个月的进度」= 上月创建的制单截至现在的完成情况，不是该月新做的量。"
 
   - capability_id: fr005_order_package_detail
     title: 订单进度-包级明细
@@ -302,24 +368,25 @@ capabilities:
     steps:
       - step_id: fetch_detail
         kind: api
-        operation_id: ScjdDetailQuery
+        operation_id: ScjdQuery
+        params:
+          groupbyFields: [dh, baohao, userid, color, chima]
       - step_id: compute
         kind: local
         depends_on: [fetch_detail]
         compute: |
           SELECT
-            id AS material_id,
+            userid AS material_id,
             baohao AS package_no,
             NULLIF(COALESCE(color, ''), '') AS color,
             NULLIF(COALESCE(chima, ''), '') AS size,
-            NULLIF(COALESCE(ganghao, ''), '') AS batch_no,
-            CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS cut_qty,
+            CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS issued_qty,
+            CAST(COALESCE(TRY_CAST(sssl AS DECIMAL), 0) AS DECIMAL) AS received_qty,
             CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS worktype_count,
-            CAST(TRY_CAST(SPLIT_PART(COALESCE(wcs, ''), '/', 1) AS DECIMAL) AS DECIMAL) AS total_units,
-            CAST(TRY_CAST(SPLIT_PART(COALESCE(wcs, ''), '/', 2) AS DECIMAL) AS DECIMAL) AS done_units,
+            CAST(COALESCE(TRY_CAST(wgs AS DECIMAL), 0) AS DECIMAL) AS done_worktype_count,
             CAST(COALESCE(TRY_CAST(wcl AS DECIMAL), 0) AS DECIMAL) AS progress_ratio
           FROM fetch_detail
-          ORDER BY TRY_CAST(baohao AS INTEGER)
+          ORDER BY TRY_CAST(baohao AS INTEGER), userid
     result_columns:
       - name: material_id
         title: 物料编号
@@ -333,13 +400,16 @@ capabilities:
       - name: size
         title: 尺码
         source_step: compute
-      - name: batch_no
-        title: 缸号
+      - name: issued_qty
+        title: 发卡数量
         source_step: compute
-      - name: cut_qty
-        title: 裁剪数量
+        metric: progress_issued_qty
+        column_type: quantity
+        unit: 件
+      - name: received_qty
+        title: 实收数量
         source_step: compute
-        metric: progress_cut_qty
+        metric: progress_received_qty
         column_type: quantity
         unit: 件
       - name: worktype_count
@@ -348,18 +418,12 @@ capabilities:
         metric: progress_worktype_count
         column_type: quantity
         unit: 道
-      - name: total_units
-        title: 总数
+      - name: done_worktype_count
+        title: 已完工工序数
         source_step: compute
-        metric: progress_unit_total
+        metric: progress_done_worktype_count
         column_type: quantity
-        unit: 件·工序
-      - name: done_units
-        title: 完成数
-        source_step: compute
-        metric: progress_unit_done
-        column_type: quantity
-        unit: 件·工序
+        unit: 道
       - name: progress_ratio
         title: 完成率
         source_step: compute
@@ -367,18 +431,18 @@ capabilities:
         column_type: percent
         unit: "%"
     metric_versions:
-      progress_cut_qty: customer-progress-v1
-      progress_worktype_count: customer-progress-v1
-      progress_unit_total: customer-progress-v1
-      progress_unit_done: customer-progress-v1
-      progress_package_ratio: customer-progress-v1
+      progress_issued_qty: customer-progress-v2
+      progress_received_qty: customer-progress-v2
+      progress_worktype_count: customer-progress-v2
+      progress_done_worktype_count: factory-progress-v1
+      progress_package_ratio: customer-progress-v2
     degradation: incomplete_marker
     card:
       kind: table
-      metrics: [cut_qty]
+      metrics: [issued_qty]
       preview_max_rows: 10
       notes:
-        - "「总数 / 完成数」是件·工序口径（总数 = 裁剪数量 × 工序数），不是件数；「完成率」因此比「已做多少件」更保守。"
+        - "「完成率」= 实收数量 ÷ 发卡数量（件数口径）；「工序数 / 已完工工序数」是该包的工序维度参考统计。"
         - "「物料编号」是再下钻到工序明细的键：点击某一包可按该编号查看工序级明细。"
         - "包数超过预览行数时卡片只展示前若干包，完整明细走导出。"
 
@@ -388,27 +452,23 @@ capabilities:
     steps:
       - step_id: fetch_gx
         kind: api
-        operation_id: ScjdGxQuery
-      - step_id: fetch_dept
-        kind: api
-        operation_id: DeptQuery
-        depends_on: [fetch_gx]
+        operation_id: ScjdQuery
+        params:
+          groupbyFields: [userid, uid, uname, dept, deptname, worktype, wtname, wsort]
       - step_id: compute
         kind: local
-        depends_on: [fetch_gx, fetch_dept]
+        depends_on: [fetch_gx]
         compute: |
           SELECT
-            COALESCE(NULLIF(g.name, ''), g.worktype) AS worktype,
-            CAST(COALESCE(TRY_CAST(g.wsort AS INTEGER), 0) AS DECIMAL) AS worktype_order,
-            CASE WHEN COALESCE(g.uid, '') <> '' THEN '是' ELSE '否' END AS is_done,
-            CAST(COALESCE(TRY_CAST(g.fhsl AS DECIMAL), 0) AS DECIMAL) AS issued_qty,
-            CAST(COALESCE(TRY_CAST(g.zpsl AS DECIMAL), 0) AS DECIMAL) AS done_qty,
-            NULLIF(COALESCE(g.uname, ''), '') AS operator,
-            COALESCE(NULLIF(d.name, ''), NULLIF(g.dept, '')) AS dept_name,
-            NULLIF(COALESCE(g.inputtime, ''), '') AS input_time
-          FROM fetch_gx g
-          LEFT JOIN fetch_dept d ON d.id = g.dept
-          ORDER BY worktype_order
+            COALESCE(NULLIF(wtname, ''), worktype) AS worktype,
+            CAST(COALESCE(TRY_CAST(wsort AS INTEGER), 0) AS DECIMAL) AS worktype_order,
+            CASE WHEN COALESCE(uid, '') <> '' THEN '是' ELSE '否' END AS is_done,
+            CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS issued_qty,
+            CAST(COALESCE(TRY_CAST(zpsl AS DECIMAL), 0) AS DECIMAL) AS done_qty,
+            NULLIF(COALESCE(uname, ''), '') AS operator,
+            COALESCE(NULLIF(deptname, ''), NULLIF(dept, '')) AS dept_name
+          FROM fetch_gx
+          ORDER BY worktype_order, worktype
     result_columns:
       - name: worktype
         title: 工序
@@ -439,12 +499,9 @@ capabilities:
       - name: dept_name
         title: 部门
         source_step: compute
-      - name: input_time
-        title: 刷卡时间
-        source_step: compute
     metric_versions:
       progress_worktype_order: customer-progress-v1
-      progress_issued_qty: customer-progress-v1
+      progress_issued_qty: customer-progress-v2
       progress_good_qty: customer-progress-v1
     degradation: incomplete_marker
     card:
@@ -454,4 +511,4 @@ capabilities:
       notes:
         - "本表只列**已刷卡**的工序（有刷卡记录即视为该道已完成）；未做的工序不在此列出。"
         - "未做道数 = 上级视图的「工序数」− 本表行数；未做的工序名当前不展示。"
-        - "「预发数量 / 正品数量」是单包该道工序的数量，不是整单产量。"
+        - "「预发数量 / 正品数量」是单包该道工序的数量，不是整单产量；部门名由 V2 直出。"

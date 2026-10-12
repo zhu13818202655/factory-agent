@@ -91,7 +91,7 @@ capabilities:
         column_type: percent
     metric_versions:
       progress_done_worktype_count: factory-progress-v1
-      progress_package_ratio: customer-progress-v1
+      progress_package_ratio: customer-progress-v2
     degradation: incomplete_marker
 """
 

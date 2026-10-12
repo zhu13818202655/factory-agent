@@ -11,8 +11,9 @@
   ``factory_agent_create_partition()`` 在应用代码里没有调用者，跨月即静默
   丢账；这里改为按迁移执行时刻动态取「当月 + 下月」，并由运行时周期任务
   （``factory_agent.statistics.partitions``）保证后续月份始终存在。
-- ``mes_operation_category`` 的种子行数注释统一为 30（与
-  ``configs/knowledge/apis.yaml`` 的 30 条一致）。
+- ``mes_operation_category`` 的种子行数注释统一为 31（与
+  ``configs/knowledge/apis.yaml`` 的 31 条一致；2026-10-11 V2 换代新增
+  ``GongziClQuery``，既有库由 ``20261011_0005_gongzi_cl_category`` 补种）。
 
 包含的表：
 - 会话：``agent_interaction`` / ``agent_message``（含
@@ -22,7 +23,7 @@
 - 个性化：``agent_user_mapping`` / ``agent_query_history`` / ``agent_favorite``
 - 计量：按月分区 ``usage_event`` + ``factory_agent_create_partition()``、
   事实表 ``interaction_fact`` / ``llm_call_fact`` / ``mes_call_fact``、
-  分类映射 ``mes_operation_category``（30 行种子）、汇总
+  分类映射 ``mes_operation_category``（31 行种子）、汇总
   ``tenant_usage_hourly`` / ``tenant_usage_daily``
 - 平台：``tenant_registry``（``app_key`` 主键 + 非密 ``tenant_ref`` 唯一列） /
   ``admin_audit`` / ``platform_principal`` / ``usage_export``
@@ -388,7 +389,7 @@ def upgrade() -> None:
 
     # Reviewed operation_id -> billing category mapping, seeded from
     # configs/knowledge/apis.yaml. Classification is applied at aggregation time
-    # so a reclassification never rewrites history. The 30 rows below mirror the
+    # so a reclassification never rewrites history. The 31 rows below mirror the
     # `usage_category` fields in apis.yaml (guarded by
     # tests/unit/data_api/test_mes_operation_categories.py): a new operation
     # added to apis.yaml fails that test until it is classified here.
@@ -429,6 +430,7 @@ def upgrade() -> None:
             ('WskQuery', 'output', 'apis-v2'),
             ('GongziMxQuery', 'payroll', 'apis-v2'),
             ('GongziJeOrderQuery', 'payroll', 'apis-v2'),
+            ('GongziClQuery', 'payroll', 'apis-v2'),
             ('DgGridPageList', 'other', 'apis-v2'),
             ('DgZuGridPageList', 'other', 'apis-v2'),
             ('DgClQuery', 'other', 'apis-v2')

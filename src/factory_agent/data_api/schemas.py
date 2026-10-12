@@ -382,12 +382,13 @@ class SclzdWorktypeRow(_CustomerRow):
 
 
 class ScjdRow(_CustomerRow):
-    """缝制生产进度 ``ScjdQuery``：一行一个流程卡 ``dh``。
+    """缝制生产进度 ``ScjdQuery``（V1，已退役）：一行一个流程卡 ``dh``。
 
-    实测响应外壳是 ``result.main[]`` + ``result.detail``（另有 ``total``），
-    与通用 ``result.list`` 外壳不同，因此 ``apis.yaml`` 用 ``list_key: main``。
+    V1 实测响应外壳是 ``result.main[]`` + ``result.detail``（另有 ``total``），
+    与通用 ``result.list`` 外壳不同，因此旧 ``apis.yaml`` 用 ``list_key: main``。
     字段陷阱：本接口的 ``huohao`` 是**货号**，款号在 ``bbreed``；``wcl`` 是
-    **包完工率**（= 完工包数 ÷ ``zbs``），即进度主列口径。
+    **包完工率**（= 完工包数 ÷ ``zbs``）。2026-10-11 V2 换代后该接口退役，
+    登记条目保留（enabled: false），行模型随之保留以维持退役条目的可校验性。
     """
 
     dh: str
@@ -657,8 +658,124 @@ class DgClRow(_CustomerRow):
     sfjz: int
 
 
-#: Row model per catalog resource name.
-ROW_MODEL_BY_RESOURCE: dict[str, type[_CustomerRow]] = {
+class _V2CustomerRow(BaseModel):
+    """V2 动态分组响应的行基类。
+
+    与 ``_CustomerRow`` 的差别只有一个：**不声明**「客户停止下发字段」的缺列告警。
+    V2 的列集合随 ``groupbyFields`` 入参变化（同一接口明细/汇总/多粒度共用一个
+    行模型），「某列本次没下发」是契约内的正常形态而不是漂移信号，按 (model,
+    field) 逐条告警只会制造噪音。类型归一化照旧：数字 → 字符串、null → 空串，
+    使下游 compute 在两种形态下行为一致。
+
+    未声明的字段仍被丢弃（``extra="ignore"``），已声明字段缺省填空串。
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _coerce_scalars(cls, value: object, info: ValidationInfo) -> object:
+        name = info.field_name
+        field = cls.model_fields.get(name) if name is not None else None
+        is_str_field = field is not None and field.annotation is str
+        if not is_str_field:
+            return value
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and value.is_integer():
+                return str(int(value))
+            return str(value)
+        return value
+
+
+class GongziClRow(_V2CustomerRow):
+    """工资产量 ``GongziClQuery`` V2 行（明细模式 = 默认列）。
+
+    列集合随 ``groupbyFields`` 变化：不传 = 明细（下方全部字段），传维度 = 维度列
+    + 聚合度量。时间锚（方案附录 A.5 实测）：``Flag=0`` 按 ``inputdate``、
+    ``Flag=1``（按审核时间且已审核）按 ``check_time``，两列都在行集里。
+    """
+
+    id: str = ""
+    jhdh: str = ""
+    chuanghao: str = ""
+    baohao: str = ""
+    rq: str = ""
+    inputdate: str = ""
+    inputtime: str = ""
+    inputtime_raw: str = ""
+    check_time: str = ""
+    check_time_raw: str = ""
+    # 货号编码（bbreed 是货号名称）；工资产量 V2 的行集字段（接口文档 §4 示例 1）
+    huohao: str = ""
+    # 货号名称（bbreed）；FR-001/006/007/010 的款号维度列
+    bbreed: str = ""
+    uid: str = ""
+    uname: str = ""
+    dept: str = ""
+    deptname: str = ""
+    type: str = ""
+    worktype: str = ""
+    wtname: str = ""
+    price: str = ""
+    color: str = ""
+    chima: str = ""
+    # 包数（footer bs_total 的明细列）；FR-008 计件件数取该列
+    bs: str = ""
+    fhsl: str = ""
+    sl: str = ""
+    je: str = ""
+    ischeck: str = ""
+    sffb: str = ""
+    cid: str = ""
+    fbid: str = ""
+
+
+class ScjdV2Row(_V2CustomerRow):
+    """缝制生产进度 ``ScjdQuery`` V2 行（列集合随 ``groupbyFields`` 变化）。
+
+    口径拍板（方案 §7 T1/T3）：完工率 ``wcl = sssl / fhsl × 100``（实收 ÷ 发卡），
+    不随分组维度变化；``bgs``/``bts`` 与 ``wgs``/``wts`` 只是包/工序维度的参考
+    统计，不参与 ``wcl``。行内**没有日期列**——时间锚 = 流程卡制单日期 =
+    ``dh`` 前 8 位（方案附录 A.5 实测零越界），由缓存加工层派生 ``dh_date``。
+    """
+
+    dh: str = ""
+    jhdh: str = ""
+    chuanghao: str = ""
+    huohao: str = ""
+    bbreed: str = ""
+    baohao: str = ""
+    userid: str = ""
+    color: str = ""
+    chima: str = ""
+    uid: str = ""
+    uname: str = ""
+    dept: str = ""
+    deptname: str = ""
+    worktype: str = ""
+    wtname: str = ""
+    wsort: str = ""
+    zhgx: str = ""
+    bs: str = ""
+    fhsl: str = ""
+    sssl: str = ""
+    zpsl: str = ""
+    wgs: str = ""
+    wts: str = ""
+    wcl: str = ""
+    bgs: str = ""
+    bts: str = ""
+
+
+
+#: Row model per catalog resource name. V2 动态分组行（``_V2CustomerRow``）与
+#: V1 严格行（``_CustomerRow``）共用本表：两者都是「extra=ignore + 标量归一」的
+#: 客户行模型，消费方只用 ``model_validate`` / ``model_fields``。
+ROW_MODEL_BY_RESOURCE: dict[str, type[BaseModel]] = {
     "user_info": UserInfoRow,
     "move_menu": MoveMenuRow,
     "huohao": HuohaoRow,
@@ -684,6 +801,9 @@ ROW_MODEL_BY_RESOURCE: dict[str, type[_CustomerRow]] = {
     "wsk": WskRow,
     "gongzi_mx": GongziMxRow,
     "gongzi_je_order": GongziJeOrderRow,
+    # V2 动态分组行模型（2026-10-11 接口换代）：列集合随 groupbyFields 变化。
+    "gongzi_cl": GongziClRow,
+    "scjd_v2": ScjdV2Row,
     "dg": DgRow,
     "dg_zu": DgZuRow,
     "dg_cl": DgClRow,
@@ -744,10 +864,12 @@ def _plain(value: Any) -> Any:
 
 __all__ = [
     "CredentialBundleResponse",
+    "GongziClRow",
     "GongziMxSummaryRow",
     "ListResult",
     "MesEnvelope",
     "ROW_MODEL_BY_RESOURCE",
+    "ScjdV2Row",
     "gongzi_mx_row_model_for",
     "is_gongzi_mx_summary_scheme",
     "row_to_plain_dict",

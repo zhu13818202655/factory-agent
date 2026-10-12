@@ -2,22 +2,20 @@
 # changes and require human review.
 #
 # 口径来源：``docs/product/需求及方案整理.md`` 功能表与「客户确认结论」、
-# ``docs/product/AI问答对外接口-整理.md`` §8。
+# ``docs/design/V2接口取数重构与缓存加速方案.md`` 附录 C.1（2026-10-11 换代）。
 #
-# FR-002 个人工资汇总 and FR-003 个人工资明细 share the same operation
-# `GongziMxQuery` and differ only in `scheme` and result columns:
-#   - both fetch detail rows (scheme empty); FR-003 renders them as 明细 rows,
-#     FR-002 aggregates them locally into 汇总 columns.
-# 客户确认（2026-09-07，见接口文档 §8.1）：scheme 为空=明细、scheme=hz/汇总=汇总，
-# 两者行粒度/列集合/footer 语义不同；汇总模式 footer 的语义（bs_total=行数、
-# fhsl_total/sl_total/je_total=首行值）客户已确认并修复中。工资汇总/明细统一用
-# scheme="" 明细取数，gross_total/piece_count 以本地合计为准；
-# footer.je_total 对账仅记录日志、不影响结果。
-# The `Type=0,1,2` three-source merge covers 扫码/吊挂/手工账 (客户口径).
-# `Flag` defaults to "0" (扫描日期；客户公共参数约定).
-# `Uid` is scope-sourced and never accepts user input; 选填（客户确认 2026-09-06）：
-# 传工号查该员工，不传则由 MES 按当前角色过滤（00=本人；组长/管理/老板=管辖范围）。
-# 产品端只在单员工场景（个人本人/点名查某员工）注入 Uid，不再做「仅限老板传空」门禁。
+# FR-002 个人工资汇总 / FR-003 个人工资明细 / FR-012 任一员工工资 共享同一底行集
+# （同一 Uid + 同一窗口 + 同一 Type/Flag），差异只在本地聚合还是逐行展示：
+#   - 取数统一走 ``GongziClQuery`` V2 **明细模式**（不传 groupbyFields）——这也是
+#     工资族的老板缓存预取粒度（方案 §3.2②），三个能力因此共用同一缓存条目；
+#   - FR-002 在本地聚合出 汇总列，FR-003 逐行展示，FR-012 与 FR-002 同配方。
+# ``Type=0,1,2`` 三来源合并覆盖 扫码/吊挂/手工账（客户口径）。
+# ``Flag`` 默认 "0"（按录入时间；客户公共参数约定，附录 A.5 实测时间锚）。
+# ``uid`` 是 scope 派生（个人能力=本人、点名查人=目标工号），由适配层下推，
+# 绝不来自模型文本；对 00 员工 V2 不报无权限、静默返回本人范围（方案 §7.1 T9）。
+#
+# V2 明细模式列集合即接口默认列；金额/数量列（je/sl/price）为可加度量、无比率列，
+# 跨粒度本地再聚合安全（方案 §3.2②）。
 #
 # Local compute runs inside the per-interaction read-only DuckDB sandbox. The
 # kernel registers a `_meta` table with the natural-day count; `daily_avg`
@@ -27,7 +25,7 @@
 # footer_reconciliation compares the locally aggregated `gross_total` against
 # the MES `footer.je_total`; any mismatch is logged as a warning only — the
 # customer footer is trusted as authoritative and the check never changes the result.
-version: 1
+version: 3
 capabilities:
   - capability_id: fr002_personal_wage_summary
     title: 个人工资汇总
@@ -35,13 +33,11 @@ capabilities:
     steps:
       - step_id: fetch_wages
         kind: api
-        operation_id: GongziMxQuery
-        # scheme 为空 = 明细取数（真实 MES hz 汇总有缺陷，见文件头注释）。
+        operation_id: GongziClQuery
+        # 明细模式（不传 groupbyFields）= 工资族预取粒度，FR-002/003/012 同底料。
         params:
-          scheme: ""
-          Type: "0,1,2"
           Flag: "0"
-          queryFooter: "1"
+          Type: "0,1,2"
       - step_id: aggregate
         kind: local
         depends_on: [fetch_wages]
@@ -89,29 +85,19 @@ capabilities:
     steps:
       - step_id: fetch_wages
         kind: api
-        operation_id: GongziMxQuery
+        operation_id: GongziClQuery
         params:
-          scheme: ""
-          Type: "0,1,2"
           Flag: "0"
-          queryFooter: "1"
-      - step_id: aggregate
-        kind: local
-        depends_on: [fetch_wages]
-        compute: |
-          SELECT
-            COALESCE(COUNT(*), 0) AS piece_count,
-            COALESCE(SUM(CAST(je AS DECIMAL)), 0) AS gross_total
-          FROM fetch_wages
+          Type: "0,1,2"
     result_columns:
-      - name: rq
+      - name: inputdate
         title: 日期
         source_step: fetch_wages
         column_type: date
       - name: huohao
         title: 款号
         source_step: fetch_wages
-      - name: worktype
+      - name: wtname
         title: 工序
         source_step: fetch_wages
       - name: sl
@@ -143,3 +129,5 @@ capabilities:
       kind: table
       metrics: [je]
       preview_max_rows: 10
+      notes:
+        - "日期列是录入日期（Flag=0 按 inputdate 筛选，2026-10-11 V2 换代后由接口直出）。"

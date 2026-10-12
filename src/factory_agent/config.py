@@ -162,6 +162,31 @@ class FactoryAgentSettings(BaseSettings):
     delivery_warning_ratio_percent: int = Field(default=10, ge=1, le=100)
     delivery_warning_fallback_days: int = Field(default=7, ge=1)
 
+    # ---- V2 结果集缓存（老板缓存） -------------------------------------------
+    # 设计依据 docs/design/V2接口取数重构与缓存加速方案.md §4.6①：off 完全走实时
+    # （与无缓存一致）；read 只读；readwrite 读 + 门禁回写；shadow 在 readwrite
+    # 基础上命中后仍实时取一次做逐行同位比对（只输出比对结论，不改变可见结果）。
+    result_cache_mode: Literal["off", "read", "readwrite", "shadow"] = "off"
+    #: 回溯窗口（§4.3）：预取窗口 = [今天 − N, 昨天]；窗口含今天 = 未结算（短 TTL）。
+    result_cache_backtrack_days: int = Field(default=365, ge=1)
+    #: 未结算窗口 TTL（F.2：60~120s，只兜「同一天内连问」）。
+    result_cache_unsettled_ttl_seconds: int = Field(default=90, ge=10)
+    #: 回填 / 超出回溯范围窗口的 TTL（F.2：24h，惰性回填兜倒补）。
+    result_cache_settled_ttl_seconds: int = Field(default=86400, ge=60)
+
+    # ---- 预取任务（§4.3） -----------------------------------------------------
+    # 进程内 lifespan 周期任务（复用 RollupWorker 模式）：部署时区 02:00，
+    # 每租户按 hash 抖动错开；两族各 1 次调用 / 租户 / 晚。
+    result_cache_prefetch_enabled: bool = True
+    result_cache_prefetch_hour: int = Field(default=2, ge=0, le=23)
+    result_cache_prefetch_jitter_seconds: int = Field(default=600, ge=0)
+    #: 预取轮询间隔（检查是否到达触发点的节拍，不是预取频率）。
+    result_cache_prefetch_poll_seconds: int = Field(default=300, ge=30)
+    #: 99（老板）账号的加密凭据，仅用于夜间预取取数（§4.3【决策】从环境变量
+    #: 读取，走真实 token 换取与 AuthorizationService 语义，不另造旁路身份）。
+    #: 缺省 = 不预取，缓存只靠 99 角色查询的惰性回写填充。
+    mes_user_credential_99: SecretStr = SecretStr("")
+
     # Role-consistency validation stage label. The customer MES pre-filters
     # rows by role (所见即所得), so findings are advisory-only: recorded for
     # review, alerted, and logged as warnings — never a block on data return.

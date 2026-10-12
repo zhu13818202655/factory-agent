@@ -89,6 +89,20 @@ class ApiCatalog:
     def operation_ids(self) -> frozenset[str]:
         return frozenset(self._operations)
 
+    def with_enabled(self, *operation_ids: str) -> "ApiCatalog":
+        """Return a variant catalog with the named operations force-enabled.
+
+        生产目录对停用操作（``enabled: false``）在运行时拒绝；适配层针对这些
+        操作的遗留行为仍需回归覆盖时（如 GongziMxQuery 的形状选择），用本方法
+        构造启用变体，绝不改动默认目录本身。
+        """
+        operations = dict(self._operations)
+        for operation_id in operation_ids:
+            operations[operation_id] = operations[operation_id].model_copy(
+                update={"enabled": True}
+            )
+        return ApiCatalog(version=self.version, _operations=operations)
+
 
 def load_catalog(path: Path | None = None) -> ApiCatalog:
     """Load and validate the catalog; failures block startup."""

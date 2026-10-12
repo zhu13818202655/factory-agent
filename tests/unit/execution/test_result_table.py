@@ -106,11 +106,14 @@ def test_closed_metrics_are_confirmed() -> None:
         "org_headcount": "employee-registered-v1",
         "payroll_avg_by_dept": "customer-payroll-avg-v1",
         "time_flag_default": "confirmed-flag-v1",
-        "output_reported_qty": "customer-ysk-v1",
-        "output_reported_amount": "customer-ysk-v1",
-        "progress_package_ratio": "customer-progress-v1",
-        "progress_cut_qty": "customer-progress-v1",
-        "workshop_rank": "factory-rank-v1",
+        # 2026-10-11 V2 换代：产量/进度/排名主口径随取数源换代 bump 版本。
+        "output_reported_qty": "customer-cl-v2",
+        "output_reported_amount": "customer-cl-v2",
+        "progress_package_ratio": "customer-progress-v2",
+        "progress_issued_qty": "customer-progress-v2",
+        "progress_received_qty": "customer-progress-v2",
+        "workshop_rank": "factory-rank-v2",
+        "payroll_rank_position": "factory-rank-v2",
     }.items():
         metric = registry.resolve(name, version)
         assert metric.status == "confirmed"

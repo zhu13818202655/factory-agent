@@ -14,7 +14,10 @@ ALLOWED_PRODUCT_DEPENDENCIES: dict[str, set[str]] = {
     # same cross-cutting logger used by application/data_api/persistence.
     "execution": {"domain", "observability", "ports"},
     "persistence": {"config", "domain", "observability", "ports"},
-    "llm": {"domain", "ports"},
+    # health.py / router_gateway.py log endpoint health verdicts through the
+    # same cross-cutting observability logger used by application/data_api/
+    # persistence/export/execution (matching that established pattern).
+    "llm": {"domain", "observability", "ports"},
     # local_store.py/s3_store.py log store anomalies (corrupt metadata, purge
     # failures) through observability.logging_adapter, the same cross-cutting
     # logger used by application/data_api/execution/persistence.
@@ -37,9 +40,10 @@ STATISTICS_FORBIDDEN_PACKAGES: set[str] = {"data_api"}
 STATISTICS_UNREACHABLE_FROM: set[str] = {"application", "domain"}
 
 #: Packages allowed to own an outbound HTTP client. ``data_api`` is the only one
-#: permitted to reach MES endpoints. ``llm`` is deliberately absent: outbound
-#: model traffic goes through the litellm SDK, not a hand-rolled HTTP client.
-HTTP_BOUNDARY_PACKAGES: set[str] = {"data_api"}
+#: permitted to reach MES endpoints. ``llm`` routes model traffic through the
+#: litellm SDK, but ``health.py`` probes LLM endpoints directly (bounded
+#: timeout, no payload) — it owns the only other outbound client.
+HTTP_BOUNDARY_PACKAGES: set[str] = {"data_api", "llm"}
 
 #: Only the model gateway adapter may import the litellm SDK (ADR-0006).
 LLM_SDK_PACKAGES: set[str] = {"llm"}

@@ -18,7 +18,7 @@ APIS_YAML = REPOSITORY_ROOT / "configs" / "knowledge" / "apis.yaml"
 MIGRATION = REPOSITORY_ROOT / "migrations" / "versions" / "20260917_0001_init.py"
 
 VALID_CATEGORIES = frozenset({"output", "payroll", "order", "other"})
-EXPECTED_DISTRIBUTION = {"output": 6, "payroll": 2, "order": 8, "other": 14}
+EXPECTED_DISTRIBUTION = {"output": 6, "payroll": 3, "order": 8, "other": 14}
 
 
 def load_catalog() -> dict[str, str]:
@@ -40,7 +40,9 @@ def load_migration_seed() -> dict[str, str]:
 def test_every_operation_has_a_legal_category_and_none_is_missing() -> None:
     categories = load_catalog()
 
-    assert len(categories) == 30
+    # 2026-10-11 V2 换代：新增 GongziClQuery（工资产量 V2），总数 30 → 31；
+    # V1 操作登记保留（enabled: false），计费分类不变。
+    assert len(categories) == 31
     assert set(categories) == {
         "SystemToken",
         "TestPermissions",
@@ -69,12 +71,14 @@ def test_every_operation_has_a_legal_category_and_none_is_missing() -> None:
         "WskQuery",
         "GongziMxQuery",
         "GongziJeOrderQuery",
+        "GongziClQuery",
         "DgGridPageList",
         "DgZuGridPageList",
         "DgClQuery",
     }
     for operation_id, category in categories.items():
         assert category in VALID_CATEGORIES, (operation_id, category)
+    assert categories["GongziClQuery"] == "payroll"
 
 
 def test_category_distribution_matches_the_d5_review() -> None:

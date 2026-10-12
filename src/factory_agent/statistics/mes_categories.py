@@ -40,7 +40,8 @@ DEFAULT_OPERATION_CATEGORIES: dict[str, str] = {
     "WorktypeProgressQuery": CATEGORY_OUTPUT,
     "YskQuery": CATEGORY_OUTPUT,
     "WskQuery": CATEGORY_OUTPUT,
-    # 工资查询（工资与排名 2）
+    # 工资查询（工资与排名 2 + 2026-10-11 V2 换代新增的 GongziClQuery）
+    "GongziClQuery": CATEGORY_PAYROLL,
     "GongziMxQuery": CATEGORY_PAYROLL,
     "GongziJeOrderQuery": CATEGORY_PAYROLL,
     # 订单进度（生产计划与制单 4）

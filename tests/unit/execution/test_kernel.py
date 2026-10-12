@@ -1,10 +1,10 @@
 """Kernel capability runner vertical-slice tests.
 
 Uses a fake step executor returning the wages golden rows to prove that FR-002
-(summary) and FR-003 (detail) both fetch ``GongziMxQuery`` detail rows (scheme
-empty) and differ only in local aggregation, that the aggregate reconciles
-against ``footer.je_total``, and that empty/pagination anomalies surface as
-structured states instead of fabricated numbers.
+(summary) and FR-003 (detail) both fetch ``GongziClQuery`` V2 rows (工资产量，
+明细模式 = 工资族预取粒度) and differ only in local aggregation, that the
+aggregate reconciles against ``footer.je_total``, and that empty/pagination
+anomalies surface as structured states instead of fabricated numbers.
 """
 
 
@@ -129,7 +129,7 @@ async def test_fr002_summary_totals_and_reconcile() -> None:
     assert result.totals["piece_count"] == Decimal("20")
     assert result.incomplete is False
     assert (result.column_types or {})["gross_total"] == "money"
-    assert result.source_operations == ("GongziMxQuery",)
+    assert result.source_operations == ("GongziClQuery",)
 
 
 @pytest.mark.asyncio

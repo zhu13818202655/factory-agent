@@ -30,13 +30,22 @@ from factory_agent.ports import CacheStore
 #: base-data ``identity_org`` domain refreshes daily because master data is
 #: role-independent and changes rarely. TTLs are conservative placeholders to
 #: be confirmed by real-data review; performance is not a gate.
-CACHE_DOMAINS: tuple[str, ...] = ("identity_org", "order_progress", "output", "payroll")
+#: ``v2_result``（2026-10-11 V2 换代）：结果集缓存域（老板缓存），默认 TTL 只是
+#: 兜底——实际 TTL 按窗口分类逐键覆盖（预取整刷 / 24h / 60~120s，方案附录 F.2）。
+CACHE_DOMAINS: tuple[str, ...] = (
+    "identity_org",
+    "order_progress",
+    "output",
+    "payroll",
+    "v2_result",
+)
 
 DEFAULT_TTL_BY_DOMAIN: dict[str, int] = {
     "identity_org": 86400,
     "order_progress": 120,
     "output": 60,
     "payroll": 60,
+    "v2_result": 86400,
 }
 
 #: Domains whose data is role-independent full-roster master data. Their keys
@@ -104,6 +113,20 @@ class AuthAwareCache:
     def stats(self) -> CacheStats:
         return self._stats
 
+    async def ping(self) -> bool:
+        """一次可达性探测，用于启动时把「缓存静默失效」变成可见日志。
+
+        配了 Redis 却连不上时，读会退化成源、写会吞掉异常——结果就是缓存
+        悄悄失效而运营商毫无察觉（2026-10-11 实测到的一次真实事故：端口配错，
+        预取「成功」日志照打、行数却是 0）。探测本身有界（store 侧 socket
+        超时），失败只返回 False，绝不抛出。
+        """
+        try:
+            await self._store.get(f"{KEY_PREFIX}:__probe__")
+        except Exception:  # noqa: BLE001 - 探测失败即不可达
+            return False
+        return True
+
     def scope_fingerprint(self, scope: DataScope) -> str:
         """Irreversible summary of the effective scope.
 
@@ -167,15 +190,29 @@ class AuthAwareCache:
         scope_fingerprint: str,
         params: Mapping[str, object],
         value: bytes,
+        *,
+        ttl_seconds: int | None = None,
     ) -> None:
-        """Best-effort write; a store failure never propagates to the caller."""
+        """Best-effort write; a store failure never propagates to the caller.
+
+        ``ttl_seconds`` 逐键覆盖域默认 TTL（结果集缓存按窗口分类分档，附录 F.2）。
+        """
         if domain not in CACHE_DOMAINS:
             raise UnknownCacheDomainError(f"unknown cache domain {domain!r}")
         key = self.build_key(domain, tenant_id, scope_fingerprint, params)
         try:
-            await self._store.put(key, value, self.ttl_seconds(domain))
+            await self._store.put(
+                key, value, ttl_seconds or self.ttl_seconds(domain)
+            )
         except Exception:  # noqa: BLE001
             self._stats.record_miss(domain, "store_unavailable")
+
+    async def invalidate_key(self, key: str) -> None:
+        """Evict one exact key (影子比对不一致时丢弃该缓存键，§4.6)。"""
+        try:
+            await self._store.delete_prefix(key)
+        except Exception:  # noqa: BLE001
+            self._stats.record_miss("identity_org", "store_unavailable")
 
     async def invalidate_scope(self, tenant_id: TenantId, scope_fingerprint: str) -> None:
         """Evict every cache line bound to one scope (org/permission changes)."""

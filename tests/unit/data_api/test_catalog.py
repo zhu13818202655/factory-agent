@@ -8,18 +8,35 @@ import yaml
 from factory_agent.data_api.catalog import DEFAULT_CATALOG_PATH, load_catalog
 
 
-def test_default_catalog_loads_and_covers_30_customer_operations() -> None:
+def test_default_catalog_loads_and_covers_31_customer_operations() -> None:
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
-    assert len(catalog.operation_ids) == 30
+    # 2026-10-11 V2 换代：新增 GongziClQuery（工资产量 V2），30 → 31。
+    assert len(catalog.operation_ids) == 31
     assert "SystemToken" in catalog
     assert "YskQuery" in catalog
     assert "GongziMxQuery" in catalog
     assert "MoveMenuQuery" in catalog  # registered but disabled
     assert catalog.get("MoveMenuQuery").enabled is False
-    # 缝制进度族（进度与产量重梳方案的唯一取数族，见 docs/design/进度与产量功能重梳方案.md §1.1）
-    for scjd in ("ScjdQuery", "ScjdDetailQuery", "ScjdGxQuery", "ScjdFzHzQuery"):
+    # V2 新主源：工资产量（工资/产量族）与生产进度 V2。
+    assert "GongziClQuery" in catalog
+    assert catalog.get("GongziClQuery").enabled is True
+    assert catalog.get("GongziClQuery").pagination == "none"
+    # 缝制进度族（V2 换代后 ScjdQuery 为唯一取数源；V1 明细/分组操作登记
+    # 保留但停用，运行时拒绝——见 docs/design/V2接口取数重构与缓存加速方案.md 附录 D）
+    for scjd in ("ScjdDetailQuery", "ScjdGxQuery", "ScjdFzHzQuery"):
         assert scjd in catalog, scjd
-        assert catalog.get(scjd).enabled is True
+        assert catalog.get(scjd).enabled is False
+    assert catalog.get("ScjdQuery").enabled is True
+    assert catalog.get("ScjdQuery").pagination == "none"
+    # V2 换代停用的其余 V1 操作（Sclzd 桥、扫码产量、工序进度、工资两个旧源）
+    for retired in (
+        "SclzdGridPageList",
+        "BarcodeClQuery",
+        "WorktypeProgressQuery",
+        "GongziMxQuery",
+        "GongziJeOrderQuery",
+    ):
+        assert catalog.get(retired).enabled is False, retired
     # 生产计划接口弃用：条目保留（计费分类与种子不变），运行时拒绝调用
     assert catalog.get("PlanGridPageList").enabled is False
     assert "A1_getTenantMembership" not in catalog

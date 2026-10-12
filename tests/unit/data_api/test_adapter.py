@@ -42,11 +42,13 @@ def _catalog():
     return load_catalog()
 
 
-def _adapter(*, client: httpx.AsyncClient | None = None) -> HongzhaoMesAdapter:
+def _adapter(
+    *, client: httpx.AsyncClient | None = None, catalog: Any | None = None
+) -> HongzhaoMesAdapter:
     return HongzhaoMesAdapter(
         "http://mock.invalid",
         _bundle(),
-        _catalog(),
+        catalog if catalog is not None else _catalog(),
         client=client,
     )
 
@@ -80,17 +82,39 @@ def test_disabled_operation_is_rejected_before_http() -> None:
         asyncio.run(adapter.execute(MesRequest("MoveMenuQuery", {})))
 
 
-def test_catalog_whitelist_covers_the_30_customer_operations() -> None:
+def test_catalog_whitelist_covers_the_31_customer_operations() -> None:
     ids = _catalog().operation_ids
     assert "SystemToken" in ids
     assert "YskQuery" in ids
     assert "GongziMxQuery" in ids
     assert "ScjdQuery" in ids
     assert "MoveMenuQuery" in ids  # registered but disabled
+    # 2026-10-11 V2 换代：新增 GongziClQuery；V1 明细/桥操作登记保留但停用。
+    assert "GongziClQuery" in ids
+    assert _catalog().get("GongziClQuery").enabled is True
+    for retired in ("GongziMxQuery", "GongziJeOrderQuery", "SclzdGridPageList"):
+        assert _catalog().get(retired).enabled is False, retired
     assert "A1_getTenantMembership" not in ids
     assert "C1_listPieceworkRecords" not in ids
-    # All 30 customer operations are present.
-    assert len(ids) == 30
+    # All 31 customer operations are present.
+    assert len(ids) == 31
+
+
+@pytest.mark.asyncio
+async def test_retired_v1_operations_are_rejected_before_http() -> None:
+    """V2 换代（2026-10-11）：停用的 V1 操作在默认目录下直接拒绝，不出网。"""
+    for retired in (
+        "GongziMxQuery",
+        "GongziJeOrderQuery",
+        "BarcodeClQuery",
+        "ScjdDetailQuery",
+        "ScjdGxQuery",
+        "WorktypeProgressQuery",
+    ):
+        adapter = _adapter()
+        with pytest.raises(UnsupportedOperationError):
+            await adapter.execute(MesRequest(retired, {}))
+        await adapter.aclose()
 
 
 @pytest.mark.asyncio
@@ -234,19 +258,18 @@ async def test_all_operations_send_business_params_flat() -> None:
         return httpx.AsyncClient(transport=RecordingTransport(), base_url="http://mock.invalid")
 
     gongzi = HongzhaoMesAdapter("http://mock.invalid", _bundle(), _catalog(), client=_client())
+    # 2026-10-11 V2 换代：扁平参数契约改在 V2 主源 GongziClQuery 上守护
+    # （groupbyFields 是 List<string>，必须以 JSON 数组上线）。
     await gongzi.execute(
         MesRequest(
-            "GongziMxQuery",
+            "GongziClQuery",
             {
                 "Flag": "0",
                 "Type": "0,1,2",
-                "scheme": "",
-                "queryFooter": True,
                 "dates": "2026-09-01",
                 "datee": "2026-09-05",
-                "Uid": "01001",
-                "page": 1,
-                "size": 200,
+                "uid": "1642",
+                "groupbyFields": ["uid", "uname"],
             },
         )
     )
@@ -254,8 +277,8 @@ async def test_all_operations_send_business_params_flat() -> None:
     assert "param" not in flat
     assert flat["app_key"] == "APPKEY-A"
     assert flat["dates"] == "2026-09-01"
-    assert flat["Uid"] == "01001"
-    assert flat["page"] == 1
+    assert flat["uid"] == "1642"
+    assert flat["groupbyFields"] == ["uid", "uname"]
     await gongzi.aclose()
 
     recorded.clear()
@@ -295,11 +318,17 @@ _NRE = "Object reference not set to an instance of an object."
 async def test_gongzi_mx_summary_empty_window_nre_is_absorbed_as_empty() -> None:
     """Ledger #21: summary over an empty window returns a .NET NRE (code=0)
     instead of zero rows; the adapter absorbs that exact case as an empty page
-    so the product can answer "本月无计件数据" rather than failing the run."""
+    so the product can answer "本月无计件数据" rather than failing the run.
+
+    GongziMxQuery 在 V2 换代后已停用（登记保留）；适配层的 NRE 吸收逻辑仍是
+    受保护的回归面，因此用「强制启用」的目录变体驱动本测试（tests/support/catalog）。
+    """
+    from tests.support.catalog import catalog_with_enabled
     from tests.support.http_stubs import JsonBodyTransport
 
     adapter = _adapter(
         client=JsonBodyTransport(_envelope(0, _NRE)).client(),
+        catalog=catalog_with_enabled("GongziMxQuery"),
     )
     result = await adapter.execute(_summary_request(scheme="hz"))
     assert result.result == {"list": [], "total": 0}
@@ -310,10 +339,12 @@ async def test_gongzi_mx_summary_empty_window_nre_is_absorbed_as_empty() -> None
 @pytest.mark.asyncio
 async def test_gongzi_mx_detail_same_nre_message_still_raises() -> None:
     """The empty-window absorption is summary-only; detail mode keeps failing."""
+    from tests.support.catalog import catalog_with_enabled
     from tests.support.http_stubs import JsonBodyTransport
 
     adapter = _adapter(
         client=JsonBodyTransport(_envelope(0, _NRE)).client(),
+        catalog=catalog_with_enabled("GongziMxQuery"),
     )
     with pytest.raises(UpstreamInvalidError):
         await adapter.execute(_summary_request(scheme=""))
@@ -324,8 +355,14 @@ async def test_gongzi_mx_detail_same_nre_message_still_raises() -> None:
 async def test_gongzi_mx_query_normalizes_query_footer_to_boolean() -> None:
     """queryFooter arrives as the recipe string "1" but must be sent as a real
     boolean; some tenant backends reject the string form as a schema error
-    ("请求参数缺少app_key、timestamp、sign", real MES 2026-09-06)."""
+    ("请求参数缺少app_key、timestamp、sign", real MES 2026-09-06).
+
+    操作本身已随 V2 换代停用，布尔归一化是通用适配层行为；用启用目录变体
+    继续守护（V2 操作无 queryFooter 参数，footer 由服务端自动返回）。
+    """
     import json as _json
+
+    from tests.support.catalog import catalog_with_enabled
 
     recorded: list[dict[str, Any]] = []
 
@@ -341,7 +378,7 @@ async def test_gongzi_mx_query_normalizes_query_footer_to_boolean() -> None:
     adapter = HongzhaoMesAdapter(
         "http://mock.invalid",
         _bundle(),
-        _catalog(),
+        catalog_with_enabled("GongziMxQuery"),
         client=httpx.AsyncClient(transport=RecordingTransport(), base_url="http://mock.invalid"),
     )
     await adapter.execute(
@@ -368,10 +405,12 @@ async def test_gongzi_mx_query_normalizes_query_footer_to_boolean() -> None:
 @pytest.mark.asyncio
 async def test_gongzi_mx_summary_other_code_zero_message_still_raises() -> None:
     """A non-NRE upstream failure on the summary path must not be swallowed."""
+    from tests.support.catalog import catalog_with_enabled
     from tests.support.http_stubs import JsonBodyTransport
 
     adapter = _adapter(
         client=JsonBodyTransport(_envelope(0, "some other upstream failure")).client(),
+        catalog=catalog_with_enabled("GongziMxQuery"),
     )
     with pytest.raises(UpstreamInvalidError):
         await adapter.execute(_summary_request(scheme="hz"))

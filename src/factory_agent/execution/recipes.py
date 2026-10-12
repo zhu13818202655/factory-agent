@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from factory_agent.domain.errors import InvalidRequestError
 from factory_agent.ports.card import (
@@ -62,7 +62,11 @@ class RecipeStep(BaseModel):
 
     ``params`` holds reviewed, static filter parameters for the step (e.g. a
     wage ``scheme`` or a fixed ``Type``). They are always ``filter``-sourced in
-    the catalog and can never carry scope or credential identifiers.
+    the catalog and can never carry scope or credential identifiers. A value is
+    either a string or a **list of strings** — the V2 ``groupbyFields`` contract
+    takes ``List<string>`` and must be sent as a JSON array (a comma-joined
+    string is rejected upstream), so list-valued params are passed through
+    verbatim.
 
     ``param_bindings`` derives dynamic filter parameters from a dependency
     step's rows (fan-out); ``filter_bindings`` binds reviewed business filters
@@ -78,9 +82,25 @@ class RecipeStep(BaseModel):
     parallel_group: str | None = None
     optional: bool = False
     compute: str | None = None
-    params: dict[str, str] | None = None
+    params: dict[str, str | tuple[str, ...]] | None = None
     param_bindings: dict[str, ParamBinding] | None = None
     filter_bindings: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def _groupby_fields_must_be_an_array(self) -> "RecipeStep":
+        """V2 ``groupbyFields`` 实测必须 JSON 数组，字符串形态服务端不认。
+
+        配方是人工评审的静态配置，在这里 fail-fast：一个逗号拼接形态的
+        ``groupbyFields`` 会让请求被判参数非法（附录 A.2，报错信息还有误导性），
+        与其带病上线不如加载即拒。
+        """
+        if self.params and isinstance(self.params.get("groupbyFields"), str):
+            raise ValueError(
+                f"step {self.step_id!r}: groupbyFields must be a list of strings "
+                "(sent as a JSON array); a comma-joined string is rejected by the "
+                "V2 endpoints (实测 2026-10-11, 附录 A.2)"
+            )
+        return self
 
 
 class ResultColumn(BaseModel):

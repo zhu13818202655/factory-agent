@@ -8,7 +8,7 @@ translates these values into HTTP details.
 
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, tzinfo
 
 from factory_agent.domain.identifiers import TenantId
 from factory_agent.domain.identity import DeptId, EmployeeId
@@ -59,6 +59,30 @@ class TimeRange:
             raise TimeRangeError("time range bounds must be timezone-aware")
         if self.start >= self.end:
             raise TimeRangeError("time range start must be before end")
+
+
+def local_calendar_dates(start: datetime, end: datetime, zone: tzinfo) -> tuple[str, str]:
+    """Fold a half-open UTC interval ``[start, end)`` into inclusive local dates.
+
+    Two consumers must agree on this conversion, which is why it lives here
+    rather than being re-derived at each call site:
+
+    - ``data_api/hongzhao`` sends ``dates``/``datee`` to the customer MES;
+    - ``data_api/result_cache`` slices a prefetched row set by the same pair.
+
+    Both speak **inclusive local calendar dates** while Canonical windows are
+    UTC half-open. Converting first is mandatory: ``2026-09-01T00:00+08:00`` is
+    ``2026-08-31T16:00Z``, so a naive ``.date()`` on the UTC value yields
+    ``08-31`` and the window silently gains a day (measured in production:
+    September payroll served 277 rows / 281032.73 instead of 269 / 265089.63).
+
+    ``datee`` is the local day of the instant one microsecond before ``end``:
+    the compensation that turns a half-open interval into a closed one.
+    """
+    return (
+        start.astimezone(zone).date().isoformat(),
+        (end.astimezone(zone) - timedelta(microseconds=1)).date().isoformat(),
+    )
 
 
 @dataclass(frozen=True, slots=True)

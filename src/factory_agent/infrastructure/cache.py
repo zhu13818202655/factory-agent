@@ -14,10 +14,26 @@ import redis.asyncio as aioredis  # type: ignore[reportMissingTypeStubs]
 
 
 class RedisCacheStore:
-    """``CacheStore`` over Redis, with prefix invalidation via SCAN + DEL."""
+    """``CacheStore`` over Redis, with prefix invalidation via SCAN + DEL.
 
-    def __init__(self, url: str) -> None:
-        self._client: Any = aioredis.from_url(url)  # type: ignore[reportUnknownMemberType]
+    Sockets are bounded (connect + command timeout): the cache sits on the
+    request path, so a hung Redis must degrade to the source of truth within
+    about a second instead of stalling the answer. A slow-but-alive Redis is
+    no better than a dead one for an optimization layer.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        connect_timeout_seconds: float = 1.0,
+        timeout_seconds: float = 1.0,
+    ) -> None:
+        self._client: Any = aioredis.from_url(  # type: ignore[reportUnknownMemberType]
+            url,
+            socket_connect_timeout=connect_timeout_seconds,
+            socket_timeout=timeout_seconds,
+        )
 
     async def get(self, key: str) -> bytes | None:
         value = await self._client.get(key)

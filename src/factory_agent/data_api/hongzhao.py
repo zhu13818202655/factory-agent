@@ -25,7 +25,7 @@ Adapter semantics (contract: ``docs/product/AI问答对外接口-整理.md``):
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol, cast
 from zoneinfo import ZoneInfo
 
@@ -52,7 +52,7 @@ from factory_agent.domain.errors import (
     UpstreamInvalidError,
     UpstreamUnavailableError,
 )
-from factory_agent.domain.queries import NarrowedFilters
+from factory_agent.domain.queries import NarrowedFilters, local_calendar_dates
 from factory_agent.observability.debug_trace import (
     debug_capture_enabled,
     mes_span_key,
@@ -317,15 +317,18 @@ class HongzhaoMesAdapter:
         filters: NarrowedFilters,
         time_range: tuple[datetime, datetime],
         page_size: int,
-        extra_params: Mapping[str, str] | None = None,
+        extra_params: Mapping[str, Any] | None = None,
     ) -> ResourceFetchResult:
         """Fetch every approved page with completeness proof and the optional footer.
 
         Extra params carry reviewed ``filter``-source parameters (e.g. a wage
-        ``scheme``/``Flag``/``Type``); they can never carry scope or credential
-        identifiers. The pager walks to ``result.total`` and returns a
-        structured incompleteness reason on any anomaly rather than a truncated
-        result.
+        ``Flag``/``Type`` or the V2 ``groupbyFields`` array); they can never
+        carry scope or credential identifiers. The pager walks to
+        ``result.total`` and returns a structured incompleteness reason on any
+        anomaly rather than a truncated result. V2 operations declare
+        ``pagination: none`` — the pager then completes in a single round trip
+        and the ``page``/``size`` keys it injects are dropped by
+        ``_build_body`` because those operations do not register them.
         """
         operation = self._operation(operation_id)
         if operation.resource is None:
@@ -357,27 +360,26 @@ class HongzhaoMesAdapter:
         filters: NarrowedFilters,
         time_range: tuple[datetime, datetime],
         page_size: int,
-        extra_params: Mapping[str, str] | None,
+        extra_params: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         """Build reviewed request parameters; scope IDs come only from filters."""
         start, end = time_range
         # Canonical windows are stored in UTC; the customer MES takes inclusive
-        # local calendar dates. Taking ``.date()`` straight off the UTC value
-        # shifted the window one day earlier (2026-08-01T00:00+08:00 became
-        # 07-31), so convert to the factory timezone first. ``datee`` is the
-        # inclusive last day of the half-open [start, end) window, i.e. one
-        # microsecond before ``end`` in local time.
+        # local calendar dates. The conversion lives in
+        # ``domain.queries.local_calendar_dates`` because the cache slicing path
+        # (``data_api.result_cache``) must fold the window identically — when the
+        # two derived it separately they drifted by a day and September payroll
+        # was served a 08-31..09-30 window.
         zone = ZoneInfo(self._settings.factory_timezone)
-        params: dict[str, Any] = {
-            "dates": start.astimezone(zone).date().isoformat(),
-            "datee": (end.astimezone(zone) - timedelta(microseconds=1)).date().isoformat(),
-        }
+        dates, datee = local_calendar_dates(start, end, zone)
+        params: dict[str, Any] = {"dates": dates, "datee": datee}
         if extra_params:
             params.update(extra_params)
         if operation_id in {
             "EmployeeQuery",
             "YskQuery",
             "GongziMxQuery",
+            "GongziClQuery",
             "WorktypeProgressQuery",
         }:
             if filters.employee_ids is not None and len(filters.employee_ids) == 1:
@@ -385,6 +387,10 @@ class HongzhaoMesAdapter:
                 if operation_id == "EmployeeQuery":
                     params["uid"] = str(employee_id)
                 elif operation_id == "WorktypeProgressQuery":
+                    params["uid"] = str(employee_id)
+                elif operation_id == "GongziClQuery":
+                    # V2 工资产量的员工过滤字段是小写 ``uid``（接口文档 §3.2），
+                    # 与 V1 GongziMxQuery 的 ``Uid`` 不同形。
                     params["uid"] = str(employee_id)
                 else:
                     params["Uid"] = str(employee_id)
@@ -397,15 +403,15 @@ class HongzhaoMesAdapter:
             # server-side (§7.1) and is intentionally not pushed down.
             if filters.style_codes is not None and len(filters.style_codes) == 1:
                 params["huohao"] = next(iter(filters.style_codes))
-        if operation_id == "ScjdDetailQuery":
-            # 包级下钻按单订单：dh 是必填入参，只能在恰好一个订单号时下推，
-            # 多个订单号时保持全量拉取并由本地 compute 过滤（与 HuohaoWtCL 同法）。
+        if operation_id == "ScjdQuery":
+            # V2 进度的服务端过滤（接口文档 §3.2，均为等值匹配）：订单维度统一
+            # 以 ``jhdh``（计划号）表达（2026-10-11 拍板），款号走 ``bbreed``，
+            # 工序级下钻的物料编号走 ``userid``。与 HuohaoWtCLQuery 同法：服务端
+            # 一次只接受一个值，恰好一个时下推，多个时保持全量由本地 compute 过滤。
             if filters.order_codes is not None and len(filters.order_codes) == 1:
-                params["dh"] = next(iter(filters.order_codes))
-        if operation_id == "ScjdGxQuery":
-            # 工序级下钻的 userid = 物料编号（客户契约 §12.3：userid 即物料编号）。
-            # 服务端一次只接受一个值，故只在恰好一个物料编号时下推；缺失时
-            # ``_build_body`` 会因 required_params 直接拒绝，不会退化成全表扫描。
+                params["jhdh"] = next(iter(filters.order_codes))
+            if filters.style_codes is not None and len(filters.style_codes) == 1:
+                params["bbreed"] = next(iter(filters.style_codes))
             if filters.material_ids is not None and len(filters.material_ids) == 1:
                 params["userid"] = next(iter(filters.material_ids))
         return params

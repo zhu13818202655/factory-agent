@@ -19,7 +19,6 @@ import pytest
 from pydantic import ValidationError
 
 from factory_agent.application.filters import NarrowedFilters
-from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
 from factory_agent.data_api.hongzhao import HongzhaoMesAdapter
 from factory_agent.data_api.schemas import (
@@ -135,7 +134,11 @@ def _range() -> tuple[datetime, datetime]:
 
 @pytest.mark.asyncio
 async def test_fetch_resource_validates_summary_shape_for_scheme_hz() -> None:
-    """A scheme=hz page (real summary shape) must fetch and validate cleanly."""
+    """A scheme=hz page (real summary shape) must fetch and validate cleanly.
+
+    GongziMxQuery 已随 V2 换代停用；形状选择逻辑用启用目录变体继续守护。
+    """
+    from tests.support.catalog import catalog_with_enabled
     from tests.support.http_stubs import JsonBodyTransport
 
     envelope = {
@@ -151,7 +154,7 @@ async def test_fetch_resource_validates_summary_shape_for_scheme_hz() -> None:
     adapter = HongzhaoMesAdapter(
         "http://mock.invalid",
         _bundle(),
-        load_catalog(),
+        catalog_with_enabled("GongziMxQuery"),
         client=JsonBodyTransport(envelope).client(),
     )
     fetched = await adapter.fetch_resource(
@@ -174,6 +177,7 @@ async def test_fetch_resource_validates_summary_shape_for_scheme_hz() -> None:
 async def test_fetch_resource_validates_detail_shape_for_empty_scheme() -> None:
     """A scheme="" page (detail shape, §8.1) still validates against the
     detail model after the scheme-aware selection is added."""
+    from tests.support.catalog import catalog_with_enabled
     from tests.support.http_stubs import JsonBodyTransport
 
     envelope = {
@@ -189,7 +193,7 @@ async def test_fetch_resource_validates_detail_shape_for_empty_scheme() -> None:
     adapter = HongzhaoMesAdapter(
         "http://mock.invalid",
         _bundle(),
-        load_catalog(),
+        catalog_with_enabled("GongziMxQuery"),
         client=JsonBodyTransport(envelope).client(),
     )
     fetched = await adapter.fetch_resource(

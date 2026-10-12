@@ -44,14 +44,14 @@ class ResourceFetcher(Protocol):
         filters: NarrowedFilters,
         time_range: tuple[datetime, datetime],
         page_size: int,
-        extra_params: Mapping[str, str] | None = None,
+        extra_params: Mapping[str, Any] | None = None,
     ) -> ResourceFetchResult:
         """Fetch every page with completeness proof, footer, and any anomalies.
 
         ``extra_params`` carries reviewed filter parameters for the operation
-        (e.g. a wage ``scheme``/``Flag``/``Type``); it can never carry scope or
-        credential identifiers. A ``complete`` result proves the full range was
-        retrieved up to ``result.total``.
+        (e.g. a wage ``Flag``/``Type`` or the V2 ``groupbyFields`` array); it
+        can never carry scope or credential identifiers. A ``complete`` result
+        proves the full range was retrieved up to ``result.total``.
         """
         ...
 
@@ -157,13 +157,14 @@ class ScopedExecutor:
         filters: NarrowedFilters,
         request: ExecutionRequest,
         active_scope: DataScope | None = None,
-        extra_params: Mapping[str, str] | None = None,
+        extra_params: Mapping[str, Any] | None = None,
     ) -> ResourceFetchResult:
         """Execute one operation with completeness proof and the optional footer.
 
         Authorization completes before the business-data call; scope parameters
         come exclusively from ``filters`` and reviewed ``extra_params`` can only
-        carry filter-sourced parameters.
+        carry filter-sourced parameters (including the V2 ``groupbyFields``
+        array, which is sent verbatim as a JSON list).
         """
         self._catalog.get(request.operation_id)  # whitelist check before HTTP
         if active_scope is not None:

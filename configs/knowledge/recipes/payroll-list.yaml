@@ -2,50 +2,59 @@
 # semantics changes and require human review.
 #
 # 口径来源：``docs/product/需求及方案整理.md`` 功能表与「客户确认结论」、
-# ``docs/product/AI问答对外接口-整理.md``。
+# ``docs/design/V2接口取数重构与缓存加速方案.md`` 附录 C.1（2026-10-11 换代）。
 #
 # FR-004 收入排名（"我在小组里排第几"，仅 01 组长 / 02 管理 / 99 老板）:
-# GongziJeOrderQuery 返回当前调用者可见的排名列表；计算层按本人工号
-# （_meta.self_uid）定位名次与金额，按本人所在小组（_meta.self_dept）过滤得到
-# 组内名次与组内总人数；仅输出本人一行结果。该接口对 00 员工角色返回
-# code=-403（无权限查看工资排名），员工角色因此在能力-角色矩阵中被拒绝。
+# GongziClQuery V2 **明细模式**取数（与工资族预取同参，命中老板缓存），
+# 本地按人聚合 SUM(je) 后排名；计算层按本人工号（_meta.self_uid）定位名次与
+# 金额，按本人所在小组（_meta.self_dept）过滤得到组内名次与组内总人数；
+# 仅输出本人一行结果。
+# **对 00 员工 V2 不报无权限、静默返回本人范围**（方案 §7.1 T9 实测），服务端
+# 拒绝不可依赖——该能力的 00 拒绝由本地能力矩阵完成（permission_matrix.py）。
 #
-# FR-008 员工工资清单与排名: GongziJeOrderQuery 已按 je 倒序返回（含 dept），
-# 位次按返回顺序编号（rank_position 全厂/可见范围名次，group_rank 组内名次按
-# dept 分窗编号）；卡片按 dept 分组切换展示。bs 口径=计件件数（列名
-# package_count 沿用，标题为计件件数）。同名员工以 uid 区分（卡片与
-# Excel 同时展示 uid 与 uname）。
+# FR-008 员工工资清单与排名: 与 FR-004/002/003/012 完全同参、同一预取底料
+# （明细模式，附录 C.1 2026-10-11 二次拍板：原「服务端 [uid,uname,dept,deptname]
+# 分组下推」实测 ~90s 且分组未被服务端执行，改为明细模式 + 本地聚合，方案
+# §4.5 本地重聚合路径）；位次 = **本地排序后的先后**（排序不下发 MES，
+# 方案 §3.2⑤）：rank_position 全厂/可见范围名次、group_rank 组内名次按 dept
+# 分窗编号，两个窗口函数都必须显式以 ``uid ASC`` 打破并列（方案附录 G.5 最严重
+# 两处）。部门名由 V2 ``deptname`` 直出，不再关联 DeptQuery（附录 B.5）。
 #
-# FR-011 全厂工资统计（修订）: ①GongziJeOrderQuery 老板角色返回全厂排名列表，
-# je 按 dept 汇总得各车间/小组应发合计；②EmployeeQuery 不传 uid 全量返回
-# （基础数据接口不按权限过滤，客户确认 4），按 dept 汇总得在册人数；
-# ③DeptQuery 解析部门名称。人均工资 = 应发合计 ÷ 在册人数。「有产出人数」
-# 替代指标不再使用。
+# FR-011 全厂工资统计（修订）: ①GongziClQuery V2 **明细模式**取数（与预取同参），
+# 本地按 dept 聚合 SUM(je) 得各车间/小组应发合计；②EmployeeQuery 不传 uid
+# 全量返回（基础数据接口不按权限过滤，客户确认 4），按 dept 汇总得在册人数；
+# ③部门名 V2 直出，不再关联 DeptQuery。人均工资 = 应发合计 ÷ 在册人数。
 #
-# FR-012 任一员工工资查询: 复用 FR-002 的 GongziMxQuery 取数与本地合计配方
-# （scheme="" 明细取数，真实 MES hz 汇总有缺陷，见 wage.yaml 文件头），Uid
-# 改为目标员工（由应用层经 EmployeeQuery 在当前租户解析后进入 NarrowedFilters，
-# 任何工资调用前完成校验；解析不到或同名未定 uid 均零业务调用拒绝）。
-# Uid 为选填（客户确认 2026-09-06）：点名某员工时传目标工号；不传则 MES 按角色
-# 返回管辖范围明细（不再执行「仅限老板传空」门禁）。
-version: 1
+# FR-012 任一员工工资查询: 复用 FR-002 的 GongziClQuery V2 明细取数与本地合计
+# 配方（不传 groupbyFields，与工资族预取粒度同底料），``uid`` 改为目标员工
+# （由应用层经 EmployeeQuery 在当前租户解析后进入 NarrowedFilters，任何工资
+# 调用前完成校验；解析不到或同名未定 uid 均零业务调用拒绝）。
+version: 3
 capabilities:
   - capability_id: fr004_group_income_rank
     title: 收入排名
     required_slots: [time_range]
     steps:
-      - step_id: fetch_je_order
+      - step_id: fetch_income
         kind: api
-        operation_id: GongziJeOrderQuery
+        operation_id: GongziClQuery
+        # 明细模式（不传 groupbyFields）= 工资族预取粒度，FR-002/003/008/011/012
+        # 同底料命中老板缓存；人员聚合在本地 compute 完成（2026-10-11 二次拍板）。
         params:
-          queryFooter: "1"
+          Flag: "0"
+          Type: "0,1,2"
       - step_id: compute
         kind: local
-        depends_on: [fetch_je_order]
+        depends_on: [fetch_income]
         compute: |
           WITH visible AS (
-            SELECT uid, uname, dept, CAST(je AS DECIMAL) AS je
-            FROM fetch_je_order
+            SELECT
+              uid,
+              uname,
+              dept,
+              SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) AS je
+            FROM fetch_income
+            GROUP BY uid, uname, dept
           ),
           overall_ranked AS (
             SELECT uid, ROW_NUMBER() OVER (ORDER BY je DESC, uid ASC) AS overall_pos
@@ -89,10 +98,10 @@ capabilities:
         column_type: quantity
         unit: 人
     metric_versions:
-      payroll_rank_position: factory-rank-v1
+      payroll_rank_position: factory-rank-v2
       payroll_amount: customer-payroll-v1
-      payroll_group_rank: factory-group-rank-v1
-      payroll_group_size: factory-group-rank-v1
+      payroll_group_rank: factory-rank-v2
+      payroll_group_size: factory-rank-v2
     degradation: incomplete_marker
     card:
       kind: kpi
@@ -102,18 +111,17 @@ capabilities:
     title: 员工工资清单与排名
     required_slots: [time_range]
     steps:
-      - step_id: fetch_je_order
+      - step_id: fetch_income
         kind: api
-        operation_id: GongziJeOrderQuery
+        operation_id: GongziClQuery
+        # 与 FR-002/003/004/011/012 完全同参：同一预取底料、同一缓存条目
+        # （明细模式，2026-10-11 二次拍板）；人员聚合在下方本地 compute 完成。
         params:
-          queryFooter: "1"
-      - step_id: fetch_dept
-        kind: api
-        operation_id: DeptQuery
-        depends_on: [fetch_je_order]
+          Flag: "0"
+          Type: "0,1,2"
       - step_id: compute
         kind: local
-        depends_on: [fetch_je_order, fetch_dept]
+        depends_on: [fetch_income]
         filter_bindings:
           requested_dept_ids: requested_dept_ids
         compute: |
@@ -125,27 +133,34 @@ capabilities:
               uid,
               uname,
               dept,
-              CAST(CAST(bs AS DECIMAL) AS VARCHAR) AS package_count,
-              CAST(CAST(je AS DECIMAL) AS VARCHAR) AS gross,
-              CAST(ROW_NUMBER() OVER (ORDER BY CAST(je AS DECIMAL) DESC) AS VARCHAR) AS rank_position,
+              COALESCE(NULLIF(MAX(deptname), ''), dept) AS dept_name,
+              CAST(CAST(SUM(CAST(COALESCE(TRY_CAST(bs AS DECIMAL), 0) AS DECIMAL)) AS DECIMAL)
+                   AS VARCHAR) AS package_count,
+              CAST(CAST(SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) AS DECIMAL)
+                   AS VARCHAR) AS gross,
+              CAST(ROW_NUMBER() OVER (ORDER BY
+                   SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) DESC, uid ASC)
+                   AS VARCHAR) AS rank_position,
               CAST(ROW_NUMBER() OVER (
-                PARTITION BY dept ORDER BY CAST(je AS DECIMAL) DESC) AS VARCHAR) AS group_rank
-            FROM fetch_je_order
+                PARTITION BY dept ORDER BY
+                SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) DESC, uid ASC)
+                AS VARCHAR) AS group_rank
+            FROM fetch_income
             WHERE (SELECT COUNT(*) FROM requested_depts) = 0
                OR dept IN (SELECT c FROM requested_depts)
+            GROUP BY uid, uname, dept
           )
           SELECT
-            r.uid,
-            r.uname,
-            r.dept,
-            COALESCE(NULLIF(d.name, ''), r.dept) AS dept_name,
-            r.package_count,
-            r.gross,
-            r.rank_position,
-            r.group_rank
-          FROM ranked r
-          LEFT JOIN fetch_dept d ON d.id = r.dept
-          ORDER BY CAST(r.gross AS DECIMAL) DESC
+            uid,
+            uname,
+            dept,
+            dept_name,
+            package_count,
+            gross,
+            rank_position,
+            group_rank
+          FROM ranked
+          ORDER BY CAST(gross AS DECIMAL) DESC, uid
     result_columns:
       - name: uid
         title: 工号
@@ -184,8 +199,8 @@ capabilities:
     metric_versions:
       payroll_package_count: customer-rank-v1
       payroll_amount: customer-payroll-v1
-      payroll_rank_position: factory-rank-v1
-      payroll_group_rank: factory-group-rank-v1
+      payroll_rank_position: factory-rank-v2
+      payroll_group_rank: factory-rank-v2
     degradation: incomplete_marker
     card:
       kind: ranking
@@ -206,22 +221,20 @@ capabilities:
     title: 全厂工资统计
     required_slots: [time_range]
     steps:
-      - step_id: fetch_je_order
+      - step_id: fetch_income
         kind: api
-        operation_id: GongziJeOrderQuery
+        operation_id: GongziClQuery
+        # 明细模式（与预取同参）；部门聚合在本地 compute 完成（2026-10-11 二次拍板）。
         params:
-          queryFooter: "1"
+          Flag: "0"
+          Type: "0,1,2"
       - step_id: fetch_employee
         kind: api
         operation_id: EmployeeQuery
-        depends_on: [fetch_je_order]
-      - step_id: fetch_dept
-        kind: api
-        operation_id: DeptQuery
-        depends_on: [fetch_employee]
+        depends_on: [fetch_income]
       - step_id: compute
         kind: local
-        depends_on: [fetch_je_order, fetch_employee, fetch_dept]
+        depends_on: [fetch_income, fetch_employee]
         filter_bindings:
           requested_dept_ids: requested_dept_ids
         compute: |
@@ -229,8 +242,11 @@ capabilities:
             SELECT unnest($requested_dept_ids) AS c
           ),
           wages AS (
-            SELECT dept, SUM(CAST(je AS DECIMAL)) AS total
-            FROM fetch_je_order
+            SELECT
+              dept,
+              COALESCE(NULLIF(MAX(deptname), ''), dept) AS dept_name,
+              SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) AS total
+            FROM fetch_income
             WHERE ((SELECT COUNT(*) FROM requested_depts) = 0
                    OR dept IN (SELECT c FROM requested_depts))
             GROUP BY dept
@@ -242,16 +258,15 @@ capabilities:
           )
           SELECT
             w.dept AS dept_id,
-            COALESCE(d.name, w.dept) AS dept_name,
+            w.dept_name,
             CAST(w.total AS VARCHAR) AS gross_total,
             CAST(COALESCE(h.headcount, 0) AS VARCHAR) AS headcount,
             CASE WHEN COALESCE(h.headcount, 0) > 0
                  THEN CAST(ROUND(w.total / h.headcount, 2) AS VARCHAR)
                  ELSE 'unavailable' END AS avg_wage
           FROM wages w
-          LEFT JOIN fetch_dept d ON d.id = w.dept
           LEFT JOIN headcounts h ON h.dept = w.dept
-          ORDER BY w.total DESC
+          ORDER BY w.total DESC, w.dept
     result_columns:
       - name: dept_id
         title: 车间/小组编号
@@ -287,7 +302,7 @@ capabilities:
       # 只进卡片，不进主表与导出文件。
       - aux_id: factory_kpi
         into: metrics
-        depends_on: [fetch_je_order, fetch_employee]
+        depends_on: [fetch_income, fetch_employee]
         metrics:
           - name: factory_gross_total
             title: 工资总额
@@ -300,8 +315,8 @@ capabilities:
             unit: 人
         compute: |
           WITH wages AS (
-            SELECT dept, SUM(CAST(je AS DECIMAL)) AS total
-            FROM fetch_je_order
+            SELECT dept, SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) AS total
+            FROM fetch_income
             GROUP BY dept
           ),
           headcounts AS (
@@ -337,13 +352,11 @@ capabilities:
     steps:
       - step_id: fetch_wages
         kind: api
-        operation_id: GongziMxQuery
-        # scheme 为空 = 明细取数（真实 MES hz 汇总有缺陷，见 wage.yaml 文件头）。
+        operation_id: GongziClQuery
+        # 明细模式（不传 groupbyFields）= 工资族预取粒度，FR-002/003/012 同底料。
         params:
-          scheme: ""
-          Type: "0,1,2"
           Flag: "0"
-          queryFooter: "1"
+          Type: "0,1,2"
       - step_id: aggregate
         kind: local
         depends_on: [fetch_wages]

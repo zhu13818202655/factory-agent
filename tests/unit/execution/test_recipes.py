@@ -112,6 +112,30 @@ def test_recipe_with_unknown_dependency_fails_validation() -> None:
         validate_recipe(recipe, _operations())
 
 
+def test_groupby_fields_string_form_fails_at_load() -> None:
+    """``groupbyFields`` 字符串形态在加载即拒（附录 A.2：服务端只认 JSON 数组）.
+
+    一个逗号拼接形态若被放行，请求会静默被判参数非法——分组失效且报错信息
+    有误导性，所以配方模型层 fail-fast。
+    """
+    with pytest.raises(ValueError, match="groupbyFields must be a list"):
+        RecipeStep(
+            step_id="s1",
+            kind="api",
+            operation_id="GongziClQuery",
+            params={"Flag": "0", "groupbyFields": "uid,uname"},
+        )
+    # 数组形态正常加载（YAML list 经 pydantic 宽松模式 tuple 化）。
+    step = RecipeStep(
+        step_id="s1",
+        kind="api",
+        operation_id="GongziClQuery",
+        params={"Flag": "0", "groupbyFields": ("uid", "uname")},
+    )
+    assert step.params is not None
+    assert step.params["groupbyFields"] == ("uid", "uname")
+
+
 def test_empty_recipe_directory_yields_empty_registry(tmp_path: Path) -> None:
     registry = load_recipes(_operations(), directory=tmp_path)
     assert registry.capability_ids == frozenset()
