@@ -771,7 +771,6 @@ class ScjdV2Row(_V2CustomerRow):
     bts: str = ""
 
 
-
 #: Row model per catalog resource name. V2 动态分组行（``_V2CustomerRow``）与
 #: V1 严格行（``_CustomerRow``）共用本表：两者都是「extra=ignore + 标量归一」的
 #: 客户行模型，消费方只用 ``model_validate`` / ``model_fields``。

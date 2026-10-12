@@ -1,4 +1,4 @@
-
+from pathlib import Path
 
 import pytest
 
@@ -35,4 +35,4 @@ def test_main_migration_path_is_independent(monkeypatch: pytest.MonkeyPatch) -> 
 
     script_location = config.get_main_option("script_location")
     assert script_location is not None
-    assert script_location.endswith("factory-agent/migrations")
+    assert Path(script_location).as_posix().endswith("factory-agent/migrations")

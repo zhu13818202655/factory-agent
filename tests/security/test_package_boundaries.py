@@ -106,7 +106,7 @@ def test_only_boundary_packages_and_modules_may_import_httpx() -> None:
         for path in python_files(REPOSITORY_ROOT / "src" / "factory_agent")
         if "httpx" in imported_roots(path)
         and not HTTP_BOUNDARY_PACKAGES & set(path.parts)
-        and str(path.relative_to(REPOSITORY_ROOT)) not in HTTP_BOUNDARY_MODULES
+        and path.relative_to(REPOSITORY_ROOT).as_posix() not in HTTP_BOUNDARY_MODULES
     ]
 
     assert offenders == []
@@ -114,7 +114,7 @@ def test_only_boundary_packages_and_modules_may_import_httpx() -> None:
 
 def test_only_data_api_may_reach_mes_endpoints() -> None:
     offenders = [
-        str(path.relative_to(REPOSITORY_ROOT))
+        path.relative_to(REPOSITORY_ROOT).as_posix()
         for path in python_files(REPOSITORY_ROOT / "src" / "factory_agent")
         if "data_api" not in path.parts and "canonical_mes" in path.read_text(encoding="utf-8")
     ]

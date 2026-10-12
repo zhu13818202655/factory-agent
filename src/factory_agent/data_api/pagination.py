@@ -124,6 +124,8 @@ class BoundedPager:
                 raise UpstreamInvalidError(
                     f"list envelope failed validation (list_key={list_key!r})"
                 ) from error
+            if total < 0:
+                raise UpstreamInvalidError("list total must be nonnegative")
             try:
                 validated_items = tuple(
                     item_model.model_validate(cast(dict[str, Any], item)) for item in raw_items
@@ -133,21 +135,33 @@ class BoundedPager:
 
             if expected_total is None:
                 expected_total = total
-                if len(validated_items) >= expected_total:
-                    # The upstream ignored the ``size`` cap and returned the
-                    # whole window in one shot (observed live: a probe for
-                    # 20k rows came back with all 75k). The data is already
-                    # complete — re-walking at the ceiling size would
-                    # re-download the identical dump and pay the upstream's
-                    # ~30 s a second time.
+                if len(validated_items) > expected_total:
+                    return PagedResult(
+                        items=validated_items[: min(expected_total, self.budget.max_rows)],
+                        total=expected_total,
+                        pages_fetched=page_number,
+                        complete=False,
+                        reason="row_overflow",
+                        footer=footer,
+                    )
+                if len(validated_items) > self.budget.max_rows:
+                    return PagedResult(
+                        items=validated_items[: self.budget.max_rows],
+                        total=expected_total,
+                        pages_fetched=page_number,
+                        complete=False,
+                        reason="row_budget_exhausted",
+                        footer=footer,
+                    )
+                if len(validated_items) == expected_total:
+                    # A source may ignore size and return the whole window.
+                    # Exact count agreement within the row budget proves it complete.
                     items.extend(validated_items)
                     publish_mes_fetch_progress(
-                        MesFetchProgress(
-                            page=page_number, rows=len(items), total=expected_total
-                        )
+                        MesFetchProgress(page=page_number, rows=len(items), total=expected_total)
                     )
                     return PagedResult(
-                        items=tuple(items[:expected_total]),
+                        items=tuple(items),
                         total=expected_total,
                         pages_fetched=page_number,
                         complete=True,
@@ -193,15 +207,30 @@ class BoundedPager:
                 MesFetchProgress(page=page_number, rows=len(items), total=expected_total or total)
             )
 
-            if len(items) >= expected_total:
-                trimmed = tuple(items[:expected_total])
-                complete = len(trimmed) == expected_total
+            if len(items) > expected_total:
                 return PagedResult(
-                    items=trimmed,
+                    items=tuple(items[: min(expected_total, self.budget.max_rows)]),
                     total=expected_total,
                     pages_fetched=page_number,
-                    complete=complete,
-                    reason=None if complete else "row_overflow",
+                    complete=False,
+                    reason="row_overflow",
+                    footer=footer,
+                )
+            if len(items) > self.budget.max_rows:
+                return PagedResult(
+                    items=tuple(items[: self.budget.max_rows]),
+                    total=expected_total,
+                    pages_fetched=page_number,
+                    complete=False,
+                    reason="row_budget_exhausted",
+                    footer=footer,
+                )
+            if len(items) == expected_total:
+                return PagedResult(
+                    items=tuple(items),
+                    total=expected_total,
+                    pages_fetched=page_number,
+                    complete=True,
                     footer=footer,
                 )
             if not validated_items:

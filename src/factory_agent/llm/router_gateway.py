@@ -194,9 +194,7 @@ class LiteLlmRouterGateway:
                 delta = _delta(chunk)
                 if delta is not None:
                     bucket = (
-                        reasoning_parts
-                        if delta.kind is ModelDeltaKind.REASONING
-                        else content_parts
+                        reasoning_parts if delta.kind is ModelDeltaKind.REASONING else content_parts
                     )
                     bucket.append(delta.text)
                     yield delta

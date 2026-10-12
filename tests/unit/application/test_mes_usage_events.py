@@ -8,8 +8,6 @@ set must stay inside the whitelist enforced in
 ``SCHEMA_VERSION`` in ``factory_agent.application.usage``).
 """
 
-
-
 import json
 from datetime import datetime, timezone
 from typing import Any

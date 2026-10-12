@@ -1,5 +1,3 @@
-
-
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,7 +11,7 @@ from factory_agent.data_api.hongzhao import (
     MesRequest,
     map_message_to_error,
 )
-from factory_agent.domain import UserId
+from factory_agent.domain import NarrowedFilters, TenantId, UserId
 from factory_agent.domain.errors import (
     InvalidRequestError,
     MesTimeoutError,
@@ -63,6 +61,41 @@ def _request() -> MesRequest:
         "YskQuery",
         {"Uid": "01001", "dates": "2026-07-01", "datee": "2026-08-31"},
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields,order_code,expected_field",
+    [
+        (["dh", "baohao", "userid", "color", "chima"], "20260701001", "dh"),
+        (["dh", "jhdh", "chuanghao", "huohao", "bbreed", "dept", "deptname"], "P1", "jhdh"),
+    ],
+)
+async def test_progress_grain_pushes_down_the_matching_order_identifier(
+    fields: list[str], order_code: str, expected_field: str
+) -> None:
+    import json
+
+    recorded: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        recorded.append(json.loads(request.content))
+        return httpx.Response(200, json=_envelope(1, result={"list": [], "total": 0}))
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handle), base_url="http://mock.invalid"
+    ) as client:
+        adapter = _adapter(client=client)
+        await adapter.fetch_resource(
+            "ScjdQuery",
+            NarrowedFilters(TenantId("APPKEY-A"), None, None, order_codes=frozenset({order_code})),
+            (datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 8, 1, tzinfo=UTC)),
+            50,
+            extra_params={"groupbyFields": fields},
+        )
+    assert len(recorded) == 1
+    assert recorded[0][expected_field] == order_code
+    assert ("jhdh" if expected_field == "dh" else "dh") not in recorded[0]
 
 
 def test_unknown_operation_is_rejected_without_http() -> None:

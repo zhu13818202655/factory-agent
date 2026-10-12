@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -21,7 +21,7 @@ from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
 from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.preferences import PreferencesService
-from factory_agent.application.prefetch import V2PrefetchWorker
+from factory_agent.application.prefetch import V2PrefetchGroup, V2PrefetchWorker
 from factory_agent.application.push_channel import LocalPushChannel
 from factory_agent.application.reporting import DirectReportRunner, ReportingService
 from factory_agent.application.rollup import RollupEngine, RollupWorker
@@ -33,8 +33,12 @@ from factory_agent.application.usage import ContextVarMesCallRecorder
 from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
-from factory_agent.data_api.directory import MesDirectorySource
+from factory_agent.data_api.directory import CachedEmployeeRosterFetcher, MesDirectorySource
 from factory_agent.data_api.hongzhao import AdapterSettings, HongzhaoMesAdapter
+from factory_agent.data_api.owner_snapshots import (
+    OwnerSnapshotConfigurationError,
+    OwnerSnapshotPool,
+)
 from factory_agent.data_api.pagination import PagerBudget
 from factory_agent.data_api.result_cache import (
     ResultCacheExecutor,
@@ -49,10 +53,11 @@ from factory_agent.data_api.token_gateway import (
     TokenCredentialExchange,
 )
 from factory_agent.domain import (
+    DataScope,
     DeptId,
     EmployeeId,
     MesError,
-    NarrowedFilters,
+    TenantContext,
     TenantId,
     UserId,
 )
@@ -99,7 +104,6 @@ from factory_agent.ports import (
     TrustedCredential,
 )
 from factory_agent.ports.artifacts import ArtifactExporter, ExportStore
-from factory_agent.ports.contracts import ResourceFetchResult
 from factory_agent.ports.not_configured import (
     DependencyNotConfiguredError,
     NotConfiguredArtifactStore,
@@ -109,6 +113,7 @@ from factory_agent.ports.not_configured import (
     NotConfiguredSessionRepository,
 )
 from factory_agent.ports.push import PushChannel
+from factory_agent.ports.tenant_registry import TenantRegistryReader
 from factory_agent.statistics.config import StatisticsSettings
 from factory_agent.statistics.container import (
     StatisticsContainer,
@@ -182,7 +187,8 @@ class ApplicationContainer:
     usage_rollup: RollupWorker | None = None
     #: 夜间预取 worker（§4.3）。``None`` = 未配置 Redis / 99 凭据 / MES，或预取
     #: 开关关闭——部署完全不启动该任务，其余链路不受影响。
-    v2_prefetch: V2PrefetchWorker | None = None
+    v2_prefetch: V2PrefetchGroup | V2PrefetchWorker | None = None
+    owner_snapshots: OwnerSnapshotPool | None = None
     #: Whether this deployment may hold captured content, and therefore whether
     #: the content-bearing report route is mounted at all (§4.5). Carried as a
     #: plain value so no request handler has to re-derive the environment rule
@@ -301,7 +307,6 @@ def build_container(
     # The result-set cache (老板缓存) must exist before the capability runner so
     # the executor can be decorated with the read/write paths (方案 §4.7).
     cache = _build_cache(settings)
-    capability_runner = _build_capability_runner(supplied, mes, settings, cache, clock, statistics)
     artifact_store, exporter, export_status = _build_export_service(supplied, settings, clock)
 
     # The B-channel store is built as soon as a database exists, not only when
@@ -369,6 +374,12 @@ def build_container(
         organizations=directory or _UnresolvedOrganizations(),
         versions=FixedScopeVersionAssigner(),
     )
+    owner_snapshots = _build_owner_snapshots(
+        settings, cache, credential_exchange, authorization, clock, tenant_registry
+    )
+    capability_runner = _build_capability_runner(
+        supplied, mes, settings, cache, clock, statistics, directory, owner_snapshots
+    )
     business_filters = BusinessFilterResolver(directory) if directory is not None else None
     personalization = _build_personalization(supplied, settings, clock)
     preferences_service = _build_preferences_service(supplied, settings, clock)
@@ -415,7 +426,10 @@ def build_container(
         ),
         usage_partitions=_build_usage_partitions(settings, statistics),
         usage_rollup=_build_usage_rollup(settings, statistics),
-        v2_prefetch=_build_v2_prefetch(settings, cache, credential_exchange, statistics),
+        v2_prefetch=_build_v2_prefetch(
+            settings, cache, credential_exchange, statistics, owner_snapshots
+        ),
+        owner_snapshots=owner_snapshots,
         trace_capability=trace_capability,
         trace=trace_service,
         debug_trace=debug_trace,
@@ -568,10 +582,9 @@ def _build_cache(settings: FactoryAgentSettings) -> AuthAwareCache | None:
     """Authorization-aware Redis cache; absent when Redis is not configured.
 
     Redis is only an optimization: the cache falls back to the source of truth
-    on any store error, and every key is bound to the tenant and an irreversible
-    scope fingerprint (``scope_version``). 2026-10-11 接口换代（V1 → V2 是口径
-    变更）必须 bump ``data_version``，否则新旧口径结果会在同一键下互相污染
-    （方案 §4.6）。
+    on any store error. Keys bind the hashed tenant and scope fingerprint;
+    reviewed owner detail uses one shared scope and filters caller views on read.
+    The data version isolates incompatible detail and derivation contracts.
     """
     if settings.redis_url is None:
         return None
@@ -580,7 +593,7 @@ def _build_cache(settings: FactoryAgentSettings) -> AuthAwareCache | None:
         store,
         contract_version="mes-contract-v2",
         metric_version="metric-registry-v1",
-        data_version="mes-v20261011",
+        data_version="mes-detail-v2",
     )
 
 
@@ -617,36 +630,82 @@ def _build_v2_prefetch(
     cache: AuthAwareCache | None,
     credential_exchange: TokenCredentialExchange | None,
     statistics: StatisticsContainer,
-) -> V2PrefetchWorker | None:
-    """夜间预取 worker；未配置 Redis / 凭据 / MES 时缺省（部署不受影响，§4.7）。"""
-    if cache is None or credential_exchange is None:
+    owner_snapshots: OwnerSnapshotPool | None = None,
+) -> V2PrefetchGroup | None:
+    """Schedule each configured and authorized factory producer independently."""
+    if cache is None or credential_exchange is None or owner_snapshots is None:
         return None
     if not settings.result_cache_prefetch_enabled:
         return None
     result_cache = _build_result_cache(settings, cache, SystemClock())
-    if result_cache is None:
+    if result_cache is None or not result_cache.mode.writes:
         return None
-    credential = settings.mes_user_credential_99.get_secret_value().strip()
-    if not credential or settings.canonical_mes_base_url is None:
+    workers = tuple(
+        V2PrefetchWorker(
+            fetcher,
+            result_cache,
+            tenant_resolver=fetcher.tenant_id,
+            prefetch_hour=settings.result_cache_prefetch_hour,
+            jitter_seconds=settings.result_cache_prefetch_jitter_seconds,
+            poll_seconds=settings.result_cache_prefetch_poll_seconds,
+            timezone_name=settings.factory_timezone,
+            alerts=statistics.alerts,
+            prepare=fetcher.initialize,
+            coordination=cache,
+            run_timeout_seconds=settings.result_cache_prefetch_timeout_seconds,
+        )
+        for fetcher in owner_snapshots.fetchers
+    )
+    return V2PrefetchGroup(workers, owner_snapshots.aclose)
+
+
+def _build_owner_snapshots(
+    settings: FactoryAgentSettings,
+    cache: AuthAwareCache | None,
+    credential_exchange: TokenCredentialExchange | None,
+    authorization: AuthorizationService,
+    clock: Clock,
+    tenant_registry: TenantRegistryReader | None,
+) -> OwnerSnapshotPool | None:
+    if (
+        cache is None
+        or credential_exchange is None
+        or settings.canonical_mes_base_url is None
+        or not ResultCacheMode.parse(settings.result_cache_mode).reads
+    ):
         return None
-    fetcher = _Owner99PrefetchFetcher(
-        settings,
-        credential_exchange,
-        credential,
-        mes_recorder=ContextVarMesCallRecorder(),
-    )
-    return V2PrefetchWorker(
-        fetcher,
-        result_cache,
-        tenant_id=None,
-        tenant_resolver=fetcher.tenant_id,
-        prefetch_hour=settings.result_cache_prefetch_hour,
-        jitter_seconds=settings.result_cache_prefetch_jitter_seconds,
-        poll_seconds=settings.result_cache_prefetch_poll_seconds,
-        timezone_name=settings.factory_timezone,
-        clock=None,
-        alerts=statistics.alerts,
-    )
+
+    async def authorize(
+        credential: TrustedCredential, as_of: datetime
+    ) -> tuple[TenantContext, DataScope]:
+        resolved = await authorization.authorize(credential, as_of)
+        return resolved.tenant_context, resolved.data_scope
+
+    try:
+        pool = OwnerSnapshotPool(
+            credential_exchange,
+            settings.mes_user_credential_99,
+            str(settings.canonical_mes_base_url),
+            authorize=authorize,
+            clock=clock,
+            adapter_settings=AdapterSettings(
+                timeout_seconds=settings.mes_timeout_seconds,
+                refresh_threshold_seconds=settings.mes_token_refresh_threshold_seconds,
+                factory_timezone=settings.factory_timezone,
+            ),
+            pager_budget=PagerBudget(
+                page_size=settings.mes_page_size,
+                page_size_ceiling=settings.mes_page_size_max,
+                max_pages=settings.mes_max_pages,
+                max_rows=settings.result_cache_snapshot_max_rows,
+            ),
+            tenant_registry=tenant_registry,
+            recorder=ContextVarMesCallRecorder(),
+        )
+    except OwnerSnapshotConfigurationError:
+        _logger.warning("v2_result.producer.configuration_invalid")
+        return None
+    return pool if pool.fetchers else None
 
 
 def _statistics_alerts(
@@ -675,85 +734,6 @@ def _statistics_alerts(
         loop.create_task(_dispatch(), name=f"v2-result-alert-{kind}")
 
     return _alert
-
-
-class _Owner99PrefetchFetcher:
-    """预取取数器：99 凭据走真实 token 换取，专用适配器懒初始化（§4.3【决策】）。
-
-    凭据字符串只在本类内部持有，绝不记日志；换取失败向上抛出，由 worker 告警。
-    """
-
-    def __init__(
-        self,
-        settings: FactoryAgentSettings,
-        exchange: TokenCredentialExchange,
-        credential: str,
-        *,
-        mes_recorder: MesCallRecorder,
-    ) -> None:
-        self._settings = settings
-        self._exchange = exchange
-        self._credential = credential
-        self._recorder = mes_recorder
-        self._adapter: HongzhaoMesAdapter | None = None
-        self._tenant_id: TenantId | None = None
-
-    def tenant_id(self) -> TenantId | None:
-        return self._tenant_id
-
-    async def __call__(
-        self,
-        operation_id: str,
-        window: tuple[str, str],
-        extra_params: Mapping[str, Any],
-    ) -> ResourceFetchResult:
-        adapter = self._adapter
-        if adapter is None:
-            adapter = await self._bind()
-        start = datetime.fromisoformat(window[0]).replace(tzinfo=timezone.utc)
-        end = (
-            datetime.fromisoformat(window[1]).replace(tzinfo=timezone.utc)
-            + timedelta(days=1)
-            - timedelta(seconds=1)
-        )
-        filters = NarrowedFilters(
-            tenant_id=self._tenant_id or TenantId("unknown"),
-            employee_ids=None,
-            dept_ids=None,
-        )
-        return await adapter.fetch_resource(
-            operation_id,
-            filters,
-            (start, end),
-            page_size=self._settings.mes_page_size,
-            extra_params=dict(extra_params),
-        )
-
-    async def _bind(self) -> HongzhaoMesAdapter:
-        principal = await self._exchange.authenticate(self._credential)
-        bundle = self._exchange.bundle_for(principal.credential)
-        if bundle is None:  # pragma: no cover - authenticate 成功后 bundle 必在
-            raise RuntimeError("owner-99 credential bundle missing after exchange")
-        self._tenant_id = principal.credential.tenant_id
-        self._adapter = HongzhaoMesAdapter(
-            str(self._settings.canonical_mes_base_url),
-            bundle,
-            load_catalog(),
-            refresher=GatewayTokenRefresher(self._exchange),
-            settings=AdapterSettings(
-                timeout_seconds=self._settings.mes_timeout_seconds,
-                refresh_threshold_seconds=self._settings.mes_token_refresh_threshold_seconds,
-                factory_timezone=self._settings.factory_timezone,
-            ),
-            pager_budget=PagerBudget(
-                page_size=self._settings.mes_page_size,
-                page_size_ceiling=self._settings.mes_page_size_max,
-                max_pages=self._settings.mes_max_pages,
-                max_rows=self._settings.mes_max_rows,
-            ),
-            recorder=self._recorder,
-        )
-        return self._adapter
 
 
 def _build_personalization(
@@ -910,6 +890,8 @@ def _build_capability_runner(
     cache: AuthAwareCache | None = None,
     clock: Clock | None = None,
     statistics: StatisticsContainer | None = None,
+    directory: MesDirectorySource | CachedDirectorySource | None = None,
+    snapshot_provider: OwnerSnapshotPool | None = None,
 ) -> CapabilityRunner | None:
     """Compose the reviewed kernel runner over a real Hongzhao adapter only.
 
@@ -935,6 +917,7 @@ def _build_capability_runner(
             executor,
             result_cache,
             alerts=_statistics_alerts(statistics) if statistics is not None else None,
+            snapshot_provider=snapshot_provider,
         )
     resource_columns: dict[str, tuple[str, ...]] = {}
     base_data_operations: set[str] = set()
@@ -954,6 +937,7 @@ def _build_capability_runner(
             fanout_concurrency=settings.mes_fanout_concurrency,
         ),
         resource_columns=resource_columns,
+        employee_roster=CachedEmployeeRosterFetcher(directory) if directory is not None else None,
         base_data_operations=frozenset(base_data_operations),
     )
 

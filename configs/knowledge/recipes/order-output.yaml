@@ -1,33 +1,10 @@
-# Reviewed L1 order output recipe. File changes are semantics changes
-# and require human review.
-#
-# 口径来源：``docs/design/V2接口取数重构与缓存加速方案.md``（2026-10-11 换代，
-# 附录 C.3 + §7 R3/T5 拍板）、``docs/api/工资产量-V2.md``、``docs/api/生产进度-V2.md``。
-#
-# 产量主源 = ``GongziClQuery`` V2（工资产量）：``groupbyFields`` 直接含 ``jhdh``，
-# 取消 V1 的 ``SclzdGridPageList``（id → dh）映射桥与本地 JOIN（方案 C.3）。
-# 行集粒度 = 「计划号 × 床号 × 款号 × 大货款号 × 工序 × 工序名 × uid」（C.3 表列出的
-# 分组键 + 要点 1 的 uid）：数值列（sl/je）由服务端按组合计，``uid`` 拉进行集用于本地
-# COUNT(DISTINCT)——footer 只有 sum/count 类合计、没有 COUNT DISTINCT，「参与人数」
-# 必须在本地去重（方案 C.3 要点 1）。
-#
-# 订单维度按 ``jhdh`` 归组（R3 拍板）：有值按值归类、空值统一折叠为「未关联计划号」
-# 同一组（不丢弃、不臆造、不用 dh 冒充）。
-#
-# 工序占比分母 = ``ScjdQuery`` V2 的 ``fhsl``（发卡数量，T5 拍板：V1 zsl 裁剪数量退役），
-# 取「同计划号 Σfhsl」按 Σ分子/Σ分母 重算；它只用于算占比，不作为结果列输出——
-# 结果是「订单×款号×工序」行，分母在这一粒度上会重复出现，一旦作为可求和列
-# 就会按工序数被放大。
-#
-# 款号过滤（style_codes）同时匹配 ``huohao``（款号）与 ``bbreed``（大货款号）：
-# 客户侧两种叫法并存（工资产量 V2 两个字段都有），宽松匹配避免口径词差导致空结果。
-#
-# ⚠ 「总产量」不能由各工序产量相加得出：同一件衣服做 3 道工序就有 3 条报工，
-# 相加会按工序数放大。因此卡片只输出工件口径的产值与占比，并强制带口径注记。
-#
-# 排序本地做（§3.2⑤）：产量数值降序，并列以 order_code、worktype 升序打破（G.5）；
-# 排序键不派生名次（本能力无名次列），只决定行序。
-version: 3
+# Reviewed L1 order/style output recipe.
+# Shared wage details supply jhdh, style, worktype, employee and sl/je values.
+# The progress dataset is projected to the reviewed sheet/department grain
+# before loading. Local aggregation counts distinct participants and computes
+# each worktype share against the same plan's issued quantity fhsl.
+# Empty plan numbers share one group. Output uses piece-worktype units.
+version: 4
 capabilities:
   - capability_id: fr006_order_output
     title: 订单/款号产量
@@ -39,7 +16,6 @@ capabilities:
         params:
           Flag: "0"
           Type: "0,1,2"
-          groupbyFields: [jhdh, chuanghao, huohao, bbreed, worktype, wtname, uid]
       - step_id: fetch_scjd
         kind: api
         operation_id: ScjdQuery

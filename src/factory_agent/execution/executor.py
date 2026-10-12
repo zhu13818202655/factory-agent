@@ -11,8 +11,6 @@ injected by the adapter from ``MesCredentialBundle`` and can never be supplied
 through this path.
 """
 
-
-
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Protocol
@@ -136,9 +134,7 @@ class ScopedExecutor:
         active_scope: DataScope | None = None,
     ) -> StepResult:
         # Authorization completes before any business-data API call.
-        self._catalog.get(request.operation_id)  # whitelist check before HTTP
-        if active_scope is not None:
-            self._verifier.verify(active_scope, filters)
+        self.validate_step(filters, request, active_scope)
 
         rows = await self._adapter.fetch_resource_rows(
             request.operation_id,
@@ -166,9 +162,7 @@ class ScopedExecutor:
         carry filter-sourced parameters (including the V2 ``groupbyFields``
         array, which is sent verbatim as a JSON list).
         """
-        self._catalog.get(request.operation_id)  # whitelist check before HTTP
-        if active_scope is not None:
-            self._verifier.verify(active_scope, filters)
+        self.validate_step(filters, request, active_scope)
         return await self._adapter.fetch_resource(
             request.operation_id,
             filters,
@@ -176,6 +170,22 @@ class ScopedExecutor:
             request.pagination_size,
             extra_params,
         )
+
+    def validate_step(
+        self,
+        filters: NarrowedFilters,
+        request: ExecutionRequest,
+        active_scope: DataScope | None = None,
+    ) -> None:
+        """Apply the same catalog and scope guard before source or cache access."""
+        operation = self._catalog.get(request.operation_id)
+        if getattr(operation, "enabled", True) is False:
+            from factory_agent.domain.errors import UnsupportedOperationError
+
+            raise UnsupportedOperationError("operation is disabled in this release")
+        if active_scope is not None:
+            reject_platform_scope(active_scope)
+            self._verifier.verify(active_scope, filters)
 
 
 def reject_platform_scope(scope: object) -> None:

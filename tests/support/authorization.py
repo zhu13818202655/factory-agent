@@ -6,8 +6,6 @@ factory, one AppKey), the credential bundle supplies ``tenant_id``/
 ``DeptQuery`` current relations. Roles are display-only.
 """
 
-
-
 from dataclasses import dataclass, field
 from datetime import datetime
 

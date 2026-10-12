@@ -1,7 +1,5 @@
 """In-memory scope-violation store for tests."""
 
-
-
 from dataclasses import dataclass, field
 from datetime import datetime
 

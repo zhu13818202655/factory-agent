@@ -98,9 +98,7 @@ class ApiCatalog:
         """
         operations = dict(self._operations)
         for operation_id in operation_ids:
-            operations[operation_id] = operations[operation_id].model_copy(
-                update={"enabled": True}
-            )
+            operations[operation_id] = operations[operation_id].model_copy(update={"enabled": True})
         return ApiCatalog(version=self.version, _operations=operations)
 
 

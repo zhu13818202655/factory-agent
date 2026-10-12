@@ -19,19 +19,20 @@ dedicated channel is required. Bumping the data version or calling
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, cast
+from uuid import uuid4
 
 from factory_agent.domain import DataScope, TenantId
 from factory_agent.ports import CacheStore
+from factory_agent.ports.cache import CacheLeaseStore
 
-#: Cache domains and their TTLs (seconds). Business domains stay short; the
-#: base-data ``identity_org`` domain refreshes daily because master data is
-#: role-independent and changes rarely. TTLs are conservative placeholders to
-#: be confirmed by real-data review; performance is not a gate.
-#: ``v2_result``（2026-10-11 V2 换代）：结果集缓存域（老板缓存），默认 TTL 只是
-#: 兜底——实际 TTL 按窗口分类逐键覆盖（预取整刷 / 24h / 60~120s，方案附录 F.2）。
+#: Base-data ``identity_org`` entries retain the reviewed 24-hour policy.
+#: The shared owner-detail domain ``v2_result`` uses a 24-hour fallback;
+#: writes override it with the reviewed window policy, including 90 seconds
+#: for windows containing today. These are retention limits, not query coverage.
 CACHE_DOMAINS: tuple[str, ...] = (
     "identity_org",
     "order_progress",
@@ -101,6 +102,7 @@ class AuthAwareCache:
         data_version: str,
         policy: CachePolicy | None = None,
         stats: CacheStats | None = None,
+        lease_token_factory: Callable[[], str] | None = None,
     ) -> None:
         self._store = store
         self._contract_version = contract_version
@@ -108,6 +110,7 @@ class AuthAwareCache:
         self._data_version = data_version
         self._policy = policy or CachePolicy()
         self._stats = stats or CacheStats()
+        self._lease_token_factory = lease_token_factory or (lambda: uuid4().hex)
 
     @property
     def stats(self) -> CacheStats:
@@ -116,10 +119,8 @@ class AuthAwareCache:
     async def ping(self) -> bool:
         """一次可达性探测，用于启动时把「缓存静默失效」变成可见日志。
 
-        配了 Redis 却连不上时，读会退化成源、写会吞掉异常——结果就是缓存
-        悄悄失效而运营商毫无察觉（2026-10-11 实测到的一次真实事故：端口配错，
-        预取「成功」日志照打、行数却是 0）。探测本身有界（store 侧 socket
-        超时），失败只返回 False，绝不抛出。
+        缓存读写故障会回源，启动探测使运维能区分配置存在与存储可达。
+        探测受 store 侧 socket 超时约束，失败只返回 False，不影响业务启动。
         """
         try:
             await self._store.get(f"{KEY_PREFIX}:__probe__")
@@ -150,7 +151,8 @@ class AuthAwareCache:
         params_digest = _canonical_digest(params)
         return (
             f"{KEY_PREFIX}:{self._contract_version}:{self._metric_version}:"
-            f"{self._data_version}:{tenant_id}:{scope_fingerprint}:{domain}:{params_digest}"
+            f"{self._data_version}:{_tenant_digest(tenant_id)}:"
+            f"{scope_fingerprint}:{domain}:{params_digest}"
         )
 
     def ttl_seconds(self, domain: str) -> int:
@@ -192,20 +194,20 @@ class AuthAwareCache:
         value: bytes,
         *,
         ttl_seconds: int | None = None,
-    ) -> None:
-        """Best-effort write; a store failure never propagates to the caller.
+    ) -> bool:
+        """Report whether the write succeeded without propagating store failures.
 
-        ``ttl_seconds`` 逐键覆盖域默认 TTL（结果集缓存按窗口分类分档，附录 F.2）。
+        ``ttl_seconds`` 按批准的窗口保留策略逐键覆盖域默认 TTL。
         """
         if domain not in CACHE_DOMAINS:
             raise UnknownCacheDomainError(f"unknown cache domain {domain!r}")
         key = self.build_key(domain, tenant_id, scope_fingerprint, params)
         try:
-            await self._store.put(
-                key, value, ttl_seconds or self.ttl_seconds(domain)
-            )
+            await self._store.put(key, value, ttl_seconds or self.ttl_seconds(domain))
         except Exception:  # noqa: BLE001
             self._stats.record_miss(domain, "store_unavailable")
+            return False
+        return True
 
     async def invalidate_key(self, key: str) -> None:
         """Evict one exact key (影子比对不一致时丢弃该缓存键，§4.6)。"""
@@ -214,11 +216,35 @@ class AuthAwareCache:
         except Exception:  # noqa: BLE001
             self._stats.record_miss("identity_org", "store_unavailable")
 
+    @asynccontextmanager
+    async def lease(
+        self, tenant_id: TenantId, params: Mapping[str, object], ttl_seconds: int = 900
+    ) -> AsyncGenerator[bool]:
+        """Bound concurrent producers with a token-owned Redis lease when supported."""
+        if not isinstance(self._store, CacheLeaseStore):
+            yield True
+            return
+        key = self.build_key("v2_result", tenant_id, "producer-lease", params)
+        token = self._lease_token_factory()
+        try:
+            acquired = await self._store.acquire_lease(key, token, ttl_seconds)
+        except Exception:
+            self._stats.record_miss("v2_result", "store_unavailable")
+            acquired = False
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                try:
+                    await self._store.release_lease(key, token)
+                except Exception:
+                    self._stats.record_miss("v2_result", "store_unavailable")
+
     async def invalidate_scope(self, tenant_id: TenantId, scope_fingerprint: str) -> None:
         """Evict every cache line bound to one scope (org/permission changes)."""
         prefix = (
             f"{KEY_PREFIX}:{self._contract_version}:{self._metric_version}:"
-            f"{self._data_version}:{tenant_id}:{scope_fingerprint}:"
+            f"{self._data_version}:{_tenant_digest(tenant_id)}:{scope_fingerprint}:"
         )
         try:
             await self._store.delete_prefix(prefix)
@@ -273,21 +299,36 @@ class CachedDirectorySource:
             scope.tenant_id, "employees", lambda: self._inner.list_employees(scope)
         )
 
+    async def list_employees_for_tenant(self, tenant_id: TenantId) -> tuple[Any, ...]:
+        records, _ = await self.fetch_employee_roster(tenant_id)
+        return records
+
+    async def fetch_employee_roster(self, tenant_id: TenantId) -> tuple[tuple[Any, ...], bool]:
+        return await self._cached_roster_with_status(
+            tenant_id, "employees", lambda: self._inner.list_employees_for_tenant(tenant_id)
+        )
+
     async def list_current_depts(self, tenant_id: TenantId, employee_id: Any) -> tuple[Any, ...]:
         return await self._inner.list_current_depts(tenant_id, employee_id)
 
     async def _cached_roster(self, tenant_id: TenantId, op: str, fetch: Any) -> tuple[Any, ...]:
+        records, _ = await self._cached_roster_with_status(tenant_id, op, fetch)
+        return records
+
+    async def _cached_roster_with_status(
+        self, tenant_id: TenantId, op: str, fetch: Any
+    ) -> tuple[tuple[Any, ...], bool]:
         params = {"op": op}
         lookup = await self._cache.get("identity_org", tenant_id, SHARED_SCOPE_FINGERPRINT, params)
         if lookup.value is not None:
             records = _decode_records(lookup.value)
             if records is not None:
-                return records
+                return records, True
         records = await fetch()
         await self._cache.put(
             "identity_org", tenant_id, SHARED_SCOPE_FINGERPRINT, params, _encode_records(records)
         )
-        return records
+        return records, False
 
 
 def _encode_records(records: Any) -> bytes:
@@ -323,6 +364,7 @@ def _decode_records(raw: bytes) -> tuple[Any, ...] | None:
                         employee_id=item["employee_id"],
                         name=item["name"],
                         name_pk=item["name_pk"],
+                        dept=item.get("dept"),
                     )
                 )
             else:
@@ -335,6 +377,11 @@ def _decode_records(raw: bytes) -> tuple[Any, ...] | None:
 def _canonical_digest(params: Mapping[str, object]) -> str:
     encoded = json.dumps(params, sort_keys=True, separators=(",", ":"), default=_json_default)
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _tenant_digest(tenant_id: TenantId) -> str:
+    """Tenant identifiers originate in a secret AppKey and stay out of Redis keys."""
+    return hashlib.sha256(str(tenant_id).encode()).hexdigest()
 
 
 def _json_default(value: Any) -> str:

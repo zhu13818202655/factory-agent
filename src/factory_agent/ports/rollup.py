@@ -6,8 +6,6 @@ Defined in ``ports`` so the application layer (which may depend only on
 ``tests/security/test_package_boundaries.py``).
 """
 
-
-
 from dataclasses import dataclass
 from datetime import datetime
 

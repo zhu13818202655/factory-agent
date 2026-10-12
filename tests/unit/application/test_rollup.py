@@ -6,8 +6,6 @@ and per status, keep success and failure separate, and never re-count
 ``other`` so a stale mapping cannot silently drop traffic.
 """
 
-
-
 from datetime import datetime, timezone
 
 from factory_agent.application.rollup import MES_CATEGORIES, compute_bucket_metrics, hour_bucket

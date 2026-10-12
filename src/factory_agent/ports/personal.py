@@ -7,8 +7,6 @@ never raw question text, work numbers, wage/output amounts, or ``DataScope`` ID
 lists.
 """
 
-
-
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol

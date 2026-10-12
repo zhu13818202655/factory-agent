@@ -1,7 +1,5 @@
 """In-memory cache store with optional fault injection for tests."""
 
-
-
 from dataclasses import dataclass, field
 
 
@@ -10,6 +8,7 @@ class InMemoryCacheStore:
     values: dict[str, bytes] = field(default_factory=dict[str, bytes])
     ttl: dict[str, int] = field(default_factory=dict[str, int])
     failure: Exception | None = None
+    leases: dict[str, str] = field(default_factory=dict[str, str])
 
     async def get(self, key: str) -> bytes | None:
         if self.failure is not None:
@@ -32,6 +31,18 @@ class InMemoryCacheStore:
         for key in [key for key in self.values if key.startswith(prefix)]:
             del self.values[key]
             self.ttl.pop(key, None)
+
+    async def acquire_lease(self, key: str, token: str, ttl_seconds: int) -> bool:
+        if self.failure is not None:
+            raise self.failure
+        if key in self.leases:
+            return False
+        self.leases[key] = token
+        return True
+
+    async def release_lease(self, key: str, token: str) -> None:
+        if self.leases.get(key) == token:
+            self.leases.pop(key)
 
 
 __all__ = ["InMemoryCacheStore"]

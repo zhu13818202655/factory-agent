@@ -1,5 +1,6 @@
 """Redaction, audit baseline, request context, and logging tests."""
 
+import hashlib
 import logging
 from datetime import datetime, timezone
 
@@ -17,7 +18,9 @@ from factory_agent.observability.audit import (
 from factory_agent.observability.context import (
     accept_request_id,
     bind_request_id,
+    bind_tenant_id,
     current_log_context,
+    current_tenant_id,
 )
 from factory_agent.observability.logging_adapter import configure_logging, get_logger
 from factory_agent.observability.redaction import REDACTED, is_sensitive_key, redact_mapping
@@ -27,6 +30,40 @@ CANARIES = (
     "postgres://app:canary-password@db:5432/app",
     "Bearer canary-token-value",
 )
+
+
+def test_log_context_hashes_tenant_without_changing_internal_identity() -> None:
+    previous = current_tenant_id()
+    app_key_canary = "synthetic-appkey-context-canary"
+    try:
+        bind_tenant_id(app_key_canary)
+        context = current_log_context()
+        assert current_tenant_id() == app_key_canary
+        assert context["tenant_id"] == hashlib.sha256(app_key_canary.encode()).hexdigest()
+        assert app_key_canary not in repr(context)
+        assert current_log_context()["tenant_id"] == context["tenant_id"]
+    finally:
+        bind_tenant_id(previous)
+
+
+def test_snapshot_json_log_context_never_exposes_tenant_appkey(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging(FactoryAgentSettings(environment="prod", log_format="json"))
+    previous = current_tenant_id()
+    app_key_canary = "synthetic-owner-appkey-canary"
+    try:
+        bind_tenant_id(app_key_canary)
+        get_logger("factory_agent.data_api.owner_snapshots").info(
+            "mes.execute.request", operation_id="ScjdQuery", request_params="calendar-window"
+        )
+        assert current_tenant_id() == app_key_canary
+        output = capsys.readouterr().out
+        assert "mes.execute.request" in output
+        assert hashlib.sha256(app_key_canary.encode()).hexdigest() in output
+        assert app_key_canary not in output
+    finally:
+        bind_tenant_id(previous)
 
 
 def test_redaction_covers_names_numbers_payroll_and_credentials() -> None:
@@ -106,6 +143,9 @@ def test_audit_event_payload_is_whitelisted() -> None:
 
     payload = event.to_payload()
 
+    assert event.tenant_id == "tenant-a"
+    assert payload["tenant_id"] == hashlib.sha256(b"tenant-a").hexdigest()
+    assert "tenant-a" not in repr(payload)
     assert set(payload) <= {
         "event_type",
         "outcome",
@@ -123,6 +163,34 @@ def test_audit_event_payload_is_whitelisted() -> None:
     serialized = repr(payload)
     for leak in ("employee-a1", "group-a1", *CANARIES):
         assert leak not in serialized
+
+
+@pytest.mark.asyncio
+async def test_structured_audit_log_hashes_appkey_inside_namespaced_payload(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging(_json_settings())
+    app_key = "synthetic-audit-appkey-canary"
+    event = AuditEvent(
+        event_type=AuditEventType.QUERY,
+        outcome=AuditOutcome.ALLOWED,
+        capability_id="FR-001",
+        intent_summary=None,
+        scope_fingerprint=None,
+        employee_count=1,
+        dept_count=1,
+        whole_tenant=False,
+        tenant_id=app_key,
+        status="complete",
+        occurred_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+        request_id="synthetic-request",
+    )
+    await StructuredLogAuditSink().record(event)
+    output = capsys.readouterr().out
+    assert "audit.query" in output
+    assert hashlib.sha256(app_key.encode()).hexdigest() in output
+    assert app_key not in output
+    assert event.tenant_id == app_key
 
 
 @pytest.mark.asyncio

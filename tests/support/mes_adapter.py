@@ -7,8 +7,6 @@ tests can assert zero-call guarantees. It speaks the customer envelope
 boundary.
 """
 
-
-
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any

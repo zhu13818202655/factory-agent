@@ -1,7 +1,5 @@
 """Filter narrowing, DEC-012 rejection, and zero-MES-call guarantees."""
 
-
-
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 

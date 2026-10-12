@@ -5,8 +5,6 @@ reaches a browser; a payload that still contains a non-finite float is sanitized
 to ``null`` instead of breaking the stream.
 """
 
-
-
 import json
 import math
 from typing import Any

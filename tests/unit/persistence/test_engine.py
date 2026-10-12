@@ -1,5 +1,3 @@
-
-
 import pytest
 
 from factory_agent.persistence.engine import normalize_dsn

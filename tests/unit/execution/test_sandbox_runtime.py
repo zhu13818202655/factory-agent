@@ -1,10 +1,27 @@
-
-
 import pytest
 
 from factory_agent.domain.errors import ForbiddenError, InvalidRequestError
 from factory_agent.execution.sandbox import InteractionSandboxPolicy
 from factory_agent.execution.sandbox_runtime import InteractionSandbox, SandboxTable
+
+
+def test_shadow_replaces_only_registered_table_and_keeps_user_sql_read_only() -> None:
+    with InteractionSandbox(allowed_tables=("rows", "unregistered")) as sandbox:
+        sandbox.register_table(
+            SandboxTable("rows", ({"quantity": "1"},), (("quantity", "VARCHAR"),))
+        )
+        sandbox.replace_table(
+            SandboxTable("rows", ({"quantity": "2"},), (("quantity", "VARCHAR"),))
+        )
+        assert sandbox.execute("SELECT quantity FROM rows") == [("2",)]
+        with pytest.raises(ForbiddenError):
+            sandbox.replace_table(SandboxTable("unregistered", (), (("quantity", "VARCHAR"),)))
+        with pytest.raises(InvalidRequestError):
+            sandbox.replace_table(SandboxTable("rows", (), (("quantity", "unsafe type"),)))
+        assert sandbox.execute("SELECT quantity FROM rows") == [("2",)]
+        with pytest.raises(ForbiddenError):
+            sandbox.execute("DELETE FROM rows")
+
 
 PIECEWORK_COLUMNS = (
     ("record_id", "VARCHAR"),
@@ -167,13 +184,10 @@ def test_bulk_registration_preserves_values_and_types() -> None:
     )
     assert sandbox.execute("SELECT COUNT(*) FROM bulk") == [(2_000,)]
     assert sandbox.execute(
-        "SELECT qualified_quantity, amount, employee_id FROM bulk "
-        "WHERE record_id = 'r3'"
+        "SELECT qualified_quantity, amount, employee_id FROM bulk WHERE record_id = 'r3'"
     ) == [(3, 3.25, "emp-3")]
     # Missing keys and NULLs both land as column NULL.
-    null_count = sandbox.execute(
-        "SELECT COUNT(*) FROM bulk WHERE employee_id IS NULL"
-    )
+    null_count = sandbox.execute("SELECT COUNT(*) FROM bulk WHERE employee_id IS NULL")
     assert null_count == [(1_000,)]
     # The INTEGER column really is integral, not text that quacks like it.
     assert sandbox.execute("SELECT MAX(qualified_quantity) + 1 FROM bulk") == [(2_000,)]

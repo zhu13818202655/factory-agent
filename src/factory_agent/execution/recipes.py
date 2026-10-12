@@ -368,7 +368,8 @@ def _validate_aux_outputs(recipe: CapabilityRecipe, api_step_ids: set[str]) -> N
 def _validate_card(recipe: CapabilityRecipe) -> None:
     """Card declaration must reference existing columns and stay bounded."""
     card = recipe.card
-    assert card is not None  # caller guarantees
+    if card is None:
+        raise InvalidRequestError("card validation requires a card declaration")
     columns_by_name = {column.name: column for column in recipe.result_columns}
 
     references = (*card.metrics, *card.totals)

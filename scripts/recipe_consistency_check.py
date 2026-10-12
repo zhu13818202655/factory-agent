@@ -1,4 +1,5 @@
 """Phase 0 一致性自检：配方 metric 引用必须与指标注册表对齐。"""
+
 import sys
 from pathlib import Path
 
@@ -18,7 +19,7 @@ def main() -> int:
 
     reg = default_metric_registry()
     reg_names = set()
-    for (name, version) in list(getattr(reg, "_metrics", {}).keys()):
+    for name, version in list(getattr(reg, "_metrics", {}).keys()):
         reg_names.add((name, version))
     print("registered metrics:", len(reg_names))
 
@@ -39,9 +40,7 @@ def main() -> int:
                         f"{path.name}:{cid} 列 {col['name']} metric={metric} 缺 metric_versions"
                     )
                 elif (metric, version) not in reg_names:
-                    problems.append(
-                        f"{path.name}:{cid} metric_versions {metric}:{version} 未注册"
-                    )
+                    problems.append(f"{path.name}:{cid} metric_versions {metric}:{version} 未注册")
     print("问题数:", len(problems))
     for p in problems:
         print(" -", p)

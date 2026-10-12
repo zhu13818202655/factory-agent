@@ -18,6 +18,20 @@ def test_optional_services_are_disabled_by_default() -> None:
     assert "artifact_endpoint" not in FactoryAgentSettings.model_fields
 
 
+def test_owner_snapshot_row_budget_has_separate_bounded_configuration() -> None:
+    settings = FactoryAgentSettings()
+    assert settings.mes_max_rows == 250000
+    assert settings.result_cache_snapshot_max_rows == 1_000_000
+    with pytest.raises(ValidationError):
+        FactoryAgentSettings(result_cache_snapshot_max_rows=0)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_prefetch_timeout_requires_a_finite_positive_limit(timeout: float) -> None:
+    with pytest.raises(ValidationError):
+        FactoryAgentSettings(result_cache_prefetch_timeout_seconds=timeout)
+
+
 def test_s3_backend_is_off_until_an_endpoint_is_configured() -> None:
     """An empty endpoint keeps exports on the local directory backend."""
     settings = FactoryAgentSettings()
@@ -52,7 +66,7 @@ def test_settings_read_unified_environment(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.postgres_url is not None
     assert settings.redis_url is not None
     assert settings.export_retention_seconds == 300
-    assert str(settings.export_store_dir) == "/tmp/exports-alt"
+    assert settings.export_store_dir.as_posix() == "/tmp/exports-alt"
 
 
 def test_s3_settings_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

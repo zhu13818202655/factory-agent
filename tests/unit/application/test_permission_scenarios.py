@@ -6,8 +6,6 @@ matrix plus tenant binding, while actual data visibility is enforced by
 MES-side row filtering.
 """
 
-
-
 from datetime import datetime, timezone
 
 import pytest

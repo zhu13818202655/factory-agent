@@ -5,8 +5,6 @@ configured credential header and the (fake) token gateway resolves the
 principal. Quick questions are role-aware, asserted per role below.
 """
 
-
-
 from datetime import datetime, timezone
 
 import httpx

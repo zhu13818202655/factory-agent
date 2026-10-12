@@ -132,8 +132,6 @@ async def test_barcode_cl_query_is_never_pushed_down() -> None:
     adapter = _adapter(transport)
 
     with pytest.raises(UnsupportedOperationError):
-        await adapter.fetch_resource(
-            "BarcodeClQuery", _filters(frozenset({"86B"})), _range(), 2000
-        )
+        await adapter.fetch_resource("BarcodeClQuery", _filters(frozenset({"86B"})), _range(), 2000)
 
     assert transport.requests == [], "disabled operation must not reach HTTP"

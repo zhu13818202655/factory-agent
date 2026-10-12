@@ -6,8 +6,6 @@ the metering chain. This suite runs the real event constructors and the MES
 adapter recorder with credential canaries and asserts absence.
 """
 
-
-
 import json
 import logging
 from datetime import UTC, datetime, timezone

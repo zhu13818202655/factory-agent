@@ -7,8 +7,6 @@ factory data, and ``compact_history`` keeps business detail rows out of the
 prompt (result-bearing turns arrive only as row-count summaries).
 """
 
-
-
 from dataclasses import dataclass
 
 from factory_agent.application.context import ConversationTurn, compact_history

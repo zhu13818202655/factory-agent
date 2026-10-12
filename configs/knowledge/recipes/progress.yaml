@@ -1,34 +1,10 @@
-# Reviewed L1 progress recipes. File changes are semantics changes
-# and require human review.
-#
-# 口径来源：``docs/design/V2接口取数重构与缓存加速方案.md``（2026-10-11 换代，
-# 附录 C.2 + §3.2③ + §7 T1/T3/T5 拍板）、``docs/api/生产进度-V2.md``。
-#
-# 进度族统一取数 = ``ScjdQuery`` V2，**预取/查询粒度 = 「制单 × 部门」**
-# （groupbyFields = [dh, jhdh, chuanghao, huohao, bbreed, dept, deptname]，方案 M7）：
-# 这是老板缓存的全厂结果集粒度，也是列表层与产置分母的公共底料。列表层/汇总层
-# 由本地 SQL 从该粒度**重聚合**到目标粒度（方案 §4.5）：
-#   - 可加度量直接 SUM（bs / fhsl / sssl / wts，附录 A.3 实测 footer 可加）；
-#   - **比率列按 Σ分子 / Σ分母 重算**（wcl = Σsssl ÷ Σfhsl × 100），绝不对行取平均。
-#
-# 口径拍板（2026-10-11）：
-# - 完工率 wcl = sssl ÷ fhsl（实收 ÷ 发卡），不随分组维度变化（T1/T3）；
-#   旧「包完工率 = 完工包数 ÷ zbs」口径作废（R2）。
-# - 旧列删除（§3.2④）：rq（裁剪日期→由 dh 前 8 位派生制单日期）、
-#   description（品名）、sfwg（状态→由 wcl 派生）、zsl（裁剪数量→分母改用 fhsl）。
-# - 订单维度统一以 ``jhdh``（计划号）表达（R3）；空值**统一归入「未关联计划号」
-#   一组**（不丢弃、不臆造、不用 dh 冒充）；制单号 ``dh`` 是 MES 内部字段，
-#   另以「制单号」列输出用于行标识与下钻（T6：dh 与 jhdh 不是一一对应）。
-# - 行集无日期列：制单日期 = dh 前 8 位（附录 A.5 实测零越界），本地派生；
-#   解析失败的行不参与日期筛选（缓存路径整批弃用，见方案 §4.4）。
-# - 进度侧 ``dept``/``uid`` 为空的行是**契约行为**（未扫码工序行，uid/uname 为
-#   null，wgs=0，V2 文档 §6.1 明写）：在老板（全厂）视角保留，在任何部门视角
-#   由范围过滤自然排除（方案 §4.5 / 附录 A.4）。
-# - 下钻槽位不变：包级下钻按 ``jhdh``（订单维度）过滤，工序级下钻按 ``userid``
-#   （物料编号）过滤，均由适配层从 NarrowedFilters 下推（附录 E）。
-# - 排序一律本地做，不下发 ``orderbyFields``（方案 §3.2⑤）；列表层排序键 =
-#   订单号 + 制单号（分组键全集），顺序唯一。
-version: 3
+# Reviewed L1 production progress and drill-down recipes.
+# The shared fine-grained progress dataset retains sheet, package, material,
+# employee, department and worktype dimensions. The data source filters scope
+# and request conditions and projects each reviewed groupbyFields grain before
+# sandbox loading. Local ratios use sum(received)/sum(issued), never an average
+# of row ratios. Order dimensions use jhdh; empty plans share one group.
+version: 4
 capabilities:
   - capability_id: fr005_order_progress
     title: 订单/款号进度
@@ -212,9 +188,9 @@ capabilities:
       metrics: [order_count, package_count, issued_qty]
       preview_max_rows: 10
       notes:
-        - "「进度」列 = 实收数量 ÷ 发卡数量 × 100（完工率，2026-10-11 拍板）；旧「包完工率」口径已随 V1 接口作废。"
+        - "「进度」列 = 累计实收数量 ÷ 发卡数量 × 100。"
         - "「订单号」是计划号（jhdh）；无计划号的制单统一归入「未关联计划号」，制单号另列展示。"
-        - "「制单日期」由制单号前 8 位派生（流程卡制单日期）；「发卡数量」是该单流程卡的发卡数量（原「裁剪数量」分母口径，T5 拍板）。"
+        - "「制单日期」由制单号前 8 位派生（流程卡制单日期）；「发卡数量」是该单流程卡的发卡数量。"
         - "按款号查询且未指定订单号时，本表按款号合并为一行，进度按 Σ实收 ÷ Σ发卡 重算；「工序数」为各制单之和。"
 
   - capability_id: fr009_factory_order_overview
@@ -468,7 +444,7 @@ capabilities:
             NULLIF(COALESCE(uname, ''), '') AS operator,
             COALESCE(NULLIF(deptname, ''), NULLIF(dept, '')) AS dept_name
           FROM fetch_gx
-          ORDER BY worktype_order, worktype
+          ORDER BY worktype_order, worktype, operator, dept_name, issued_qty, done_qty
     result_columns:
       - name: worktype
         title: 工序

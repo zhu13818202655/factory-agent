@@ -33,6 +33,7 @@ from factory_agent.data_api.hongzhao import map_message_to_error
 from factory_agent.data_api.schemas import CredentialBundleResponse, MesEnvelope
 from factory_agent.domain import DeptId, EmployeeId, Role, TenantId, TenantMembership, UserId
 from factory_agent.domain.errors import (
+    ForbiddenError,
     MesError,
     UnauthenticatedError,
     UpstreamInvalidError,
@@ -112,7 +113,7 @@ class TokenCredentialExchange:
         self._entries_by_identity[_identity_key(principal.credential)] = entry
         _LOGGER.info(
             "mes.token.exchanged",
-            tenant_id=str(principal.credential.tenant_id),
+            tenant_id=hashlib.sha256(str(principal.credential.tenant_id).encode()).hexdigest(),
             role=principal.role.value,
         )
         return principal
@@ -148,6 +149,8 @@ class TokenCredentialExchange:
             raise UnauthenticatedError("no stored credential for this caller")
         bundle = await self._exchange(entry.encrypted_credential)
         principal = _principal_from_bundle(bundle)
+        if principal.credential != TrustedCredential(tenant_id=tenant_id, user_id=user_id):
+            raise ForbiddenError("credential identity changed during refresh")
         refreshed = replace(entry, principal=principal, bundle=bundle, exchanged_at=self._now())
         self._entries_by_identity[(str(tenant_id), str(user_id))] = refreshed
         self._entries_by_digest[digest_of(entry.encrypted_credential)] = refreshed
@@ -155,7 +158,7 @@ class TokenCredentialExchange:
             CURRENT_BUNDLE.set(bundle)
         _LOGGER.info(
             "mes.token.refreshed",
-            tenant_id=str(tenant_id),
+            tenant_id=hashlib.sha256(str(tenant_id).encode()).hexdigest(),
             role=principal.role.value,
         )
         return bundle
@@ -222,7 +225,18 @@ class GatewayTokenRefresher:
         bundle = CURRENT_BUNDLE.get()
         if bundle is None:
             raise UnauthenticatedError("no bound credential to refresh")
-        return await self._gateway.refresh_bundle(bundle.tenant_id, bundle.user)
+        refreshed = await self._gateway.refresh_bundle(bundle.tenant_id, bundle.user)
+        if (
+            refreshed.roles != bundle.roles
+            or refreshed.dept != bundle.dept
+            or frozenset(refreshed.effective_bound_depts) != frozenset(bundle.effective_bound_depts)
+        ):
+            # The new identity facts remain cached for the next authorization;
+            # this interaction cannot continue under its earlier DataScope.
+            CURRENT_BUNDLE.set(bundle)
+            raise ForbiddenError("credential scope changed; authorization is required")
+        CURRENT_BUNDLE.set(refreshed)
+        return refreshed
 
 
 class TokenBackedMembershipResolver:

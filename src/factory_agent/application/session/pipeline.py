@@ -479,15 +479,13 @@ class SessionPipelineMixin(SessionNarrationMixin):
         # FR-012 resolves the target employee in-tenant through the MES-filtered
         # EmployeeQuery; the employee enters the interaction with mes_filtered
         # trust and MES decides actual visibility on the wage call.
-        # Personal capabilities (FR-001/002/003/004) bind the caller's own uid;
-        # management/boss capabilities leave employee_ids unset so MES row-level
-        # filtering decides the visible range.
+        # Personal output/wages bind the caller's own uid. Income ranking needs
+        # the authorized population before selecting the caller's final row.
         is_any_employee = capability == Capability.ANY_EMPLOYEE_PAYROLL
         is_personal = capability in {
             Capability.OWN_OUTPUT,
             Capability.OWN_PAYROLL_SUMMARY,
             Capability.OWN_PAYROLL_DETAIL,
-            Capability.GROUP_INCOME_RANK,
         }
         try:
             if is_any_employee:
@@ -866,6 +864,8 @@ class SessionPipelineMixin(SessionNarrationMixin):
                         filters=filters,
                         time_range=time_range,
                         role=decision_context.role,
+                        caller_employee_id=decision_context.employee_id,
+                        caller_dept_ids=scope.dept_ids,
                     )
                 ),
                 run_slot,
@@ -1051,6 +1051,9 @@ class SessionPipelineMixin(SessionNarrationMixin):
         card_payload: dict[str, object] = (
             {"card": {**card, "time_range": echo}} if isinstance(card, dict) else {}
         )
+        cache_payload: dict[str, object] = (
+            {"cache_source": result.cache_source} if result.cache_source is not None else {}
+        )
         result_event = SessionEvent(
             sequence=state.next_sequence(),
             name=INTERACTION_RESULT,
@@ -1065,6 +1068,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
                 "answer": answer_text,
                 "time_range": echo,
                 **card_payload,
+                **cache_payload,
                 **({"consistency": consistency} if consistency is not None else {}),
             },
         )
@@ -1147,6 +1151,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
                             "answer": answer_text,
                             "time_range": echo,
                             **card_payload,
+                            **cache_payload,
                             **({"consistency": consistency} if consistency is not None else {}),
                         },
                     ),

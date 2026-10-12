@@ -6,8 +6,6 @@ they assert that factory-agent preserves the behaviours marked for migration and
 that the recorded source defects were replaced rather than inherited.
 """
 
-
-
 import json
 from pathlib import Path
 from typing import Any

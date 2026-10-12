@@ -1,25 +1,9 @@
-# Reviewed L1 output recipe. File changes are semantics changes and
-# require human review.
-#
-# 口径来源：``docs/product/需求及方案整理.md`` 员工功能表与「客户确认结论」、
-# ``docs/design/V2接口取数重构与缓存加速方案.md`` 附录 C.1（2026-10-11 换代）。
-#
-# FR-001 个人产量统计: personal output grouped by 日期 × 货号 × 工序.
-# Data source is GongziClQuery V2 (Type=0,1,2 三来源合并) with ``uid``
-# scope-sourced from the credential; the quantity column is `sl`
-# （客户确认：个人产量即实收数（合格数），次品不计）.
-#
-# 2026-10-11 换代说明：
-# - 取数源由 GongziMxQuery 换为 GongziClQuery V2（工资产量，不分页）；
-# - 日期列由 V1 的 ``rq`` 换为 V2 的 ``inputdate``（Flag=0 时间锚，附录 A.5 实测）；
-# - 工序列输出 ``wtname``（工序名称，V2 与 ``worktype`` 编码同接口直出）；
-# - 服务端按 ``inputdate/huohao/bbreed/worktype/wtname`` 分组（附录 C.1），
-#   本地只做排序——分组键即排序键，天然无并列（方案 §3.2⑤ 排序本地化的例外：
-#   键集合完整，顺序唯一）。
-#
-# 次品不在个人产量口径内（需求及方案整理·客户确认结论 2026-09-02：
-# 「个人产量即最终实收数（合格数），次品不考虑」），结果列不含次品数量。
-version: 3
+# Reviewed L1 personal output recipe.
+# Data comes from the shared GongziClQuery detail dataset (Flag=0, Type=0,1,2).
+# Scope filtering happens before sandbox loading; date/style/worktype totals
+# and their deterministic ordering are computed locally. Quantity is the
+# customer-confirmed qualified output sl, with defective quantity excluded.
+version: 4
 capabilities:
   - capability_id: fr001_personal_output
     title: 个人产量统计
@@ -31,7 +15,6 @@ capabilities:
         params:
           Flag: "0"
           Type: "0,1,2"
-          groupbyFields: [inputdate, huohao, bbreed, worktype, wtname]
       - step_id: aggregate
         kind: local
         depends_on: [fetch_wages]

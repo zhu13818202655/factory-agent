@@ -6,8 +6,6 @@ drains it at each commit via ``drain_mes_events`` without closing it, and
 a buffer, and calls outside a metered interaction are dropped.
 """
 
-
-
 from datetime import datetime, timezone
 
 from factory_agent.application import usage

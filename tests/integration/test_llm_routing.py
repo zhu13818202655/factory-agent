@@ -9,8 +9,6 @@ An always-failing upstream is started next to a healthy one, so a fallback here
 really crosses a process boundary. Nothing reaches the public network.
 """
 
-
-
 from collections.abc import Iterator
 
 import pytest

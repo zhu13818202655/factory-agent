@@ -1,7 +1,5 @@
 """XLSX renderer tests: valid workbook, formula neutralisation, totals."""
 
-
-
 import zipfile
 from decimal import Decimal
 from io import BytesIO

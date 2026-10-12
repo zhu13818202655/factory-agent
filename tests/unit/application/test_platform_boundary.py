@@ -1,7 +1,5 @@
 """PlatformScope isolation guard tests."""
 
-
-
 from datetime import datetime, timezone
 
 import pytest

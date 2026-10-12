@@ -1,35 +1,10 @@
-# Reviewed L1 payroll list/statistics recipes. File changes are
-# semantics changes and require human review.
-#
-# 口径来源：``docs/product/需求及方案整理.md`` 功能表与「客户确认结论」、
-# ``docs/design/V2接口取数重构与缓存加速方案.md`` 附录 C.1（2026-10-11 换代）。
-#
-# FR-004 收入排名（"我在小组里排第几"，仅 01 组长 / 02 管理 / 99 老板）:
-# GongziClQuery V2 **明细模式**取数（与工资族预取同参，命中老板缓存），
-# 本地按人聚合 SUM(je) 后排名；计算层按本人工号（_meta.self_uid）定位名次与
-# 金额，按本人所在小组（_meta.self_dept）过滤得到组内名次与组内总人数；
-# 仅输出本人一行结果。
-# **对 00 员工 V2 不报无权限、静默返回本人范围**（方案 §7.1 T9 实测），服务端
-# 拒绝不可依赖——该能力的 00 拒绝由本地能力矩阵完成（permission_matrix.py）。
-#
-# FR-008 员工工资清单与排名: 与 FR-004/002/003/012 完全同参、同一预取底料
-# （明细模式，附录 C.1 2026-10-11 二次拍板：原「服务端 [uid,uname,dept,deptname]
-# 分组下推」实测 ~90s 且分组未被服务端执行，改为明细模式 + 本地聚合，方案
-# §4.5 本地重聚合路径）；位次 = **本地排序后的先后**（排序不下发 MES，
-# 方案 §3.2⑤）：rank_position 全厂/可见范围名次、group_rank 组内名次按 dept
-# 分窗编号，两个窗口函数都必须显式以 ``uid ASC`` 打破并列（方案附录 G.5 最严重
-# 两处）。部门名由 V2 ``deptname`` 直出，不再关联 DeptQuery（附录 B.5）。
-#
-# FR-011 全厂工资统计（修订）: ①GongziClQuery V2 **明细模式**取数（与预取同参），
-# 本地按 dept 聚合 SUM(je) 得各车间/小组应发合计；②EmployeeQuery 不传 uid
-# 全量返回（基础数据接口不按权限过滤，客户确认 4），按 dept 汇总得在册人数；
-# ③部门名 V2 直出，不再关联 DeptQuery。人均工资 = 应发合计 ÷ 在册人数。
-#
-# FR-012 任一员工工资查询: 复用 FR-002 的 GongziClQuery V2 明细取数与本地合计
-# 配方（不传 groupbyFields，与工资族预取粒度同底料），``uid`` 改为目标员工
-# （由应用层经 EmployeeQuery 在当前租户解析后进入 NarrowedFilters，任何工资
-# 调用前完成校验；解析不到或同名未定 uid 均零业务调用拒绝）。
-version: 3
+# Reviewed L1 income ranking, payroll list and factory wage recipes.
+# Wage data always uses shared GongziClQuery details (Flag=0, Type=0,1,2).
+# Ranking sees the authorized population before selecting the trusted caller.
+# Registered headcount uses the shared safe employee directory projection;
+# wage participants cannot substitute employees with no output in the period.
+# Employee and department queries remain subject to the capability-role matrix.
+version: 4
 capabilities:
   - capability_id: fr004_group_income_rank
     title: 收入排名
@@ -39,37 +14,66 @@ capabilities:
         kind: api
         operation_id: GongziClQuery
         # 明细模式（不传 groupbyFields）= 工资族预取粒度，FR-002/003/008/011/012
-        # 同底料命中老板缓存；人员聚合在本地 compute 完成（2026-10-11 二次拍板）。
+        # 同底料命中老板缓存；人员聚合在本地 compute 完成。
         params:
           Flag: "0"
           Type: "0,1,2"
+      - step_id: fetch_employee
+        kind: api
+        operation_id: EmployeeQuery
+        depends_on: [fetch_income]
       - step_id: compute
         kind: local
-        depends_on: [fetch_income]
+        depends_on: [fetch_income, fetch_employee]
         compute: |
-          WITH visible AS (
+          WITH roster_depts AS (
+            SELECT CASE
+              WHEN COUNT(*) = 1 AND COALESCE(MAX(dept), '') <> ''
+              THEN MAX(dept) ELSE NULL END AS dept,
+              uid
+            FROM fetch_employee
+            GROUP BY uid
+          ),
+          current_dept AS (
+            SELECT dept FROM roster_depts
+            WHERE uid = (SELECT self_uid FROM _meta)
+              AND ((SELECT whole_tenant FROM _meta)
+                   OR dept IN (SELECT dept_id FROM _dept_scope))
+          ),
+          visible AS (
             SELECT
               uid,
-              uname,
-              dept,
               SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) AS je
             FROM fetch_income
-            GROUP BY uid, uname, dept
+            GROUP BY uid
+          ),
+          group_known AS (
+            SELECT (SELECT dept FROM current_dept) IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM visible v
+                LEFT JOIN roster_depts r ON r.uid = v.uid
+                WHERE r.dept IS NULL
+              ) AS known
           ),
           overall_ranked AS (
             SELECT uid, ROW_NUMBER() OVER (ORDER BY je DESC, uid ASC) AS overall_pos
             FROM visible
           ),
           group_ranked AS (
-            SELECT uid, ROW_NUMBER() OVER (ORDER BY je DESC, uid ASC) AS group_pos
-            FROM visible
-            WHERE dept = (SELECT self_dept FROM _meta)
+            SELECT v.uid, ROW_NUMBER() OVER (ORDER BY v.je DESC, v.uid ASC) AS group_pos
+            FROM visible v
+            JOIN roster_depts r ON r.uid = v.uid
+            WHERE r.dept = (SELECT dept FROM current_dept)
           )
           SELECT
             CAST(o.overall_pos AS VARCHAR) AS rank_position,
             CAST(v.je AS VARCHAR) AS amount,
-            CAST(g.group_pos AS VARCHAR) AS group_rank,
-            CAST((SELECT COUNT(*) FROM group_ranked) AS VARCHAR) AS group_size
+            CASE WHEN (SELECT known FROM group_known)
+                 THEN COALESCE(CAST(g.group_pos AS VARCHAR), 'unavailable')
+                 ELSE 'unavailable' END AS group_rank,
+            CASE WHEN (SELECT known FROM group_known)
+                 THEN CAST((SELECT COUNT(*) FROM group_ranked) AS VARCHAR)
+                 ELSE 'unavailable' END AS group_size
           FROM visible v
           JOIN overall_ranked o ON o.uid = v.uid
           LEFT JOIN group_ranked g ON g.uid = v.uid
@@ -115,7 +119,7 @@ capabilities:
         kind: api
         operation_id: GongziClQuery
         # 与 FR-002/003/004/011/012 完全同参：同一预取底料、同一缓存条目
-        # （明细模式，2026-10-11 二次拍板）；人员聚合在下方本地 compute 完成。
+        # （明细模式）；人员聚合在下方本地 compute 完成。
         params:
           Flag: "0"
           Type: "0,1,2"
@@ -224,7 +228,7 @@ capabilities:
       - step_id: fetch_income
         kind: api
         operation_id: GongziClQuery
-        # 明细模式（与预取同参）；部门聚合在本地 compute 完成（2026-10-11 二次拍板）。
+        # 明细模式（与预取同参）；部门聚合在本地 compute 完成。
         params:
           Flag: "0"
           Type: "0,1,2"

@@ -1,7 +1,5 @@
 """Scope-deviation review task tests."""
 
-
-
 from datetime import datetime, timedelta, timezone
 
 import pytest

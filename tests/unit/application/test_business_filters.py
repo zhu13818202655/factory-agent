@@ -1,7 +1,5 @@
 """Business filter resolution: dept/employee name -> id narrowing."""
 
-
-
 from datetime import datetime, timezone
 
 import pytest

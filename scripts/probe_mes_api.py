@@ -102,9 +102,7 @@ def _call(role: str, path: str, params: dict[str, Any]) -> None:
         token_body = {"app_key": credential}
         response = client.post(_TOKEN_PATH, json=token_body)
         response.raise_for_status()
-        token_result = cast(
-            "dict[str, Any]", response.json().get("result") or {}
-        )
+        token_result = cast("dict[str, Any]", response.json().get("result") or {})
         print(
             f"token ok  role={role}  roles={token_result.get('roles')}"
             f"  dept={token_result.get('dept')}"
@@ -159,7 +157,7 @@ def main() -> None:
         Flag="0",
         Type="0,1,2",
         # groupbyFields="uid,uname",          # 实验：字符串形态
-        groupbyFields=["uid", "uname"],     # 对照：数组形态
+        groupbyFields=["uid", "uname"],  # 对照：数组形态
         # uid="001",                        # 指定查某个员工
         # bbreed="纯棉T恤",                 # 货号名称（不是编号）
         # wtname="裁剪",                    # 工序名称

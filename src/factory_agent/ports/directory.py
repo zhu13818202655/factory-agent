@@ -10,7 +10,7 @@ past this boundary.
 from dataclasses import dataclass
 from typing import Protocol
 
-from factory_agent.domain import DataScope
+from factory_agent.domain import DataScope, TenantId
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +45,12 @@ class DirectoryResolver(Protocol):
     async def list_depts(self, scope: DataScope) -> tuple[DeptRecord, ...]: ...
 
     async def list_employees(self, scope: DataScope) -> tuple[EmployeeRecord, ...]: ...
+
+
+class TenantEmployeeRoster(Protocol):
+    async def fetch_employee_roster(
+        self, tenant_id: TenantId
+    ) -> tuple[tuple[EmployeeRecord, ...], bool]: ...
 
 
 __all__ = [

@@ -6,8 +6,6 @@ never returned. The application depends on the ``CacheStore`` protocol, never
 on this concrete client.
 """
 
-
-
 from typing import Any
 
 import redis.asyncio as aioredis  # type: ignore[reportMissingTypeStubs]
@@ -48,6 +46,16 @@ class RedisCacheStore:
     async def delete_prefix(self, prefix: str) -> None:
         async for key in self._client.scan_iter(match=f"{prefix}*"):
             await self._client.delete(key)
+
+    async def acquire_lease(self, key: str, token: str, ttl_seconds: int) -> bool:
+        return bool(await self._client.set(key, token, nx=True, ex=ttl_seconds))
+
+    async def release_lease(self, key: str, token: str) -> None:
+        script = (
+            "if redis.call('get', KEYS[1]) == ARGV[1] then "
+            "return redis.call('del', KEYS[1]) else return 0 end"
+        )
+        await self._client.eval(script, 1, key, token)
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -2,7 +2,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol, TypeVar
+from typing import Protocol, Self, TypeVar
 
 from factory_agent.domain import (
     DeptId,
@@ -105,7 +105,7 @@ class MembershipResolver(Protocol):
     ) -> TenantMembership: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class ResourceFetchResult:
     """One provably-complete (or explicitly incomplete) paged resource fetch.
 
@@ -122,6 +122,12 @@ class ResourceFetchResult:
     complete: bool
     reason: str | None = None
     footer: dict[str, str] | None = None
+    cache_source: str | None = None
+    cache_generated_at: str | None = None
+    shadow_result: Self | None = None
+    # Logical resource fetches: a cache hit costs zero, a fresh source costs one.
+    # HTTP pages and transport retries are recorded separately by MES metering.
+    source_call_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

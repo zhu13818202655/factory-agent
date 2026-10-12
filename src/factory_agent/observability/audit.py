@@ -87,7 +87,11 @@ class AuditEvent:
         for field_name in _AUDIT_FIELD_WHITELIST:
             value = getattr(self, field_name)
             if value is not None:
-                payload[field_name] = value.value if isinstance(value, StrEnum) else value
+                if field_name == "tenant_id":
+                    # The AppKey is an internal identity; audit consumers need correlation only.
+                    payload[field_name] = hashlib.sha256(str(value).encode()).hexdigest()
+                else:
+                    payload[field_name] = value.value if isinstance(value, StrEnum) else value
         return payload
 
 

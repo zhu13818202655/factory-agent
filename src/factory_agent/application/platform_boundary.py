@@ -1,7 +1,5 @@
 """Runtime guard isolating platform operations from factory business paths."""
 
-
-
 from factory_agent.domain import DataScope, PlatformScope
 
 

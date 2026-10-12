@@ -14,6 +14,8 @@ from typing import Literal, Protocol
 from factory_agent.domain import (
     CapabilityId,
     ConversationRecord,
+    DeptId,
+    EmployeeId,
     InteractionId,
     InteractionRecord,
     InteractionStatus,
@@ -325,6 +327,9 @@ class CapabilityRunRequest:
     filters: NarrowedFilters
     time_range: TimeRange
     role: Role | None = None
+    #: Trusted caller identity stays separate from the population being ranked.
+    caller_employee_id: EmployeeId | None = None
+    caller_dept_ids: frozenset[DeptId] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +363,8 @@ class CapabilityRunResult:
     #: and the persisted ``result_table`` message so live, replay and history
     #: streams carry an identical payload.
     card: dict[str, object] | None = None
+    #: Approved cache provenance only; it carries no customer fields or keys.
+    cache_source: dict[str, object] | None = None
 
 
 class CapabilityRunner(Protocol):

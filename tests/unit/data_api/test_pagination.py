@@ -1,5 +1,3 @@
-
-
 from typing import Any
 
 import pytest
@@ -260,3 +258,63 @@ async def test_probe_that_already_returned_the_total_is_not_rewalked() -> None:
     assert result.total == 80
     assert len(result.items) == 80
     assert len(adapter.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_first_page_full_response_obeys_row_budget() -> None:
+    adapter = _FullDumpAdapter(total=8)
+    result = await _pager(adapter, PagerBudget(max_rows=3)).fetch_all("ScjdQuery", {}, _Item)
+    assert not result.complete
+    assert result.reason == "row_budget_exhausted"
+    assert result.total == 8
+    assert len(result.items) == 3
+    assert len(adapter.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_first_page_surplus_rows_are_structured_overflow() -> None:
+    adapter = _adapter(
+        "ScjdQuery", _operation((FakePage(items=({"record_id": "r1"}, {"record_id": "r2"})),), 1)
+    )
+    result = await _pager(adapter).fetch_all("ScjdQuery", {}, _Item)
+    assert not result.complete
+    assert result.reason == "row_overflow"
+    assert result.total == 1
+    assert len(adapter.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_later_page_surplus_rows_are_structured_overflow() -> None:
+    pages = (
+        FakePage(items=({"record_id": "r1"}, {"record_id": "r2"})),
+        FakePage(items=({"record_id": "r3"}, {"record_id": "r4"})),
+    )
+    result = await _pager(_adapter("ScjdQuery", _operation(pages, 3))).fetch_all(
+        "ScjdQuery", {}, _Item
+    )
+    assert not result.complete
+    assert result.reason == "row_overflow"
+    assert result.total == 3
+
+
+@pytest.mark.asyncio
+async def test_final_page_cannot_bypass_the_row_budget() -> None:
+    pages = (
+        FakePage(items=({"record_id": "r1"}, {"record_id": "r2"})),
+        FakePage(items=({"record_id": "r3"}, {"record_id": "r4"})),
+    )
+    result = await _pager(
+        _adapter("ScjdQuery", _operation(pages, 4)), PagerBudget(max_rows=3)
+    ).fetch_all("ScjdQuery", {}, _Item)
+    assert not result.complete
+    assert result.reason == "row_budget_exhausted"
+    assert len(result.items) == 3
+
+
+@pytest.mark.asyncio
+async def test_negative_total_is_rejected_before_a_completeness_claim() -> None:
+    from factory_agent.domain.errors import UpstreamInvalidError
+
+    adapter = _adapter("ScjdQuery", _operation((FakePage(items=()),), -1))
+    with pytest.raises(UpstreamInvalidError):
+        await _pager(adapter).fetch_all("ScjdQuery", {}, _Item)

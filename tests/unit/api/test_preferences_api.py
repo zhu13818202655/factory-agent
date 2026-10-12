@@ -1,7 +1,5 @@
 """Push preferences + morning report API tests."""
 
-
-
 from datetime import datetime, timezone
 
 import httpx

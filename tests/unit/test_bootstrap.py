@@ -1,14 +1,20 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+import factory_agent.bootstrap as bootstrap
+from factory_agent.application.cache import AuthAwareCache
 from factory_agent.bootstrap import DependencyOverrides, build_container
 from factory_agent.config import FactoryAgentSettings
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
 from factory_agent.data_api.hongzhao import HongzhaoMesAdapter, MesRequest
+from factory_agent.data_api.pagination import PagerBudget
 from factory_agent.domain import UserId
 from factory_agent.ports import AuthenticatedIdentity
+from tests.support.cache import InMemoryCacheStore
 from tests.support.ports import FakeIdentityProvider, FakeMesDataSource
 
 
@@ -84,3 +90,48 @@ async def test_hongzhao_adapter_rejects_unreviewed_operations_before_http() -> N
 
     with pytest.raises(UnsupportedOperationError):
         await adapter.execute(MesRequest(operation_id="unreviewed", params={}))
+
+
+def test_owner_snapshot_budget_is_independent_of_interactive_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interactive: list[PagerBudget] = []
+    snapshot: list[PagerBudget] = []
+
+    class RecordingAdapter(HongzhaoMesAdapter):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            budget = kwargs["pager_budget"]
+            assert isinstance(budget, PagerBudget)
+            interactive.append(budget)
+            super().__init__(*args, **kwargs)
+
+    def owner_pool(*args: Any, **kwargs: Any) -> Any:
+        budget = kwargs["pager_budget"]
+        assert isinstance(budget, PagerBudget)
+        snapshot.append(budget)
+        return SimpleNamespace(fetchers=())
+
+    def memory_cache(settings: FactoryAgentSettings) -> AuthAwareCache:
+        return AuthAwareCache(
+            InMemoryCacheStore(),
+            contract_version="fixture",
+            metric_version="fixture",
+            data_version="fixture",
+        )
+
+    monkeypatch.setattr(bootstrap, "HongzhaoMesAdapter", RecordingAdapter)
+    monkeypatch.setattr(bootstrap, "OwnerSnapshotPool", owner_pool)
+    monkeypatch.setattr(bootstrap, "_build_cache", memory_cache)
+    build_container(
+        FactoryAgentSettings.model_validate(
+            {
+                "canonical_mes_base_url": "http://mock.invalid",
+                "mes_max_rows": 7,
+                "result_cache_snapshot_max_rows": 42,
+            }
+        )
+    )
+    assert len(interactive) == len(snapshot) == 1
+    assert interactive[0].max_rows == 7
+    assert snapshot[0].max_rows == 42
+    assert interactive[0].max_pages == snapshot[0].max_pages == 20

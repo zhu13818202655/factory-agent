@@ -11,7 +11,6 @@ unmodeled external shape, and each model still fails closed on the other
 shape's rows.
 """
 
-
 from datetime import UTC, datetime
 from typing import Any
 

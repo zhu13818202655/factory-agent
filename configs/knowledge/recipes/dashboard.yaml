@@ -1,29 +1,9 @@
-# Reviewed L1 factory output dashboard recipe. File changes are semantics
-# changes and require human review.
-#
-# 口径来源：``docs/design/V2接口取数重构与缓存加速方案.md``（2026-10-11 换代，
-# 附录 C.2/C.3 + §7 T5 拍板）、``docs/api/工资产量-V2.md``、``docs/api/生产进度-V2.md``。
-#
-# FR-013 全厂产量总览（综合看板，仅老板）：一张卡片同时给出
-# ① KPI 区（总产量 / 在产订单 / 人均月产）、② 日产量柱状图、③ 车间产量排名。
-# 主表 = 车间排名（口径与 fr007 一致，但名次恒输出——看板场景不做 N=1 置空）；
-# KPI 与日序列走 ``aux_outputs``（只进卡片，不进主表与导出文件）。
-#
-# 取数 = ``GongziClQuery`` V2 单次调用：``groupbyFields=[inputdate, dept, deptname,
-# bbreed, uid]`` 是 C.3 表 FR-013 两行（日序列 [inputdate]（或 +dept）× 车间排名
-# 同 FR-007 [dept, deptname, bbreed]）的并集粒度，再按 C.3 要点 1 拉入 ``uid``——
-# 主表排名、日序列、人均分母全部由本地重聚合得到，串行接口数 4 → 3（方案 §10 效率表）。
-# ``EmployeeQuery`` 保留（在册人数）；``ScjdQuery`` V2 保留（在产订单 KPI）。
-#
-# 在产订单口径（D-2 拍板 + T1 换代）：包完工率 wcl = sssl ÷ fhsl（实收 ÷ 发卡），
-# 「在产」= 同一制单（dh）Σ实收 < Σ发卡（与列表层「按 Σ分子/Σ分母 重算」同法，
-# 绝不对行级 wcl 取平均或直接去重行计数）。取不到（窗口无缝制记录）时该 KPI
-# 输出「暂无数据源」，不伪造 0。
-#
-# 人均月产 = ΣGongziClQuery.sl ÷ 在册人数（EmployeeQuery 全量行数）。
-#
-# 排序本地做（§3.2⑤）：产量降序，行序以 dept_id 升序打破（G.5 显式 tie-break）。
-version: 2
+# Reviewed L1 factory output dashboard recipe, available to the owner role.
+# Shared wage details supply total output, workshop ranking and daily trends.
+# The progress dataset supplies active sheet counts through its reviewed grain.
+# The shared safe employee roster supplies registered headcount, including
+# employees without reported output. Per-capita output uses that headcount.
+version: 4
 capabilities:
   - capability_id: fr013_factory_output_dashboard
     title: 全厂产量总览
@@ -35,7 +15,6 @@ capabilities:
         params:
           Flag: "0"
           Type: "0,1,2"
-          groupbyFields: [inputdate, dept, deptname, bbreed, uid]
       - step_id: fetch_scjd
         kind: api
         operation_id: ScjdQuery
@@ -108,7 +87,7 @@ capabilities:
       workshop_output_per_capita: factory-per-capita-v1
     degradation: incomplete_marker
     aux_outputs:
-      # 全厂级单值 KPI：总产量 / 在产订单（D-2 口径 + T1 换代）/ 人均月产。
+      # 全厂级单值 KPI：总产量 / 在产订单/ 人均月产。
       - aux_id: factory_kpi
         into: metrics
         depends_on: [fetch_cl, fetch_scjd, fetch_employee]

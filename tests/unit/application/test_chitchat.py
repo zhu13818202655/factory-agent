@@ -5,8 +5,6 @@ assistant text: requests must use ``ModelStage.CHAT`` with JSON output off and
 a persona that never fabricates factory data.
 """
 
-
-
 import pytest
 
 from factory_agent.application.chitchat import ChatResponder

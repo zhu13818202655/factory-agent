@@ -1,31 +1,11 @@
-# Reviewed L1 wage capability recipes. File changes are semantics
-# changes and require human review.
-#
-# 口径来源：``docs/product/需求及方案整理.md`` 功能表与「客户确认结论」、
-# ``docs/design/V2接口取数重构与缓存加速方案.md`` 附录 C.1（2026-10-11 换代）。
-#
-# FR-002 个人工资汇总 / FR-003 个人工资明细 / FR-012 任一员工工资 共享同一底行集
-# （同一 Uid + 同一窗口 + 同一 Type/Flag），差异只在本地聚合还是逐行展示：
-#   - 取数统一走 ``GongziClQuery`` V2 **明细模式**（不传 groupbyFields）——这也是
-#     工资族的老板缓存预取粒度（方案 §3.2②），三个能力因此共用同一缓存条目；
-#   - FR-002 在本地聚合出 汇总列，FR-003 逐行展示，FR-012 与 FR-002 同配方。
-# ``Type=0,1,2`` 三来源合并覆盖 扫码/吊挂/手工账（客户口径）。
-# ``Flag`` 默认 "0"（按录入时间；客户公共参数约定，附录 A.5 实测时间锚）。
-# ``uid`` 是 scope 派生（个人能力=本人、点名查人=目标工号），由适配层下推，
-# 绝不来自模型文本；对 00 员工 V2 不报无权限、静默返回本人范围（方案 §7.1 T9）。
-#
-# V2 明细模式列集合即接口默认列；金额/数量列（je/sl/price）为可加度量、无比率列，
-# 跨粒度本地再聚合安全（方案 §3.2②）。
-#
-# Local compute runs inside the per-interaction read-only DuckDB sandbox. The
-# kernel registers a `_meta` table with the natural-day count; `daily_avg`
-# is a factory-defined versioned rule (合计 ÷ 区间自然日天数), not a customer
-# formula, and is surfaced as an assumption label.
-#
-# footer_reconciliation compares the locally aggregated `gross_total` against
-# the MES `footer.je_total`; any mismatch is logged as a warning only — the
-# customer footer is trusted as authoritative and the check never changes the result.
-version: 3
+# Reviewed L1 personal wage recipes.
+# GongziClQuery details use Flag=0 and Type=0,1,2 and share the owner's dataset.
+# Caller scope is filtered before sandbox loading. Summary and detail outputs
+# share these same rows; daily average is total divided by natural day count.
+# Detail ordering is deterministic so cache and live final outputs can be compared.
+# Footer reconciliation is diagnostic and never substitutes customer footer totals
+# for the validated rows used in local computation.
+version: 4
 capabilities:
   - capability_id: fr002_personal_wage_summary
     title: 个人工资汇总
@@ -89,32 +69,39 @@ capabilities:
         params:
           Flag: "0"
           Type: "0,1,2"
+      - step_id: ordered_detail
+        kind: local
+        depends_on: [fetch_wages]
+        compute: |
+          SELECT inputdate, huohao, wtname, sl, price, je
+          FROM fetch_wages
+          ORDER BY inputdate, huohao, wtname, price, sl, je, id
     result_columns:
       - name: inputdate
         title: 日期
-        source_step: fetch_wages
+        source_step: ordered_detail
         column_type: date
       - name: huohao
         title: 款号
-        source_step: fetch_wages
+        source_step: ordered_detail
       - name: wtname
         title: 工序
-        source_step: fetch_wages
+        source_step: ordered_detail
       - name: sl
         title: 完成数量
-        source_step: fetch_wages
+        source_step: ordered_detail
         metric: payroll_piece_count
         column_type: quantity
         unit: 件
       - name: price
         title: 工价单价
-        source_step: fetch_wages
+        source_step: ordered_detail
         metric: payroll_unit_price
         column_type: money
         unit: 元
       - name: je
         title: 小计金额
-        source_step: fetch_wages
+        source_step: ordered_detail
         metric: payroll_amount
         column_type: money
         unit: 元
@@ -130,4 +117,4 @@ capabilities:
       metrics: [je]
       preview_max_rows: 10
       notes:
-        - "日期列是录入日期（Flag=0 按 inputdate 筛选，2026-10-11 V2 换代后由接口直出）。"
+        - "日期列是报工录入日期。"

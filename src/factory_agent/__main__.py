@@ -1,5 +1,3 @@
-
-
 import uvicorn
 
 from factory_agent.config import get_settings

@@ -9,8 +9,6 @@ alias: point ``parse`` at a live model and compare against ``expect``.
 Run: ``uv run --no-sync python -m tests.eval.score_intent``
 """
 
-
-
 import json
 from dataclasses import dataclass
 from datetime import datetime

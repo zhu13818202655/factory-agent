@@ -15,12 +15,12 @@ reach the executor only through ``NarrowedFilters`` and reviewed recipe params.
 import asyncio
 import itertools
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Protocol, cast
 
-from factory_agent.domain import CapabilityId, TimeRange
+from factory_agent.domain import CapabilityId, NarrowedFilters, Role, TimeRange
 from factory_agent.domain.errors import (
     InvalidRequestError,
     MesTimeoutError,
@@ -48,6 +48,7 @@ from factory_agent.ports.contracts import (
 from factory_agent.ports.session import CapabilityRunRequest, CapabilityRunResult
 
 _METADATA_TABLE = "_meta"
+_DEPT_SCOPE_TABLE = "_dept_scope"
 
 #: Reviewed filter params a recipe step may declare; they are never scope or
 #: credential identifiers. ``groupbyFields`` is the V2 server-side grouping
@@ -117,6 +118,12 @@ class StepExecutor(Protocol):
     ) -> ResourceFetchResult: ...
 
 
+class EmployeeRosterSource(Protocol):
+    """Validated employee directory projection shared with name resolution."""
+
+    async def fetch_roster(self, filters: NarrowedFilters) -> ResourceFetchResult: ...
+
+
 @dataclass(frozen=True, slots=True)
 class KernelSettings:
     """Conservative first-release bounds for the wage vertical slice."""
@@ -156,6 +163,7 @@ class KernelCapabilityRunner:
         clock: Any | None = None,
         resource_columns: Mapping[str, tuple[str, ...]] | None = None,
         base_data_operations: frozenset[str] | None = None,
+        employee_roster: EmployeeRosterSource | None = None,
     ) -> None:
         self._executor = executor
         self._recipes = recipes
@@ -171,6 +179,7 @@ class KernelCapabilityRunner:
         #: the whole tenant's uid/dept values and would otherwise look like an
         #: out-of-range return to the consistency validator.
         self._base_data_operations = base_data_operations or frozenset()
+        self._employee_roster = employee_roster
 
     @property
     def recipes(self) -> RecipeRegistry:
@@ -183,11 +192,14 @@ class KernelCapabilityRunner:
         time_range = request.time_range
 
         with InteractionSandbox(allowed_tables=tuple(self._allowed_tables(recipe))) as sandbox:
-            self._register_meta(sandbox, time_range, filters)
+            self._register_meta(sandbox, time_range, filters, request)
             fetches, call_count = await self._fetch_api_steps(
                 sandbox, recipe, filters, time_range, request.role
             )
             render_table = self._build_table(sandbox, recipe, fetches, filters, time_range)
+            render_table, fetches = await self._verify_final_shadow(
+                sandbox, recipe, fetches, filters, time_range, render_table
+            )
             observed = _observe_ownership(recipe, fetches, self._base_data_operations)
         result = self._to_run_result(
             render_table, time_range, fetches, call_count, started, observed
@@ -205,15 +217,28 @@ class KernelCapabilityRunner:
     def _allowed_tables(self, recipe: CapabilityRecipe) -> frozenset[str]:
         tables = {step.step_id for step in recipe.steps if step.kind == "api"}
         tables.add(_METADATA_TABLE)
+        tables.add(_DEPT_SCOPE_TABLE)
         return frozenset(tables)
 
     def _register_meta(
-        self, sandbox: InteractionSandbox, time_range: TimeRange, filters: Any
+        self,
+        sandbox: InteractionSandbox,
+        time_range: TimeRange,
+        filters: Any,
+        request: CapabilityRunRequest,
     ) -> None:
         days = _natural_days(time_range.start, time_range.end)
         today = self._clock().date().isoformat()
-        self_uid = _single_value(getattr(filters, "employee_ids", None))
-        self_dept = _single_value(getattr(filters, "dept_ids", None))
+        self_uid = (
+            str(request.caller_employee_id)
+            if request.caller_employee_id is not None
+            else _single_value(getattr(filters, "employee_ids", None))
+        )
+        self_dept = _single_value(
+            request.caller_dept_ids
+            if request.caller_dept_ids is not None
+            else getattr(filters, "dept_ids", None)
+        )
         sandbox.register_table(
             SandboxTable(
                 name=_METADATA_TABLE,
@@ -223,6 +248,7 @@ class KernelCapabilityRunner:
                         "today": today,
                         "self_uid": self_uid,
                         "self_dept": self_dept,
+                        "whole_tenant": request.role is Role.OWNER,
                         "warning_ratio_pct": self._settings.delivery_warning_ratio_percent,
                         "warning_fallback_days": self._settings.delivery_warning_fallback_days,
                     },
@@ -232,9 +258,20 @@ class KernelCapabilityRunner:
                     ("today", "VARCHAR"),
                     ("self_uid", "VARCHAR"),
                     ("self_dept", "VARCHAR"),
+                    ("whole_tenant", "BOOLEAN"),
                     ("warning_ratio_pct", "INTEGER"),
                     ("warning_fallback_days", "INTEGER"),
                 ),
+            )
+        )
+        sandbox.register_table(
+            SandboxTable(
+                name=_DEPT_SCOPE_TABLE,
+                rows=tuple(
+                    {"dept_id": str(dept)}
+                    for dept in sorted(getattr(filters, "dept_ids", None) or ())
+                ),
+                columns=(("dept_id", "VARCHAR"),),
             )
         )
 
@@ -274,7 +311,7 @@ class KernelCapabilityRunner:
                     fetched = await self._fetch_one(
                         step.operation_id, filters, time_range, static_params, role
                     )
-                    call_count += 1
+                    call_count += _source_call_count(fetched)
             except _UPSTREAM_DEGRADE_TYPES as error:
                 # Upstream data-source failure (option A): degrade this API step
                 # to an explicit incomplete state with an empty page instead of
@@ -396,7 +433,7 @@ class KernelCapabilityRunner:
                 if not outcome.complete:
                     complete = False
                     reason = outcome.reason or reason
-                fanout_calls += 1
+                fanout_calls += _source_call_count(outcome)
         if len(covered) < len(combos):
             complete = False
             reason = "call_budget_exhausted"
@@ -417,6 +454,8 @@ class KernelCapabilityRunner:
         extra_params: Mapping[str, Any] | None = None,
         role: Any | None = None,
     ) -> ResourceFetchResult:
+        if operation_id == "EmployeeQuery" and self._employee_roster is not None:
+            return await self._employee_roster.fetch_roster(filters)
         return await self._executor.execute_full_step(
             filters,
             ExecutionRequest(
@@ -444,6 +483,67 @@ class KernelCapabilityRunner:
     # ------------------------------------------------------------------
     # Table construction.
     # ------------------------------------------------------------------
+
+    async def _verify_final_shadow(
+        self,
+        sandbox: InteractionSandbox,
+        recipe: CapabilityRecipe,
+        fetches: dict[str, ResourceFetchResult],
+        filters: Any,
+        time_range: TimeRange,
+        cached: ResultTable,
+    ) -> tuple[ResultTable, dict[str, ResourceFetchResult]]:
+        """Compare fully computed rows, totals and card outputs in one sandbox."""
+        shadow_fetches = {
+            step_id: fetched.shadow_result or fetched for step_id, fetched in fetches.items()
+        }
+        if all(fetched.shadow_result is None for fetched in fetches.values()):
+            return cached, fetches
+        for step in recipe.steps:
+            if step.kind != "api" or step.step_id not in shadow_fetches:
+                continue
+            fetched = shadow_fetches[step.step_id]
+            sandbox.replace_table(
+                SandboxTable(
+                    name=step.step_id,
+                    rows=tuple(cast(dict[str, Any], row) for row in fetched.rows),
+                    columns=self._table_columns_for(step, fetched.rows, recipe),
+                )
+            )
+        realtime = self._build_table(sandbox, recipe, shadow_fetches, filters, time_range)
+        consistent = (
+            cached.columns == realtime.columns
+            and cached.rows == realtime.rows
+            and cached.totals == realtime.totals
+            and cached.card == realtime.card
+            and cached.incomplete == realtime.incomplete
+            and cached.incomplete_reason == realtime.incomplete_reason
+            and cached.warnings == realtime.warnings
+        )
+        if consistent:
+            release = getattr(self._executor, "release_cached_result", None)
+            if release is not None:
+                for fetched in fetches.values():
+                    if fetched.shadow_result is not None:
+                        release(fetched)
+            return cached, fetches
+        _LOGGER.warning(
+            "cache_shadow_mismatch",
+            capability_id=str(recipe.capability_id),
+            cached_rows=len(cached.rows),
+            realtime_rows=len(realtime.rows),
+        )
+        discard = getattr(self._executor, "discard_cached_result", None)
+        if discard is not None:
+            for fetched in fetches.values():
+                if fetched.shadow_result is not None:
+                    await discard(fetched)
+        return realtime, {
+            step_id: replace(
+                fetched, cache_source=None, cache_generated_at=None, shadow_result=None
+            )
+            for step_id, fetched in shadow_fetches.items()
+        }
 
     def _build_table(
         self,
@@ -788,6 +888,7 @@ class KernelCapabilityRunner:
             observed_uid_values=observed.uids if observed is not None else (),
             observed_dept_values=observed.depts if observed is not None else (),
             card=table.card,
+            cache_source=_cache_provenance(fetches),
         )
 
     @staticmethod
@@ -803,6 +904,31 @@ class KernelCapabilityRunner:
 # ----------------------------------------------------------------------
 # Pure helpers.
 # ----------------------------------------------------------------------
+
+
+def _source_call_count(fetched: ResourceFetchResult) -> int:
+    if fetched.source_call_count is not None:
+        return fetched.source_call_count
+    return int(fetched.cache_source is None or fetched.shadow_result is not None)
+
+
+def _cache_provenance(fetches: Mapping[str, ResourceFetchResult]) -> dict[str, object] | None:
+    sources: set[str] = set()
+    generated_at: set[str] = set()
+    for fetched in fetches.values():
+        if fetched.cache_source is None or fetched.cache_source not in {"query", "precompute"}:
+            continue
+        sources.add(fetched.cache_source)
+        if fetched.cache_generated_at is not None:
+            try:
+                generated = datetime.fromisoformat(fetched.cache_generated_at)
+            except ValueError:
+                continue
+            if generated.tzinfo is not None:
+                generated_at.add(generated.isoformat())
+    if not sources:
+        return None
+    return {"sources": sorted(sources), "generated_at": sorted(generated_at)}
 
 
 def render_table_from_run_result(result: CapabilityRunResult) -> RenderTable:
@@ -1094,6 +1220,7 @@ def _build_totals(
 
 
 __all__ = [
+    "EmployeeRosterSource",
     "KernelCapabilityRunner",
     "KernelSettings",
     "StepExecutor",

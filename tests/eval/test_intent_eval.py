@@ -6,8 +6,6 @@ grounding, and fault-recovery groups. A regression in the interpreter fails
 here, independent of any model choice.
 """
 
-
-
 import json
 from pathlib import Path
 

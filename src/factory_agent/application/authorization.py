@@ -10,8 +10,6 @@ availability is decided by the capability-role matrix in
 ``application/permission_matrix.py``.
 """
 
-
-
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum

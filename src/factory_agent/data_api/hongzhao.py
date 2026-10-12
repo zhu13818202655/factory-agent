@@ -409,7 +409,9 @@ class HongzhaoMesAdapter:
             # 工序级下钻的物料编号走 ``userid``。与 HuohaoWtCLQuery 同法：服务端
             # 一次只接受一个值，恰好一个时下推，多个时保持全量由本地 compute 过滤。
             if filters.order_codes is not None and len(filters.order_codes) == 1:
-                params["jhdh"] = next(iter(filters.order_codes))
+                groupby = params.get("groupbyFields") or ()
+                order_field = "dh" if "baohao" in groupby else "jhdh"
+                params[order_field] = next(iter(filters.order_codes))
             if filters.style_codes is not None and len(filters.style_codes) == 1:
                 params["bbreed"] = next(iter(filters.style_codes))
             if filters.material_ids is not None and len(filters.material_ids) == 1:

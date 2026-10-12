@@ -6,8 +6,6 @@ never carry sensitive values — only counts, digests of the offending values,
 and the human-readable expected/actual range summaries.
 """
 
-
-
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol

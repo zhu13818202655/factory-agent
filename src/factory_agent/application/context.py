@@ -7,8 +7,6 @@ value, and merging resets the stale ``missing``/``ambiguous`` diagnostics so the
 completeness check can repopulate them.
 """
 
-
-
 from dataclasses import dataclass, replace
 from datetime import datetime
 

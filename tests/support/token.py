@@ -8,8 +8,6 @@ real exchange. It exists only in ``tests/support`` and must never be imported
 from production code.
 """
 
-
-
 from collections.abc import Mapping
 from datetime import datetime, timezone
 

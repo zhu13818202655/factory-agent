@@ -7,8 +7,6 @@ from the trusted ``DataScope``. A low-confidence or incomplete result produces a
 short clarification question instead of an unbounded query.
 """
 
-
-
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone

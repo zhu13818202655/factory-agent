@@ -32,6 +32,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "DELETE FROM mes_operation_category WHERE operation_id = 'GongziClQuery'"
-    )
+    op.execute("DELETE FROM mes_operation_category WHERE operation_id = 'GongziClQuery'")

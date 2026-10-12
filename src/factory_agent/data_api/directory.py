@@ -18,7 +18,9 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from factory_agent.domain import DataScope, DeptId, EmployeeId, NarrowedFilters, TenantId
-from factory_agent.ports.directory import DeptRecord, EmployeeRecord
+from factory_agent.domain.errors import UpstreamInvalidError
+from factory_agent.ports.contracts import ResourceFetchResult
+from factory_agent.ports.directory import DeptRecord, EmployeeRecord, TenantEmployeeRoster
 
 if TYPE_CHECKING:
     from factory_agent.data_api.catalog import ApiCatalog
@@ -71,12 +73,18 @@ class MesDirectorySource:
         )
 
     async def list_employees(self, scope: DataScope) -> tuple[EmployeeRecord, ...]:
-        rows = await self._adapter.fetch_resource_rows(
+        return await self.list_employees_for_tenant(scope.tenant_id)
+
+    async def list_employees_for_tenant(self, tenant_id: TenantId) -> tuple[EmployeeRecord, ...]:
+        fetched = await self._adapter.fetch_resource(
             "EmployeeQuery",
-            NarrowedFilters(tenant_id=scope.tenant_id, employee_ids=None, dept_ids=None),
+            NarrowedFilters(tenant_id=tenant_id, employee_ids=None, dept_ids=None),
             _WIDE_RANGE,
             200,
         )
+        if not fetched.complete:
+            raise UpstreamInvalidError("employee roster is not provably complete")
+        rows = fetched.rows
         return tuple(
             EmployeeRecord(
                 employee_id=str(row["uid"]),
@@ -87,6 +95,11 @@ class MesDirectorySource:
             for row in rows
             if row.get("uid") is not None
         )
+
+    async def fetch_employee_roster(
+        self, tenant_id: TenantId
+    ) -> tuple[tuple[EmployeeRecord, ...], bool]:
+        return await self.list_employees_for_tenant(tenant_id), False
 
     # ---------------------------------------------------------------- helpers
 
@@ -117,3 +130,29 @@ class MesDirectorySource:
 
 
 __all__ = ["MesDirectorySource"]
+
+
+class CachedEmployeeRosterFetcher:
+    """Project the shared roster into the reviewed headcount input without private fields."""
+
+    def __init__(self, directory: TenantEmployeeRoster) -> None:
+        self._directory = directory
+
+    async def fetch_roster(self, filters: NarrowedFilters) -> ResourceFetchResult:
+        records, cached = await self._directory.fetch_employee_roster(filters.tenant_id)
+        rows: tuple[dict[str, object], ...] = tuple(
+            {
+                "uid": record.employee_id,
+                "uname": record.name,
+                "name_pk": record.name_pk,
+                "dept": record.dept or "",
+            }
+            for record in records
+        )
+        return ResourceFetchResult(
+            rows=rows,
+            total=len(rows),
+            pages_fetched=1,
+            complete=True,
+            cache_source="directory" if cached else None,
+        )

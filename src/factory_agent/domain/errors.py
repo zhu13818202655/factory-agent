@@ -5,8 +5,6 @@ credentials, employee/dept ID lists, or business quantities). Callers pass
 sanitized, category-level text only.
 """
 
-
-
 from enum import StrEnum
 
 

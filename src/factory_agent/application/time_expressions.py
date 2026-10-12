@@ -5,8 +5,6 @@ computed here from an injected clock and the configured factory timezone, so
 relative-time behaviour is reproducible in tests.
 """
 
-
-
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -22,8 +20,18 @@ _CN_MONTH = re.compile(r"^(\d{4})\s*年\s*(\d{1,2})\s*月$")
 _BARE_MONTH = re.compile(r"^(\d{1,2})\s*月(?:份)?$")
 _CN_BARE_MONTH = re.compile(r"^([一二三四五六七八九十]{1,3})\s*月(?:份)?$")
 _CN_MONTH_NUMBERS = {
-    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
-    "七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12,
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+    "十一": 11,
+    "十二": 12,
 }
 
 #: Customer-confirmed time-range ceiling: at most the past year. Requests

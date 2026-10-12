@@ -11,8 +11,6 @@ commit; the payload shape is validated before write. A metering failure is
 alerted and never blocks the interaction.
 """
 
-
-
 import hashlib
 import uuid
 from collections.abc import Mapping

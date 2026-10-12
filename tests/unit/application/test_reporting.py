@@ -1,7 +1,5 @@
 """Morning-report generation + local push channel tests."""
 
-
-
 from datetime import datetime, timezone
 
 import pytest

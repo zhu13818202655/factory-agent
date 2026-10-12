@@ -1,7 +1,5 @@
 """Deterministic in-process HTTP transports for adapter unit tests."""
 
-
-
 from typing import Any
 
 import httpx

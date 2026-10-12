@@ -1,5 +1,3 @@
-
-
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -500,9 +498,7 @@ async def test_drill_body_accepts_a_complete_window() -> None:
     # 下钻载荷是进程内状态：发起与领取流必须走同一个应用实例（单 worker 部署），
     # 换一个实例会把它当作「从未被领取的 pending」，本轮就退回纯文本路径了。
     async with client(store, runner, role=Role.MANAGER) as http:
-        created = await http.post(
-            "/v1/sessions/session-1/interactions", json=body, headers=HEADERS
-        )
+        created = await http.post("/v1/sessions/session-1/interactions", json=body, headers=HEADERS)
         assert created.status_code == 201
         interaction_id = created.json()["interaction_id"]
         await http.get(f"/v1/interactions/{interaction_id}/stream", headers=HEADERS)

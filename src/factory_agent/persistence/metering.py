@@ -11,8 +11,6 @@ transaction. The metering transaction is intentionally separate from the
 business commit — a metering failure can therefore never roll back an answer.
 """
 
-
-
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any

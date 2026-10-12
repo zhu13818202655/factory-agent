@@ -3,6 +3,7 @@
 对应 ``src/factory_agent/application/prefetch.py`` 与方案 §4.3。
 """
 
+import asyncio
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, cast
@@ -10,9 +11,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from factory_agent.application.cache import AuthAwareCache
 from factory_agent.application.prefetch import PREFETCH_PLANS, V2PrefetchWorker
 from factory_agent.data_api.result_cache import V2ResultCache
+from factory_agent.domain import TenantId
 from factory_agent.ports.contracts import ResourceFetchResult
+from tests.support.cache import InMemoryCacheStore
 
 CST = ZoneInfo("Asia/Shanghai")
 
@@ -50,6 +54,7 @@ class FakeResultCache:
         window: tuple[str, str],
         *,
         source: str,
+        deadline: float | None = None,
     ) -> bool:
         self.writes.append((operation_id, (window[0], window[1]), source))
         return bool(rows)
@@ -217,6 +222,7 @@ async def test_run_once_alerts_when_rows_cannot_be_written():
             window: tuple[str, str],
             *,
             source: str,
+            deadline: float | None = None,
         ) -> bool:
             self.writes.append((operation_id, (window[0], window[1]), source))
             return False  # 存储拒绝写入，但取数本身是成功的
@@ -326,3 +332,247 @@ async def test_warmup_failure_does_not_block_forever(monkeypatch: pytest.MonkeyP
     await worker.run_warmup_then_forever()
     assert order == ["forever"]
     assert [kind for kind, _ in alerts.calls] == ["cache_prefetch_warmup_failed"]
+
+
+@pytest.mark.asyncio
+async def test_pre_two_am_warmup_does_not_skip_the_daily_settled_refresh() -> None:
+    calls: list[str] = []
+    coordination = AuthAwareCache(
+        InMemoryCacheStore(),
+        contract_version="fixture",
+        metric_version="fixture",
+        data_version="fixture",
+    )
+
+    async def fetch(
+        operation_id: str, window: tuple[str, str], extra_params: Mapping[str, Any]
+    ) -> ResourceFetchResult:
+        calls.append(operation_id)
+        assert "groupbyFields" not in extra_params
+        return ResourceFetchResult(
+            rows=({"fixture": "row"},), total=1, pages_fetched=1, complete=True
+        )
+
+    worker = V2PrefetchWorker(
+        fetch, FakeResultCache(), "fixture-factory", coordination=coordination
+    )
+    before = datetime(2026, 10, 12, 1, 0, tzinfo=CST)
+    after = datetime(2026, 10, 12, 2, 0, tzinfo=CST)
+    assert await worker.run_once(before) == {"GongziClQuery": 1, "ScjdQuery": 1}
+    assert await worker.run_once(before) == {}
+    assert await worker.run_once(after) == {"GongziClQuery": 1, "ScjdQuery": 1}
+    assert calls == ["GongziClQuery", "ScjdQuery", "GongziClQuery", "ScjdQuery"]
+
+
+@pytest.mark.asyncio
+async def test_two_replicas_share_one_daily_producer_lease_and_completion_marker() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[str] = []
+    store = InMemoryCacheStore()
+
+    def coordinator() -> AuthAwareCache:
+        return AuthAwareCache(
+            store, contract_version="fixture", metric_version="fixture", data_version="fixture"
+        )
+
+    async def fetch(
+        operation_id: str, window: tuple[str, str], extra_params: Mapping[str, Any]
+    ) -> ResourceFetchResult:
+        calls.append(operation_id)
+        entered.set()
+        await release.wait()
+        return ResourceFetchResult(
+            rows=({"fixture": "row"},), total=1, pages_fetched=1, complete=True
+        )
+
+    first = V2PrefetchWorker(
+        fetch, FakeResultCache(), "fixture-factory", coordination=coordinator()
+    )
+    second = V2PrefetchWorker(
+        fetch, FakeResultCache(), "fixture-factory", coordination=coordinator()
+    )
+    now = datetime(2026, 10, 12, 2, 0, tzinfo=CST)
+    active = asyncio.create_task(first.run_once(now))
+    await entered.wait()
+    assert await second.run_once(now) == {}
+    release.set()
+    assert await active == {"GongziClQuery": 1, "ScjdQuery": 1}
+    assert await second.run_once(now) == {}
+    assert calls == ["GongziClQuery", "ScjdQuery"]
+
+
+@pytest.mark.asyncio
+async def test_run_pins_lease_marker_and_snapshot_day_when_lookup_crosses_midnight() -> None:
+    before = datetime(2026, 10, 12, 23, 59, tzinfo=CST)
+    after = datetime(2026, 10, 13, 0, 0, tzinfo=CST)
+    current = [before]
+    days: list[str] = []
+
+    class MidnightStore(InMemoryCacheStore):
+        async def get(self, key: str) -> bytes | None:
+            current[0] = after
+            return await super().get(key)
+
+    class DayRecorder(FakeResultCache):
+        def prefetch_window(self, today: str) -> tuple[str, str]:
+            days.append(today)
+            return super().prefetch_window(today)
+
+    async def fetch(
+        operation_id: str, window: tuple[str, str], extra_params: Mapping[str, Any]
+    ) -> ResourceFetchResult:
+        return ResourceFetchResult(
+            rows=({"fixture": "row"},), total=1, pages_fetched=1, complete=True
+        )
+
+    store = MidnightStore()
+    coordinator = AuthAwareCache(
+        store, contract_version="fixture", metric_version="fixture", data_version="fixture"
+    )
+    worker = V2PrefetchWorker(
+        fetch,
+        DayRecorder(),
+        "fixture-factory",
+        coordination=coordinator,
+        clock=lambda: current[0],
+    )
+    assert await worker.run_once() == {"GongziClQuery": 1, "ScjdQuery": 1}
+    assert current[0] == after
+    assert days == ["2026-10-12"]
+    marker = coordinator.build_key(
+        "v2_result",
+        TenantId("fixture-factory"),
+        "prefetch-completed",
+        {"job": "detail-prefetch", "day": "2026-10-12", "phase": "daily"},
+    )
+    assert store.values == {marker: b"complete"}
+
+
+@pytest.mark.asyncio
+async def test_timeout_releases_producer_lease_before_another_replica_retries() -> None:
+    class LeaseRecorder(InMemoryCacheStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lease_seconds: list[int] = []
+
+        async def acquire_lease(self, key: str, token: str, ttl_seconds: int) -> bool:
+            self.lease_seconds.append(ttl_seconds)
+            return await super().acquire_lease(key, token, ttl_seconds)
+
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+    store = LeaseRecorder()
+    cache = FakeResultCache()
+    alerts = AlertRecorder()
+    calls: list[str] = []
+
+    async def fetch(
+        operation_id: str, window: tuple[str, str], extra_params: Mapping[str, Any]
+    ) -> ResourceFetchResult:
+        calls.append(operation_id)
+        if len(calls) == 1:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        return ResourceFetchResult(
+            rows=({"fixture": "row"},), total=1, pages_fetched=1, complete=True
+        )
+
+    def worker(timeout: float) -> V2PrefetchWorker:
+        coordinator = AuthAwareCache(
+            store, contract_version="fixture", metric_version="fixture", data_version="fixture"
+        )
+        return V2PrefetchWorker(
+            fetch,
+            cache,
+            "fixture-factory",
+            coordination=coordinator,
+            run_timeout_seconds=timeout,
+            alerts=alerts,
+        )
+
+    first, second = worker(0.01), worker(1)
+    now = datetime(2026, 10, 12, 2, tzinfo=CST)
+    active = asyncio.create_task(first.run_once(now))
+    await entered.wait()
+    assert await second.run_once(now) == {}
+    assert await active == {}
+    assert cancelled.is_set()
+    assert store.leases == {}
+    assert cache.writes == []
+    assert b"complete" not in store.values.values()
+    assert getattr(first, "_retry_needed") is True
+    assert [name for name, _ in alerts.calls] == ["cache_prefetch_timeout"]
+    assert await second.run_once(now) == {"GongziClQuery": 1, "ScjdQuery": 1}
+    assert b"complete" in store.values.values()
+    assert calls == ["GongziClQuery", "GongziClQuery", "ScjdQuery"]
+    assert store.lease_seconds == [31, 31, 31]
+
+
+@pytest.mark.asyncio
+async def test_completion_marker_failure_keeps_data_available_and_retries():
+    class MarkerFailStore(InMemoryCacheStore):
+        async def put(self, key: str, value: bytes, ttl_seconds: int) -> None:
+            if value == b"complete":
+                raise RuntimeError("marker-failure-private-canary")
+            await super().put(key, value, ttl_seconds)
+
+    store = MarkerFailStore()
+    cache = FakeResultCache()
+    alerts = AlertRecorder()
+    calls: list[str] = []
+
+    async def fetch(
+        operation_id: str, window: tuple[str, str], extra_params: Mapping[str, Any]
+    ) -> ResourceFetchResult:
+        calls.append(operation_id)
+        return ResourceFetchResult(
+            rows=({"fixture": "row"},), total=1, pages_fetched=1, complete=True
+        )
+
+    coordinator = AuthAwareCache(
+        store, contract_version="fixture", metric_version="fixture", data_version="fixture"
+    )
+    worker = V2PrefetchWorker(
+        fetch, cache, "fixture-factory", coordination=coordinator, alerts=alerts
+    )
+    assert await worker.run_once() == {"GongziClQuery": 1, "ScjdQuery": 1}
+    assert getattr(worker, "_retry_needed") is True
+    assert len(cache.writes) == 2
+    assert b"complete" not in store.values.values()
+    assert alerts.calls[0][0] == "cache_prefetch_marker_write_failed"
+    assert "marker-failure-private-canary" not in repr(alerts.calls)
+
+
+@pytest.mark.asyncio
+async def test_complete_empty_snapshot_write_failure_alerts_and_remains_retryable() -> None:
+    alerts = AlertRecorder()
+    calls: list[str] = []
+    store = InMemoryCacheStore()
+
+    async def fetch(
+        operation_id: str, window: tuple[str, str], extra_params: Mapping[str, Any]
+    ) -> ResourceFetchResult:
+        calls.append(operation_id)
+        return ResourceFetchResult(rows=(), total=0, pages_fetched=1, complete=True)
+
+    worker = V2PrefetchWorker(
+        fetch,
+        FakeResultCache(),
+        "fixture-factory",
+        alerts=alerts,
+        coordination=AuthAwareCache(
+            store, contract_version="fixture", metric_version="fixture", data_version="fixture"
+        ),
+    )
+    now = datetime(2026, 10, 12, 2, 0, tzinfo=CST)
+    assert await worker.run_once(now) == {"GongziClQuery": 0, "ScjdQuery": 0}
+    assert await worker.run_once(now) == {"GongziClQuery": 0, "ScjdQuery": 0}
+    assert calls == ["GongziClQuery", "ScjdQuery"] * 2
+    assert len(alerts.calls) == 4
+    assert all(kind == "cache_prefetch_write_failed" for kind, _ in alerts.calls)
+    assert "fixture-factory" not in repr(alerts.calls)
+    assert store.values == {}

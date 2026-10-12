@@ -5,8 +5,6 @@ ownership pair; there is deliberately no "by id only" access path, matching the
 session store.
 """
 
-
-
 from datetime import datetime
 from typing import Any
 

@@ -34,7 +34,7 @@ def _layers() -> tuple[type[Any], ...]:
 
 
 def _layer_source(layer: type[Any]) -> ast.Module:
-    return ast.parse(Path(inspect.getfile(layer)).read_text())
+    return ast.parse(Path(inspect.getfile(layer)).read_text(encoding="utf-8"))
 
 
 def _declared_members(layer: type[Any]) -> frozenset[str]:

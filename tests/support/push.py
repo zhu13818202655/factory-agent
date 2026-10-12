@@ -1,7 +1,5 @@
 """In-memory push fakes for tests."""
 
-
-
 from dataclasses import dataclass, field
 
 from factory_agent.domain import TenantId, UserId

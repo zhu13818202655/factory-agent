@@ -58,6 +58,7 @@ from factory_agent.ports import (
     ModelGatewayError,
 )
 from factory_agent.ports.contracts import TrustedCredential
+from factory_agent.ports.session import CapabilityRunRequest, CapabilityRunResult
 from tests.support.authorization import (
     FakeMembershipSource,
     FakeOrganizationSource,
@@ -81,6 +82,11 @@ CATALOG = CapabilityCatalog(
         CapabilitySpec(
             capability_id=CapabilityId("FR-001"),
             title="查看本人产量",
+            required_slots=("time_range",),
+        ),
+        CapabilitySpec(
+            capability_id=CapabilityId("FR-004"),
+            title="收入排名",
             required_slots=("time_range",),
         ),
         CapabilitySpec(
@@ -530,6 +536,33 @@ async def test_result_event_and_message_carry_the_same_card_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_result_event_and_message_share_approved_cache_provenance() -> None:
+    provenance: dict[str, object] = {
+        "sources": ["precompute"],
+        "generated_at": ["2026-08-24T02:00:00+00:00"],
+    }
+
+    class CachedRunner(RecordingCapabilityRunner):
+        async def run(self, request: CapabilityRunRequest) -> CapabilityRunResult:
+            result = await super().run(request)
+            return replace(result, cache_source=provenance)
+
+    service, store, _ = build(runner=CachedRunner())
+    record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
+    events = await drain(service, record.interaction_id)
+    result_event = next(event for event in events if event.name == INTERACTION_RESULT)
+    table_message = next(
+        message
+        for message in store.messages
+        if message.interaction_id == record.interaction_id
+        and message.kind is MessageKind.RESULT_TABLE
+    )
+    assert result_event.data["cache_source"] == provenance
+    assert table_message.payload["cache_source"] == provenance
+    assert set(as_dict(result_event.data["cache_source"])) == {"sources", "generated_at"}
+
+
+@pytest.mark.asyncio
 async def test_result_without_card_keeps_the_old_contract() -> None:
     service, store, _ = build()
     record = await service.start(credential(), StartRequest(session_id=SESSION, text="上个月产量"))
@@ -556,6 +589,39 @@ async def test_executor_only_receives_scope_narrowed_filters() -> None:
     filters = runner.requests[0].filters
     assert filters.tenant_id == TenantId("tenant-a")
     assert filters.employee_ids == frozenset({EmployeeId("emp-1")})
+
+
+@pytest.mark.parametrize("role", (Role.GROUP_LEADER, Role.MANAGER, Role.OWNER))
+@pytest.mark.asyncio
+async def test_income_rank_fetches_authorized_population_then_locates_trusted_caller(
+    role: Role,
+) -> None:
+    payload = (
+        '{"capability_id": "FR-004", "confidence": 0.95, "slots": {"time_expression": "上个月"}}'
+    )
+    service, _, runner = build([payload], role=role)
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="上个月我在小组工资排名第几")
+    )
+    await drain(service, record.interaction_id)
+    request = runner.requests[0]
+    assert request.filters.employee_ids is None
+    assert request.filters.dept_ids == frozenset({DeptId("dept-1")})
+    assert request.caller_employee_id == EmployeeId("emp-1")
+    assert request.caller_dept_ids == frozenset({DeptId("dept-1")})
+
+
+@pytest.mark.asyncio
+async def test_income_rank_employee_is_denied_before_any_runner_call() -> None:
+    payload = (
+        '{"capability_id": "FR-004", "confidence": 0.95, "slots": {"time_expression": "上个月"}}'
+    )
+    service, _, runner = build([payload], role=Role.EMPLOYEE)
+    record = await service.start(
+        credential(), StartRequest(session_id=SESSION, text="上个月我在小组工资排名第几")
+    )
+    await drain(service, record.interaction_id)
+    assert runner.requests == []
 
 
 @pytest.mark.asyncio

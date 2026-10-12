@@ -15,7 +15,6 @@ scope question in the same payload as capability selection, and the dedicated
 call remains the fallback whenever that payload carries no usable ``scope``.
 """
 
-
 from dataclasses import dataclass
 from typing import cast
 

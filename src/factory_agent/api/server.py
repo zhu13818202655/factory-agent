@@ -203,6 +203,8 @@ async def _lifespan(app: FastAPI):
                 await service.shutdown()
             except Exception:  # noqa: BLE001 - shutdown must never hang the app
                 _logger.exception("session.shutdown.drain_failed")
+        if container.owner_snapshots is not None:
+            await container.owner_snapshots.aclose()
 
 
 def create_app(

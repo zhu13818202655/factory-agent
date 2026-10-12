@@ -1,6 +1,4 @@
-
-
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 class CacheStore(Protocol):
@@ -18,3 +16,10 @@ class CacheStore(Protocol):
         consumers). Stores without prefix support should implement a no-op.
         """
         ...
+
+
+@runtime_checkable
+class CacheLeaseStore(Protocol):
+    async def acquire_lease(self, key: str, token: str, ttl_seconds: int) -> bool: ...
+
+    async def release_lease(self, key: str, token: str) -> None: ...

@@ -22,7 +22,7 @@ read back out is annotated before use.
 """
 
 import asyncio
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol, cast
 
 import aioboto3  # type: ignore[reportMissingTypeStubs]
@@ -79,7 +79,15 @@ def _safe_relative_key(key: str) -> Path:
     configured directory.
     """
     candidate = Path(key)
-    if candidate.is_absolute() or not candidate.parts or ".." in candidate.parts:
+    posix_key = PurePosixPath(key)
+    windows_key = PureWindowsPath(key)
+    if (
+        posix_key.anchor
+        or windows_key.anchor
+        or not candidate.parts
+        or ".." in posix_key.parts
+        or ".." in windows_key.parts
+    ):
         raise ExportStoreError(ErrorCode.INVALID_KEY, "export key escapes the store directory")
     return candidate
 

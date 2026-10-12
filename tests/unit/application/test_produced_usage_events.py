@@ -10,8 +10,6 @@ that used to be enforced by the contract schemas:
 2. no event carries a sensitive canary (question text, employee id, ...).
 """
 
-
-
 import json
 from datetime import datetime, timezone
 from typing import Any, Literal

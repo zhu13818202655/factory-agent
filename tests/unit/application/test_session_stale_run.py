@@ -1,6 +1,3 @@
-
-
-
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -68,9 +65,7 @@ async def _no_sleep(_: float) -> None:
     return None
 
 
-def make_service(
-    store: InMemoryInteractionStore, limits: SessionLimits
-) -> SessionService:
+def make_service(store: InMemoryInteractionStore, limits: SessionLimits) -> SessionService:
     parser = CapabilityIntentParser(
         ScriptedModelGateway(),  # pyright: ignore[reportArgumentType]
         _EMPTY_CATALOG,
@@ -89,9 +84,7 @@ def make_service(
     )
 
 
-def seed_running(
-    store: InMemoryInteractionStore, *, updated_at: datetime
-) -> InteractionId:
+def seed_running(store: InMemoryInteractionStore, *, updated_at: datetime) -> InteractionId:
     """A run whose executor connection died mid-execution."""
     interaction_id = InteractionId("i-orphan")
     store.interactions[str(interaction_id)] = InteractionRecord(

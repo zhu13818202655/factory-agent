@@ -6,8 +6,6 @@ go through :func:`normalize_dsn`, which pins the driver that is actually
 installed. Callers keep passing the plain DSN from configuration.
 """
 
-
-
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 

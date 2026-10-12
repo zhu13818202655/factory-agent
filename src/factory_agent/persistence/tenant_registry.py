@@ -12,8 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from factory_agent.ports.tenant_registry import TenantRegistryRecord
 
-_TABLE = "tenant_registry"
-
 
 class SqlTenantRegistryReader:
     """Reads tenant status for the MES pre-call guard."""
@@ -23,7 +21,7 @@ class SqlTenantRegistryReader:
 
     async def get(self, app_key: str) -> TenantRegistryRecord | None:
         statement = sa.text(
-            f"SELECT app_key, tenant_name, status FROM {_TABLE} WHERE app_key = :app_key"
+            "SELECT app_key, tenant_name, status FROM tenant_registry WHERE app_key = :app_key"
         )
         async with self._engine.connect() as connection:
             row = (await connection.execute(statement, {"app_key": app_key})).mappings().first()

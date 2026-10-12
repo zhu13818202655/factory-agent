@@ -1,5 +1,7 @@
 """Role-consistency safety net and pre-execution scope guard for sessions."""
 
+import hashlib
+
 from factory_agent.application.capability_map import FR_INFO
 from factory_agent.application.consistency import (
     ConsistencyVerdict,
@@ -255,7 +257,7 @@ class SessionConsistencyMixin(SessionOutcomeMixin):
             code=finding.code,
             capability_id=str(capability),
             role=context.role.value,
-            tenant_id=str(context.tenant_id),
+            tenant_id=hashlib.sha256(str(context.tenant_id).encode()).hexdigest(),
             action="block" if blocked else "log",
             row_count=row_count,
         ).warning("session.consistency.violation_detected")

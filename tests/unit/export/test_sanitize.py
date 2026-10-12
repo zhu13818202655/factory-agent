@@ -1,7 +1,5 @@
 """Filename and spreadsheet-cell safety: traversal and formula injection."""
 
-
-
 from factory_agent.export.sanitize import (
     build_export_filename,
     sanitize_filename,

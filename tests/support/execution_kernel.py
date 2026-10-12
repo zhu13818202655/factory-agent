@@ -1,7 +1,5 @@
 """In-process stubs for execution kernel unit tests."""
 
-
-
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Mapping

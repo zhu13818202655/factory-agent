@@ -1,7 +1,5 @@
 """Personalization service: quick questions, history, favorites, user mapping."""
 
-
-
 from datetime import datetime, timezone
 
 import pytest

@@ -8,8 +8,7 @@ provable range; the authoritative token role additionally decides whether
 MES-side row filtering can answer.
 """
 
-
-
+import hashlib
 from datetime import datetime, timezone
 
 import pytest
@@ -158,7 +157,7 @@ async def test_resolved_tenant_is_bound_to_the_log_correlation_context() -> None
 
     await build_service(memberships).authorize(credential("tenant-a", "user-a"), AS_OF)
 
-    assert current_log_context()["tenant_id"] == "tenant-a"
+    assert current_log_context()["tenant_id"] == hashlib.sha256(b"tenant-a").hexdigest()
 
 
 @pytest.mark.asyncio

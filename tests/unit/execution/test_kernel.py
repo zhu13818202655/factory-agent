@@ -7,8 +7,7 @@ aggregate reconciles against ``footer.je_total``, and that empty/pagination
 anomalies surface as structured states instead of fabricated numbers.
 """
 
-
-
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -89,7 +88,16 @@ class FakeStepExecutor:
     ) -> ResourceFetchResult:
         self.calls.append((request.operation_id, dict(extra_params or {})))
         return ResourceFetchResult(
-            rows=tuple(_DETAIL_ROWS),
+            rows=tuple(
+                {
+                    **row,
+                    "id": str(index),
+                    "inputdate": row["rq"],
+                    "huohao": "STYLE-A",
+                    "wtname": row["worktype"],
+                }
+                for index, row in enumerate(_DETAIL_ROWS)
+            ),
             total=len(_DETAIL_ROWS),
             pages_fetched=1,
             complete=self._complete,
@@ -176,14 +184,10 @@ async def test_footer_mismatch_is_logged_without_failing(
             active_scope: Any | None = None,
             extra_params: dict[str, str] | None = None,
         ) -> ResourceFetchResult:
-            self.calls.append((request.operation_id, dict(extra_params or {})))
-            return ResourceFetchResult(
-                rows=tuple(_DETAIL_ROWS),
-                total=len(_DETAIL_ROWS),
-                pages_fetched=1,
-                complete=True,
-                footer={"sl_total": "20", "je_total": "9999.0000"},
+            result = await super().execute_full_step(
+                filters, request, active_scope=active_scope, extra_params=extra_params
             )
+            return replace(result, footer={"sl_total": "20", "je_total": "9999.0000"})
 
     runner = KernelCapabilityRunner(
         BadFooterExecutor(),

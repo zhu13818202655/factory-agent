@@ -1,7 +1,6 @@
 """Request-scoped correlation context bound via contextvars (ADR-0004)."""
 
-
-
+import hashlib
 import re
 import secrets
 from contextvars import ContextVar
@@ -61,7 +60,8 @@ def current_log_context() -> dict[str, str]:
     if request_id is not None:
         context["request_id"] = request_id
     if tenant_id is not None:
-        context["tenant_id"] = tenant_id
+        # AppKey remains the internal tenant identity; logs need only correlation.
+        context["tenant_id"] = hashlib.sha256(tenant_id.encode()).hexdigest()
     if interaction_id is not None:
         context["interaction_id"] = interaction_id
     return context

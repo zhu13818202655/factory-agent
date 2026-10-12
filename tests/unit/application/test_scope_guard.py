@@ -87,11 +87,7 @@ class TestScopeGuard:
     async def test_gateway_failure_propagates(self) -> None:
         with pytest.raises(ModelGatewayError):
             await _guard(
-                failures=[
-                    ModelGatewayError(
-                        ModelErrorCategory.UNAVAILABLE, "down", duration_ms=4
-                    )
-                ]
+                failures=[ModelGatewayError(ModelErrorCategory.UNAVAILABLE, "down", duration_ms=4)]
             ).check(
                 question="全组的工资明细",
                 capability_title="个人工资明细",

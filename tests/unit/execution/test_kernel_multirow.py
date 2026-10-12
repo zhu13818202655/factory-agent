@@ -1,19 +1,3 @@
-"""Multi-row kernel tests: multi-row computed tables, business-filter binding,
-unavailable columns, and the progress/output chains.
-
-Uses a fake step executor returning golden rows per operation **and per
-``groupbyFields`` grain** so the reviewed V2 recipe DAGs are exercised offline.
-
-V2 换代（2026-10-11）后的取数粒度（方案附录 C + 二次拍板）：
-- 进度族统一 ``ScjdQuery``：列表层 = 制单×部门（M7），包级 = dh×baohao×userid，
-  工序级 = userid×worktype×wsort；订单维度 = ``jhdh``（R3）；
-- 工资/产量族统一 ``GongziClQuery``：**FR-002/003/004/008/011/012 全部明细模式**
-  （不传 groupbyFields = 工资族预取粒度，人员/部门聚合在本地 compute 完成，
-  2026-10-11 二次拍板：原分组下推实测 ~90s 且服务端未执行分组），
-  FR-007/010/013 = dept×款号分组，FR-006 = jhdh×款号×工序×uid 分组；
-- ``DeptQuery`` 只剩产量族探针在用（部门名由 V2 行集直出）。
-"""
-
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -184,6 +168,10 @@ _GONGZI_CL_DETAIL_ROWS: tuple[dict[str, Any], ...] = (
         "uname": "模拟员工甲",
         "dept": "dept-a1",
         "deptname": "一车间",
+        "jhdh": "DH-1",
+        "chuanghao": "1",
+        "bbreed": "HH001",
+        "worktype": "WT01",
         "huohao": "HH001",
         "wtname": "裁剪",
         "sl": "20",
@@ -197,6 +185,10 @@ _GONGZI_CL_DETAIL_ROWS: tuple[dict[str, Any], ...] = (
         "uname": "模拟员工甲",
         "dept": "dept-a1",
         "deptname": "一车间",
+        "jhdh": "DH-1",
+        "chuanghao": "1",
+        "bbreed": "HH001",
+        "worktype": "WT01",
         "huohao": "HH001",
         "wtname": "锁边",
         "sl": "8",
@@ -210,6 +202,10 @@ _GONGZI_CL_DETAIL_ROWS: tuple[dict[str, Any], ...] = (
         "uname": "模拟员工乙",
         "dept": "dept-a2",
         "deptname": "二车间",
+        "jhdh": "DH-2",
+        "chuanghao": "2",
+        "bbreed": "HH002",
+        "worktype": "WT02",
         "huohao": "HH002",
         "wtname": "裁剪",
         "sl": "3",
@@ -577,7 +573,7 @@ capabilities:
 
 @pytest.mark.asyncio
 async def test_fr007_ranks_depts_by_reported_output() -> None:
-    """产量主源 = GongziClQuery V2（dept×款号×uid 分组），部门名行集直出."""
+    """产量主源 = GongziClQuery V2 明细的本地部门聚合，部门名行集直出."""
 
     executor = FakeMultiRowExecutor()
     runner = _runner(executor)
@@ -601,10 +597,10 @@ async def test_fr007_ranks_depts_by_reported_output() -> None:
     assert [row[2] for row in result.rows] == ["一车间", "二车间"]
     assert result.rows[0][0] == "1"
     assert result.rows[1][0] == "2"
-    assert result.rows[0][3] == Decimal("9")  # Σ sl (dept-a1)
+    assert result.rows[0][3] == Decimal("28")  # Σ sl (dept-a1)
     assert result.rows[1][3] == Decimal("3")  # Σ sl (dept-a2)
     assert result.rows[0][4] == Decimal("1")  # COUNT(DISTINCT uid)
-    assert result.rows[0][5] == Decimal("9")  # 人均产量
+    assert result.rows[0][5] == Decimal("28")  # 人均产量
 
 
 @pytest.mark.asyncio
@@ -628,7 +624,7 @@ async def test_fr007_single_visible_dept_reports_unavailable_rank() -> None:
     assert len(result.rows) == 1
     assert result.rows[0][2] == "一车间"
     assert result.rows[0][0] == UNAVAILABLE_VALUE
-    assert result.rows[0][3] == Decimal("9")
+    assert result.rows[0][3] == Decimal("28")
 
 
 @pytest.mark.asyncio
@@ -685,19 +681,20 @@ async def test_fr006_output_reads_orders_from_jhdh_without_material_bridge() -> 
         "output_amount",
         "output_share",
     )
-    # 按报工产量降序：DH-1 的 9 件在前。
+    # 按报工产量降序：DH-1 的裁剪 20 件在前。
     first = result.rows[0]
     assert first[0] == "DH-1"
     assert first[1] == "HH001"
     assert first[2] == "裁剪"
-    assert first[3] == Decimal("9")
+    assert first[3] == Decimal("20")
     assert first[4] == Decimal("1")  # COUNT(DISTINCT uid)
-    assert first[5] == Decimal("9")  # je 合计
+    assert first[5] == Decimal("12.40")  # je 合计
     # 工序占比 = 该工序报工产量 ÷ 该计划号 Σ发卡（ScjdQuery fhsl = 100）。
     # percent 列一旦带条件 unavailable 分支，整列就是 VARCHAR，数值以字符串返回
     # （与 fr007 名次列同法），由卡片层归一化展示。
-    assert Decimal(str(first[6])) == Decimal("9")
-    assert Decimal(str(result.rows[1][6])) == Decimal("7.5")  # 3 / 40
+    assert Decimal(str(first[6])) == Decimal("20")
+    assert Decimal(str(result.rows[1][6])) == Decimal("8")  # 8 / 100
+    assert Decimal(str(result.rows[2][6])) == Decimal("7.5")  # 3 / 40
 
 
 @pytest.mark.asyncio
@@ -894,7 +891,7 @@ async def test_fr005_zero_package_count_reports_zero_not_unavailable() -> None:
 async def test_fr013_dashboard_combines_ranking_kpis_and_daily_chart() -> None:
     """FR-013 综合看板：主表车间排名 + aux KPI（总产量/在产订单/人均月产）+ 日序列 chart.
 
-    Fake 数据：GongziClQuery 部门粒度两车间报工（dept-a1 sl=9 @07-02、
+    Fake 数据：GongziClQuery 部门粒度两车间报工（dept-a1 sl=28 @07-02、
     dept-a2 sl=3 @07-03）、EmployeeQuery 在册 3 人、ScjdQuery M7 中
     DH-1（Σ实收 50 < Σ发卡 100）未完工。
     """
@@ -912,7 +909,7 @@ async def test_fr013_dashboard_combines_ranking_kpis_and_daily_chart() -> None:
     assert set(by_dept) == {"一车间", "二车间"}
     a1 = by_dept["一车间"]
     assert a1["rank_position"] == "1"
-    assert a1["output_qty"] == Decimal("9")
+    assert a1["output_qty"] == Decimal("28")
     a2 = by_dept["二车间"]
     assert a2["rank_position"] == "2"
     assert a2["output_qty"] == Decimal("3")
@@ -921,15 +918,15 @@ async def test_fr013_dashboard_combines_ranking_kpis_and_daily_chart() -> None:
     assert card is not None
     # aux KPI（D-2 口径 + T1 换代：Σ实收 < Σ发卡 的制单去重 = DH-1 一单）。
     kpis = {item["label"]: item for item in as_list(card["metrics"])}
-    assert kpis["总产量"]["value"] == "12"
+    assert kpis["总产量"]["value"] == "31"
     assert kpis["在产订单"]["value"] == "1"
-    assert kpis["人均月产"]["value"] == "4"
+    assert kpis["人均月产"]["value"] == "10"
     # 日序列 chart：按 inputdate 归日，62 点内保持日粒度；标签由卡片层归一化为 MM-DD。
     chart = as_dict(card["chart"])
     assert chart["type"] == "bar"
     assert chart["granularity"] == "day"
     assert chart["points"] == [
-        {"label": "07-02", "value": "9"},
+        {"label": "07-02", "value": "28"},
         {"label": "07-03", "value": "3"},
     ]
     # 卡片级 actions：点车间 → fr010 产量明细。

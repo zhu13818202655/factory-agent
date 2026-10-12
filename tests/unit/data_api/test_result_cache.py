@@ -5,15 +5,19 @@
 """
 
 import asyncio
+import json
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pytest
 
+import factory_agent.data_api.result_cache as result_cache_module
 from factory_agent.application.cache import AuthAwareCache
 from factory_agent.application.prefetch import V2PrefetchWorker
+from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.result_cache import (
     DERIVED_DH_DATE,
     RESULT_SET_VERSION,
@@ -28,15 +32,30 @@ from factory_agent.data_api.result_cache import (
     footer_reconciles,
     local_view_rows,
     normalize_params,
+    recomputed_footer,
     scope_filtered_rows,
     shadow_compare,
     time_anchor_column,
     time_sliced_rows,
     window_category,
 )
-from factory_agent.domain import DeptId, EmployeeId, NarrowedFilters, Role, TenantId
-from factory_agent.execution.executor import ExecutionRequest
+from factory_agent.domain import (
+    DataScope,
+    DeptId,
+    EmployeeId,
+    NarrowedFilters,
+    Role,
+    ScopeVersion,
+    TenantId,
+)
+from factory_agent.domain.errors import (
+    ForbiddenError,
+    InvalidRequestError,
+    UnsupportedOperationError,
+)
+from factory_agent.execution.executor import ExecutionRequest, ScopedExecutor
 from factory_agent.ports.contracts import ResourceFetchResult
+from tests.support.execution_kernel import RecordingAdapter
 
 TODAY = datetime(2026, 10, 15, 12, 0, 0, tzinfo=timezone.utc)
 BACKTRACK_START = "2025-10-15"
@@ -59,8 +78,10 @@ class MemoryStore:
     def __init__(self) -> None:
         self.data: dict[str, bytes] = {}
         self.ttls: dict[str, int] = {}
+        self.lookups: list[str] = []
 
     async def get(self, key: str) -> bytes | None:
+        self.lookups.append(key)
         return self.data.get(key)
 
     async def put(self, key: str, value: bytes, ttl_seconds: int) -> None:
@@ -145,15 +166,15 @@ def test_normalize_params_set_semantics():
     )
     # 排序不进键（orderbyFields 跳过）、groupby 集合化、Type 排序去重。
     assert left == right
-    assert left["groupby"] == ["dept", "dh"]
+    assert "groupby" not in left
     assert left["Type"] == "1,2"
 
 
 def test_cacheable_grain():
     assert cacheable_grain("GongziClQuery", {"Flag": "0"})
-    assert not cacheable_grain("GongziClQuery", {"groupbyFields": ["uid"]})
+    assert cacheable_grain("GongziClQuery", {"groupbyFields": ["uid"]})
     assert cacheable_grain("ScjdQuery", {"groupbyFields": M7_GROUPBY})
-    assert not cacheable_grain("ScjdQuery", {"groupbyFields": ["dh"]})
+    assert cacheable_grain("ScjdQuery", {"groupbyFields": ["dh"]})
     assert not cacheable_grain("DeptQuery", {})
 
 
@@ -189,7 +210,7 @@ def test_decode_rejects_corrupt_payloads():
         derived=(),
         generated_at="now",
         source="precompute",
-    ).replace(b'"v":1', b'"v":2')
+    ).replace(f'"v":{RESULT_SET_VERSION}'.encode(), b'"v":0')
     assert decode_result_set(bad_version) is None
 
 
@@ -344,7 +365,7 @@ def test_read_uses_prefetch_key_for_settled_question_window():
             "ScjdQuery",
             rows,
             None,
-            {"groupbyFields": M7_GROUPBY},
+            {},
             PREFETCH_WINDOW,
             source="precompute",
         )
@@ -422,14 +443,14 @@ def test_read_logs_hit_and_miss_with_the_keys_it_probed(
     assert hit_extra["operation"] == "GongziClQuery"
     assert hit_extra["rows"] == 1
     assert hit_extra["source"] == "precompute"
-    assert str(hit_extra["key"]).startswith("fa:")
+    assert len(str(hit_extra["key_digest"])) == 64
 
     miss_record = next(r for r in caplog.records if r.getMessage() == "v2_result.miss")
     miss_extra = miss_record.__dict__
     assert miss_extra["settled"] is True
-    probes = cast("list[str]", miss_extra["keys"])
+    probes = cast("list[str]", miss_extra["key_digests"])
     assert probes
-    assert all(key.startswith("fa:") for key in probes)
+    assert all(len(key) == 64 for key in probes)
 
 
 def test_today_follows_the_configured_timezone_not_utc():
@@ -569,6 +590,9 @@ class InnerFake:
     def __init__(self, results: dict[str, ResourceFetchResult]) -> None:
         self._results = results
         self.calls: list[tuple[str, str, str]] = []
+
+    def validate_step(self, filters: Any, request: Any, active_scope: Any = None) -> None:
+        pass
 
     async def execute_full_step(
         self,
@@ -809,7 +833,7 @@ def test_shadow_mode_consistent_returns_cached_rows():
     assert result.rows == PAYROLL_ROWS  # 返回缓存（截取后仍在窗口内）
 
 
-def test_shadow_mode_mismatch_returns_realtime_and_evicts():
+def test_final_recipe_mismatch_hook_evicts_its_cached_input():
     alerts: list[tuple[str, dict[str, Any]]] = []
 
     def record_alert(name: str, detail: dict[str, Any]) -> None:
@@ -845,7 +869,10 @@ def test_shadow_mode_mismatch_returns_realtime_and_evicts():
         )
     )
     # 不一致：返回实时结果、驱逐缓存键、告警。
-    assert result.rows == realtime_rows
+    assert result.rows == PAYROLL_ROWS
+    assert result.shadow_result is not None
+    assert result.shadow_result.rows == realtime_rows
+    asyncio.run(executor.discard_cached_result(result))
     assert [name for name, _ in alerts] == ["cache_shadow_mismatch"]
     miss = asyncio.run(
         executor.execute_full_step(
@@ -983,11 +1010,12 @@ def test_shadow_mismatch_evicts_the_key_that_was_actually_hit():
         }
     )
     executor = ResultCacheExecutor(inner, cache)
-    asyncio.run(
+    result = asyncio.run(
         executor.execute_full_step(
             owner_filters(), payroll_request(), extra_params={"Flag": "0", "Type": "0,1,2"}
         )
     )
+    asyncio.run(executor.discard_cached_result(result))
     assert store.data == {}  # 命中键被真正驱逐，而不是驱一个不存在的问题窗口键
 
 
@@ -1001,7 +1029,7 @@ OTHER_DEPT_ROWS: Rows = (
 )
 
 
-def test_shadow_normalizes_realtime_to_the_same_local_view():
+def test_shadow_supplies_native_realtime_input_for_final_recipe_scope_filtering():
     """回归：实时行集必须过**与命中路径相同**的本地变换，否则永远比不出「一致」。
 
     线上实测（9 月工资清单）：MES **不做部门过滤**，原始行集 13928 行 / 309 人；
@@ -1041,7 +1069,7 @@ def test_shadow_normalizes_realtime_to_the_same_local_view():
     )
     result = asyncio.run(
         executor.execute_full_step(
-            filters, payroll_request(), extra_params={"Flag": "0", "Type": "0,1,2"}
+            filters, payroll_request(role=Role.MANAGER), extra_params={"Flag": "0", "Type": "0,1,2"}
         )
     )
     assert alerts == []  # 归一化后两侧一致 → 不告警
@@ -1100,3 +1128,774 @@ def test_shadow_tie_order_only_drift_still_serves_the_cache():
 def test_getattr_passes_other_ports_through():
     executor, _ = seeded_executor(ResultCacheMode.READ)
     assert asyncio.run(executor.other_port()) == "passed-through"
+
+
+def test_owner_bound_department_does_not_restrict_factory_cache_view():
+    rows: Rows = (
+        {"inputdate": "2026-07-01", "uid": "U1", "dept": "D1", "sl": "5"},
+        {"inputdate": "2026-07-01", "uid": "U2", "dept": "D2", "sl": "3"},
+    )
+    executor, _ = seeded_executor(ResultCacheMode.READ, rows)
+    filters = NarrowedFilters(
+        tenant_id=TenantId("t"), employee_ids=None, dept_ids=frozenset({DeptId("D1")})
+    )
+    result = asyncio.run(
+        executor.execute_full_step(
+            filters, payroll_request(), extra_params={"Flag": "0", "Type": "0,1,2"}
+        )
+    )
+    assert result.rows == rows
+
+
+def test_owner_employee_subset_cannot_backfill_shared_detail_cache():
+    executor, inner = make_executor(
+        ResultCacheMode.READWRITE,
+        InnerFake(
+            {
+                "GongziClQuery": ResourceFetchResult(
+                    rows=(PAYROLL_ROWS[0],), total=1, pages_fetched=1, complete=True
+                )
+            }
+        ),
+    )
+    filters = NarrowedFilters(
+        tenant_id=TenantId("t"), employee_ids=frozenset({EmployeeId("U1")}), dept_ids=None
+    )
+    asyncio.run(
+        executor.execute_full_step(
+            filters, payroll_request(), extra_params={"Flag": "0", "Type": "0,1,2"}
+        )
+    )
+    asyncio.run(
+        executor.execute_full_step(
+            owner_filters(), payroll_request(), extra_params={"Flag": "0", "Type": "0,1,2"}
+        )
+    )
+    assert len(inner.calls) == 2
+
+
+class SnapshotFake:
+    def __init__(self, result: ResourceFetchResult) -> None:
+        self.result = result
+        self.calls: list[tuple[str, str, tuple[str, str], dict[str, Any]]] = []
+
+    async def __call__(
+        self, tenant_id: Any, operation_id: str, window: tuple[str, str], extra_params: Any
+    ) -> ResourceFetchResult:
+        self.calls.append((str(tenant_id), operation_id, window, dict(extra_params)))
+        return self.result
+
+
+def progress_detail_rows() -> Rows:
+    return (
+        {
+            "dh": "20260701001",
+            "jhdh": "P1",
+            "chuanghao": "C1",
+            "huohao": "H1",
+            "bbreed": "S1",
+            "dept": "D1",
+            "deptname": "Group 1",
+            "uid": "U1",
+            "uname": "Worker 1",
+            "baohao": "1",
+            "userid": "M1",
+            "color": "Blue",
+            "chima": "M",
+            "worktype": "W1",
+            "wtname": "Step 1",
+            "wsort": "1",
+            "bs": "1",
+            "fhsl": "10",
+            "sssl": "5",
+            "zpsl": "0",
+            "wgs": "1",
+            "wts": "1",
+        },
+        {
+            "dh": "20260702002",
+            "jhdh": "P2",
+            "chuanghao": "C2",
+            "huohao": "H2",
+            "bbreed": "S2",
+            "dept": "D2",
+            "deptname": "Group 2",
+            "uid": "U2",
+            "uname": "Worker 2",
+            "baohao": "2",
+            "userid": "M2",
+            "color": "Red",
+            "chima": "L",
+            "worktype": "W2",
+            "wtname": "Step 2",
+            "wsort": "2",
+            "bs": "1",
+            "fhsl": "20",
+            "sssl": "20",
+            "zpsl": "0",
+            "wgs": "1",
+            "wts": "1",
+        },
+    )
+
+
+def test_cold_manager_query_fills_complete_owner_snapshot_and_reuses_it():
+    rows: Rows = (
+        {"inputdate": "2026-07-01", "uid": "U1", "dept": "D1", "sl": "5"},
+        {"inputdate": "2026-07-01", "uid": "U2", "dept": "D2", "sl": "3"},
+    )
+    snapshot = SnapshotFake(ResourceFetchResult(rows=rows, total=2, pages_fetched=1, complete=True))
+    cache = make_result_cache()
+    inner = InnerFake({})
+    executor = ResultCacheExecutor(inner, cache, snapshot_provider=snapshot)
+    filters = replace(owner_filters(), dept_ids=frozenset({DeptId("D1")}))
+    first = asyncio.run(executor.execute_full_step(filters, payroll_request(Role.MANAGER)))
+    second = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    assert first.rows == (rows[0],)
+    assert second.rows == rows
+    assert len(snapshot.calls) == 1
+    assert inner.calls == []
+    assert second.cache_source == "query"
+    assert second.cache_generated_at == TODAY.isoformat()
+
+
+def test_current_window_employee_repeat_uses_short_ttl_owner_snapshot():
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    rows: Rows = (
+        {"inputdate": "2026-10-15", "uid": "U1", "dept": "D2", "sl": "5"},
+        {"inputdate": "2026-10-15", "uid": "U2", "dept": "D2", "sl": "7"},
+    )
+    snapshot = SnapshotFake(ResourceFetchResult(rows=rows, total=2, pages_fetched=1, complete=True))
+    inner = InnerFake({})
+    executor = ResultCacheExecutor(inner, cache, snapshot_provider=snapshot)
+    filters = replace(owner_filters(), employee_ids=frozenset({EmployeeId("U1")}))
+    request = ExecutionRequest(
+        "GongziClQuery",
+        (datetime(2026, 10, 15, tzinfo=timezone.utc), datetime(2026, 10, 16, tzinfo=timezone.utc)),
+        role=Role.EMPLOYEE,
+    )
+    first = asyncio.run(executor.execute_full_step(filters, request))
+    second = asyncio.run(executor.execute_full_step(filters, request))
+    assert first.rows == second.rows == (rows[0],)
+    assert len(snapshot.calls) == 1
+    assert inner.calls == []
+    assert set(store.ttls.values()) == {90}
+
+
+def test_proven_empty_snapshot_is_cached():
+    snapshot = SnapshotFake(ResourceFetchResult(rows=(), total=0, pages_fetched=1, complete=True))
+    executor = ResultCacheExecutor(InnerFake({}), make_result_cache(), snapshot_provider=snapshot)
+    for _ in range(2):
+        result = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+        assert result.complete
+        assert result.rows == ()
+    assert len(snapshot.calls) == 1
+
+
+def test_incomplete_snapshot_falls_back_without_cache_write():
+    incomplete = ResourceFetchResult(rows=PAYROLL_ROWS, total=3, pages_fetched=1, complete=False)
+    snapshot = SnapshotFake(incomplete)
+    inner = InnerFake({"GongziClQuery": incomplete})
+    store = MemoryStore()
+    executor = ResultCacheExecutor(
+        inner, make_result_cache(store=store), snapshot_provider=snapshot
+    )
+    result = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    assert not result.complete
+    assert result.cache_source is None
+    assert len(inner.calls) == len(snapshot.calls) == 1
+    assert store.data == {}
+
+
+@pytest.mark.parametrize(
+    "attribute,value",
+    [
+        ("order_codes", frozenset({"P1"})),
+        ("style_codes", frozenset({"S1"})),
+        ("plan_codes", frozenset({"P1"})),
+        ("material_ids", frozenset({"M1"})),
+    ],
+)
+def test_business_filtered_owner_response_does_not_pollute_shared_key(attribute: str, value: Any):
+    rows = progress_detail_rows()
+    inner = InnerFake(
+        {"ScjdQuery": ResourceFetchResult(rows=(rows[0],), total=1, pages_fetched=1, complete=True)}
+    )
+    store = MemoryStore()
+    executor = ResultCacheExecutor(inner, make_result_cache(store=store))
+    request = replace(payroll_request(), operation_id="ScjdQuery")
+    filters = replace(owner_filters(), **{attribute: value})
+    asyncio.run(executor.execute_full_step(filters, request))
+    assert store.data == {}
+
+
+def test_progress_views_reuse_one_detail_snapshot_after_complete_filtering():
+    rows = progress_detail_rows()
+    snapshot = SnapshotFake(ResourceFetchResult(rows=rows, total=2, pages_fetched=1, complete=True))
+    inner = InnerFake({})
+    executor = ResultCacheExecutor(inner, make_result_cache(), snapshot_provider=snapshot)
+    request = replace(payroll_request(), operation_id="ScjdQuery")
+    listed = asyncio.run(
+        executor.execute_full_step(
+            owner_filters(), request, extra_params={"groupbyFields": M7_GROUPBY}
+        )
+    )
+    package = asyncio.run(
+        executor.execute_full_step(
+            replace(owner_filters(), order_codes=frozenset({"20260701001"})),
+            request,
+            extra_params={"groupbyFields": ["dh", "baohao", "userid", "color", "chima"]},
+        )
+    )
+    process = asyncio.run(
+        executor.execute_full_step(
+            replace(owner_filters(), material_ids=frozenset({"M1"})),
+            request,
+            extra_params={
+                "groupbyFields": [
+                    "userid",
+                    "uid",
+                    "uname",
+                    "dept",
+                    "deptname",
+                    "worktype",
+                    "wtname",
+                    "wsort",
+                ]
+            },
+        )
+    )
+    assert len(listed.rows) == 2
+    assert package.rows[0]["userid"] == process.rows[0]["userid"] == "M1"
+    assert package.rows[0]["wcl"] == process.rows[0]["wcl"] == "50.00"
+    assert len(package.rows) == len(process.rows) == 1
+    assert len(snapshot.calls) == 1
+    assert snapshot.calls[0][3] == {}
+    assert inner.calls == []
+
+
+def test_progress_shadow_keeps_realtime_baseline_without_date_column_false_mismatch():
+    rows = progress_detail_rows()
+    store = MemoryStore()
+    cache = make_result_cache(mode=ResultCacheMode.SHADOW, store=store)
+    assert asyncio.run(
+        cache.write(
+            TenantId("t"), "ScjdQuery", rows, None, {}, PREFETCH_WINDOW, source="precompute"
+        )
+    )
+    realtime = ResourceFetchResult(rows=rows, total=2, pages_fetched=1, complete=True)
+    inner = InnerFake({"ScjdQuery": realtime})
+    alerts: list[tuple[str, dict[str, Any]]] = []
+    executor = ResultCacheExecutor(
+        inner, cache, alerts=lambda name, detail: alerts.append((name, detail))
+    )
+    request = replace(payroll_request(), operation_id="ScjdQuery")
+    result = asyncio.run(executor.execute_full_step(owner_filters(), request))
+    assert all(row["dh_date"] for row in result.rows)
+    assert result.shadow_result is realtime
+    assert alerts == []
+    executor.release_cached_result(result)
+    assert store.data
+
+
+def test_grouped_m7_and_old_structure_cannot_enter_detail_cache():
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    assert not asyncio.run(
+        cache.write(
+            TenantId("t"),
+            "ScjdQuery",
+            progress_detail_rows(),
+            None,
+            {"groupbyFields": M7_GROUPBY},
+            PREFETCH_WINDOW,
+            source="precompute",
+        )
+    )
+    assert store.data == {}
+    assert asyncio.run(
+        cache.write(
+            TenantId("t"),
+            "ScjdQuery",
+            progress_detail_rows(),
+            None,
+            {},
+            PREFETCH_WINDOW,
+            source="precompute",
+        )
+    )
+    for key, value in store.data.items():
+        payload = json.loads(value)
+        payload["v"] = 1
+        store.data[key] = json.dumps(payload).encode()
+    assert (
+        asyncio.run(cache.read(TenantId("t"), "ScjdQuery", {}, ("2026-07-01", "2026-07-02")))
+        is None
+    )
+
+
+def test_cache_permission_guard_runs_before_lookup_or_snapshot_provider():
+    class DeniedInner(InnerFake):
+        def validate_step(self, filters: Any, request: Any, active_scope: Any = None) -> None:
+            raise ForbiddenError()
+
+    inner = DeniedInner({})
+    snapshot = SnapshotFake(
+        ResourceFetchResult(rows=PAYROLL_ROWS, total=2, pages_fetched=1, complete=True)
+    )
+    executor = ResultCacheExecutor(inner, make_result_cache(), snapshot_provider=snapshot)
+    with pytest.raises(ForbiddenError):
+        asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    assert snapshot.calls == inner.calls == []
+
+
+def test_scope_or_credential_extra_parameters_are_rejected_without_business_calls():
+    snapshot = SnapshotFake(ResourceFetchResult(rows=(), total=0, pages_fetched=1, complete=True))
+    inner = InnerFake({})
+    executor = ResultCacheExecutor(inner, make_result_cache(), snapshot_provider=snapshot)
+    with pytest.raises(InvalidRequestError, match="scope and credential"):
+        asyncio.run(
+            executor.execute_full_step(
+                owner_filters(), payroll_request(), extra_params={"uid": "outside-scope-canary"}
+            )
+        )
+    assert snapshot.calls == inner.calls == []
+
+
+def test_credential_canaries_never_enter_cache_payload_or_logs(caplog: pytest.LogCaptureFixture):
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    credential_canary = "credential-value-canary"
+    with caplog.at_level(logging.INFO):
+        assert not asyncio.run(
+            cache.write(
+                TenantId("tenant-appkey-canary"),
+                "GongziClQuery",
+                ({"inputdate": "2026-07-01", "accessToken": credential_canary},),
+                None,
+                {},
+                PREFETCH_WINDOW,
+                source="query",
+            )
+        )
+        asyncio.run(
+            cache.read(
+                TenantId("tenant-appkey-canary"), "GongziClQuery", {}, ("2026-07-01", "2026-07-02")
+            )
+        )
+    captured = repr([record.__dict__ for record in caplog.records])
+    assert credential_canary not in captured
+    assert "tenant-appkey-canary" not in captured
+    assert store.data == {}
+
+
+@pytest.mark.parametrize("field", ("accessToken", "app_key", "sign_total", "movepassword_total"))
+def test_credential_footer_is_rejected_before_storage_and_when_decoding(
+    field: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    canary = "synthetic-footer-private-canary"
+    footer = {field: canary}
+    with caplog.at_level(logging.INFO):
+        written = asyncio.run(
+            cache.write(
+                TenantId("synthetic-tenant"),
+                "GongziClQuery",
+                PAYROLL_ROWS,
+                footer,
+                {},
+                PREFETCH_WINDOW,
+                source="precompute",
+            )
+        )
+    assert not written
+    assert store.data == {}
+    assert canary not in caplog.text
+    raw = encode_result_set(
+        operation_id="GongziClQuery",
+        rows=PAYROLL_ROWS,
+        footer=footer,
+        window=PREFETCH_WINDOW,
+        filters={},
+        derived=(),
+        generated_at=TODAY.isoformat(),
+        source="precompute",
+    )
+    assert decode_result_set(raw) is None
+
+
+def test_direct_snapshot_write_rejects_credential_parameters() -> None:
+    store = MemoryStore()
+    written = asyncio.run(
+        make_result_cache(store=store).write(
+            TenantId("synthetic-tenant"),
+            "GongziClQuery",
+            PAYROLL_ROWS,
+            None,
+            {"sign": "synthetic-parameter-private-canary"},
+            PREFETCH_WINDOW,
+            source="precompute",
+        )
+    )
+    assert not written
+    assert store.data == {}
+
+
+def test_ratio_footer_is_recomputed_and_validated_from_contributions():
+    rows: Rows = ({"wcl": "0", "sssl": "1", "fhsl": "3"}, {"wcl": "100", "sssl": "2", "fhsl": "3"})
+    assert recomputed_footer(rows, {"wcl_total": "0"}) == {"wcl_total": "50.00"}
+    assert footer_reconciles(rows, {"wcl_total": "50"})
+    assert not footer_reconciles(rows, {"wcl_total": "66.67"})
+    assert not footer_reconciles((), {"sl_total": "1"})
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        NarrowedFilters(TenantId("other-tenant-canary"), None, None),
+        NarrowedFilters(TenantId("t"), frozenset({EmployeeId("outside-scope-canary")}), None),
+        NarrowedFilters(TenantId("t"), None, frozenset({DeptId("outside-dept-canary")})),
+    ],
+)
+def test_real_scoped_executor_blocks_cache_access_and_owner_snapshot(filters: NarrowedFilters):
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    adapter = RecordingAdapter()
+    inner = ScopedExecutor(adapter, load_catalog())
+    snapshot = SnapshotFake(ResourceFetchResult(rows=(), total=0, pages_fetched=1, complete=True))
+    executor = ResultCacheExecutor(cast(Any, inner), cache, snapshot_provider=snapshot)
+    scope = DataScope(
+        TenantId("t"),
+        frozenset({EmployeeId("U1")}),
+        frozenset({DeptId("D1")}),
+        TODAY,
+        ScopeVersion("test-scope"),
+    )
+    with pytest.raises(ForbiddenError):
+        asyncio.run(
+            executor.execute_full_step(filters, payroll_request(Role.MANAGER), active_scope=scope)
+        )
+    assert store.lookups == []
+    assert snapshot.calls == []
+    assert adapter.requests == []
+
+
+def test_disabled_catalog_operation_cannot_be_served_from_cache():
+    class DisabledCatalog:
+        def get(self, operation_id: str) -> Any:
+            return load_catalog().get(operation_id).model_copy(update={"enabled": False})
+
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    adapter = RecordingAdapter()
+    executor = ResultCacheExecutor(cast(Any, ScopedExecutor(adapter, DisabledCatalog())), cache)
+    with pytest.raises(UnsupportedOperationError):
+        asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    assert store.lookups == []
+    assert adapter.requests == []
+
+
+def test_cache_storage_failure_preserves_complete_realtime_response():
+    class FailingStore(MemoryStore):
+        async def put(self, key: str, value: bytes, ttl_seconds: int) -> None:
+            raise RuntimeError("storage-failure-canary")
+
+    realtime = ResourceFetchResult(rows=PAYROLL_ROWS, total=2, pages_fetched=1, complete=True)
+    inner = InnerFake({"GongziClQuery": realtime})
+    alerts: list[tuple[str, dict[str, Any]]] = []
+    executor = ResultCacheExecutor(
+        inner,
+        make_result_cache(store=FailingStore()),
+        alerts=lambda name, detail: alerts.append((name, detail)),
+    )
+    result = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    assert result is realtime
+    assert len(inner.calls) == 1
+    assert len(alerts) == 1
+    assert alerts[0][0] == "cache_write_failed"
+    assert alerts[0][1]["source"] == "caller"
+    assert "storage-failure-canary" not in repr(alerts)
+
+
+def test_corrupt_footer_payload_falls_back_to_source():
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    assert asyncio.run(
+        cache.write(
+            TenantId("t"), "GongziClQuery", PAYROLL_ROWS, None, {}, PREFETCH_WINDOW, source="query"
+        )
+    )
+    for key, value in store.data.items():
+        payload = json.loads(value)
+        payload["footer"] = "corrupt-footer-canary"
+        store.data[key] = json.dumps(payload).encode()
+    realtime = ResourceFetchResult(rows=PAYROLL_ROWS, total=2, pages_fetched=1, complete=True)
+    inner = InnerFake({"GongziClQuery": realtime})
+    result = asyncio.run(
+        ResultCacheExecutor(inner, cache).execute_full_step(owner_filters(), payroll_request())
+    )
+    assert result is realtime
+    assert len(inner.calls) == 1
+
+
+def test_cache_miss_concurrent_requests_share_one_complete_snapshot():
+    class SlowSnapshot(SnapshotFake):
+        async def __call__(
+            self, tenant_id: Any, operation_id: str, window: tuple[str, str], extra_params: Any
+        ) -> ResourceFetchResult:
+            await asyncio.sleep(0)
+            return await super().__call__(tenant_id, operation_id, window, extra_params)
+
+    snapshot = SlowSnapshot(
+        ResourceFetchResult(rows=PAYROLL_ROWS, total=2, pages_fetched=1, complete=True)
+    )
+    inner = InnerFake({})
+    executor = ResultCacheExecutor(inner, make_result_cache(), snapshot_provider=snapshot)
+
+    async def run_pair() -> list[ResourceFetchResult]:
+        return await asyncio.gather(
+            *[executor.execute_full_step(owner_filters(), payroll_request()) for _ in range(2)]
+        )
+
+    first, second = asyncio.run(run_pair())
+    assert first.rows == second.rows == PAYROLL_ROWS
+    assert len(snapshot.calls) == 1
+    assert inner.calls == []
+
+
+def test_wage_flag_uses_its_own_anchor_and_type_partitions_snapshot_keys():
+    rows: Rows = ({"inputdate": "2026-06-01", "check_time": "2026-07-01", "uid": "U1"},)
+    snapshot = SnapshotFake(ResourceFetchResult(rows=rows, total=1, pages_fetched=1, complete=True))
+    executor = ResultCacheExecutor(InnerFake({}), make_result_cache(), snapshot_provider=snapshot)
+    params = {"Flag": "1", "Type": "0,1,2"}
+    first = asyncio.run(
+        executor.execute_full_step(owner_filters(), payroll_request(), extra_params=params)
+    )
+    second = asyncio.run(
+        executor.execute_full_step(owner_filters(), payroll_request(), extra_params=params)
+    )
+    assert first.rows == second.rows == rows
+    asyncio.run(
+        executor.execute_full_step(
+            owner_filters(), payroll_request(), extra_params={"Flag": "1", "Type": "0"}
+        )
+    )
+    assert len(snapshot.calls) == 2
+    assert snapshot.calls[0][3] == params
+
+
+def test_missing_wage_anchor_is_not_cached_as_a_false_empty_result():
+    invalid = ResourceFetchResult(rows=({"uid": "U1"},), total=1, pages_fetched=1, complete=True)
+    snapshot = SnapshotFake(invalid)
+    inner = InnerFake({"GongziClQuery": invalid})
+    store = MemoryStore()
+    executor = ResultCacheExecutor(
+        inner, make_result_cache(store=store), snapshot_provider=snapshot
+    )
+    result = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    assert result.rows == invalid.rows
+    assert result.source_call_count == 2
+    assert result.rows != ()
+    assert len(inner.calls) == 1
+    assert store.data == {}
+
+
+@pytest.mark.parametrize(
+    "operation,style,expected",
+    [
+        ("GongziClQuery", "H1", True),
+        ("GongziClQuery", "S1", True),
+        ("ScjdQuery", "H1", False),
+        ("ScjdQuery", "S1", True),
+    ],
+)
+def test_style_code_and_name_filter_matches_each_family_contract(
+    operation: str, style: str, expected: bool
+):
+    rows: Rows = (
+        {
+            "inputdate": "2026-07-01",
+            "dh": "20260701001",
+            "dh_date": "2026-07-01",
+            "huohao": "H1",
+            "bbreed": "S1",
+        },
+    )
+    view = local_view_rows(
+        rows,
+        operation,
+        replace(owner_filters(), style_codes=frozenset({style})),
+        {},
+        ("2026-07-01", "2026-07-02"),
+        Role.OWNER,
+    )
+    assert view == (rows if expected else ())
+
+
+@pytest.mark.parametrize(
+    "mode,cold_calls,hot_calls",
+    [
+        (ResultCacheMode.READWRITE, 1, 0),
+        (ResultCacheMode.SHADOW, 2, 1),
+    ],
+)
+def test_fresh_snapshot_and_shadow_call_counts_are_not_persisted_to_hot_cache(
+    mode: ResultCacheMode, cold_calls: int, hot_calls: int
+):
+    store = MemoryStore()
+    realtime = ResourceFetchResult(rows=PAYROLL_ROWS, total=2, pages_fetched=1, complete=True)
+    snapshot = SnapshotFake(realtime)
+    inner = InnerFake({"GongziClQuery": realtime})
+    executor = ResultCacheExecutor(
+        inner, make_result_cache(mode=mode, store=store), snapshot_provider=snapshot
+    )
+    first = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    second = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    assert first.source_call_count == cold_calls
+    assert second.source_call_count == hot_calls
+    assert len(snapshot.calls) == 1
+    assert len(inner.calls) == (2 if mode is ResultCacheMode.SHADOW else 0)
+    assert all("source_call_count" not in json.loads(value) for value in store.data.values())
+
+
+@pytest.mark.parametrize("rows", [PAYROLL_ROWS, ()])
+def test_snapshot_write_failure_alerts_safely_and_preserves_caller_fallback(rows: Rows):
+    class FailingStore(MemoryStore):
+        async def put(self, key: str, value: bytes, ttl_seconds: int) -> None:
+            raise RuntimeError("write-failure-secret-canary")
+
+    realtime = ResourceFetchResult(rows=rows, total=len(rows), pages_fetched=1, complete=True)
+    snapshot = SnapshotFake(realtime)
+    inner = InnerFake({"GongziClQuery": realtime})
+    alerts: list[tuple[str, dict[str, Any]]] = []
+    executor = ResultCacheExecutor(
+        inner,
+        make_result_cache(store=FailingStore()),
+        snapshot_provider=snapshot,
+        alerts=lambda name, detail: alerts.append((name, detail)),
+    )
+    result = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request(Role.MANAGER)))
+    assert result.rows == rows
+    assert result.complete
+    assert result.source_call_count == 2
+    assert len(inner.calls) == 1
+    assert len(alerts) == 1
+    assert alerts[0][0] == "cache_write_failed"
+    assert alerts[0][1]["rows"] == len(rows)
+    assert "write-failure-secret-canary" not in repr(alerts)
+    assert "tenant_id" not in alerts[0][1]
+
+
+def test_snapshot_logical_fetch_count_does_not_count_http_pages():
+    snapshot = SnapshotFake(
+        ResourceFetchResult(rows=PAYROLL_ROWS, total=2, pages_fetched=3, complete=True)
+    )
+    executor = ResultCacheExecutor(InnerFake({}), make_result_cache(), snapshot_provider=snapshot)
+    result = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
+    assert result.source_call_count == 1
+
+
+def test_encoding_that_crosses_deadline_cannot_publish_a_snapshot(monkeypatch: pytest.MonkeyPatch):
+    store = MemoryStore()
+    elapsed = [0.5]
+    cache = V2ResultCache(
+        make_cache(store), clock=lambda: TODAY, monotonic_clock=lambda: elapsed[0]
+    )
+    original = result_cache_module.encode_result_set
+
+    def encoding(*args: Any, **kwargs: Any) -> bytes:
+        payload = original(*args, **kwargs)
+        elapsed[0] = 2.0
+        return payload
+
+    monkeypatch.setattr(result_cache_module, "encode_result_set", encoding)
+    with pytest.raises(TimeoutError, match="publication deadline"):
+        asyncio.run(
+            cache.write(
+                TenantId("t"),
+                "GongziClQuery",
+                PAYROLL_ROWS,
+                None,
+                {},
+                PREFETCH_WINDOW,
+                source="precompute",
+                deadline=1.0,
+            )
+        )
+    assert store.data == {}
+
+
+@pytest.mark.parametrize(
+    "case,question_day,expected_amount,expected_calls,expected_probes",
+    [
+        ("covered_previous_day", "2026-07-01", "5", 0, 2),
+        ("new_yesterday", "2026-10-15", "7", 1, 2),
+        ("current_day_preferred", "2026-07-01", "9", 0, 1),
+    ],
+)
+def test_cross_midnight_reads_only_one_complete_covering_snapshot(
+    case: str,
+    question_day: str,
+    expected_amount: str,
+    expected_calls: int,
+    expected_probes: int,
+):
+    store = MemoryStore()
+    clock = [TODAY]
+    cache = make_result_cache(mode=ResultCacheMode.READ, store=store, clock=lambda: clock[0])
+    params = {"Flag": "0", "Type": "0,1,2"}
+    previous_rows: Rows = ({"inputdate": "2026-07-01", "uid": "U1", "sssl": "5"},)
+    assert asyncio.run(
+        cache.write(
+            TenantId("t"),
+            "GongziClQuery",
+            previous_rows,
+            None,
+            params,
+            PREFETCH_WINDOW,
+            source="precompute",
+        )
+    )
+    clock[0] = datetime(2026, 10, 16, 0, 1, tzinfo=timezone.utc)
+    if case == "current_day_preferred":
+        assert asyncio.run(
+            cache.write(
+                TenantId("t"),
+                "GongziClQuery",
+                ({"inputdate": "2026-07-01", "uid": "U1", "sssl": "9"},),
+                None,
+                params,
+                cache.prefetch_window("2026-10-16"),
+                source="precompute",
+            )
+        )
+    live_rows: Rows = ({"inputdate": question_day, "uid": "U1", "sssl": "7"},)
+    inner = InnerFake(
+        {
+            "GongziClQuery": ResourceFetchResult(
+                rows=live_rows, total=1, pages_fetched=1, complete=True
+            )
+        }
+    )
+    question_time = datetime.fromisoformat(question_day).replace(tzinfo=timezone.utc)
+    request = ExecutionRequest(
+        operation_id="GongziClQuery",
+        time_range=(question_time, question_time.replace(hour=23, minute=59, second=59)),
+        role=Role.OWNER,
+    )
+    fetched = asyncio.run(
+        ResultCacheExecutor(inner, cache).execute_full_step(
+            owner_filters(), request, extra_params=params
+        )
+    )
+    assert fetched.complete
+    assert fetched.rows[0]["sssl"] == expected_amount
+    assert len(inner.calls) == expected_calls
+    assert len(store.lookups) == expected_probes
+    if expected_calls == 0:
+        assert fetched.source_call_count == 0
+        assert fetched.cache_source == "precompute"
+    else:
+        assert fetched is inner._results["GongziClQuery"]  # pyright: ignore[reportPrivateUsage]

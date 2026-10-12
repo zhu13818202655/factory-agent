@@ -1,7 +1,5 @@
 """Stable identifiers shared across application boundaries."""
 
-
-
 from dataclasses import dataclass
 
 

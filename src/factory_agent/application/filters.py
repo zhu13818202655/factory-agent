@@ -3,8 +3,6 @@
 Every rejection path here must happen before any MES business call.
 """
 
-
-
 from factory_agent.domain import DataScope, DeptId, EmployeeId, NarrowedFilters
 
 __all__ = [

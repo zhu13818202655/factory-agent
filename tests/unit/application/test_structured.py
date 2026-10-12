@@ -1,5 +1,3 @@
-
-
 import pytest
 
 from factory_agent.application.structured import (

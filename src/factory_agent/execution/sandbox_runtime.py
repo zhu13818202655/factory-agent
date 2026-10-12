@@ -127,6 +127,19 @@ class InteractionSandbox:
                 self._register_rows_per_row(connection, name, table)
         self._registered.add(name)
 
+    def replace_table(self, table: SandboxTable) -> None:
+        """Replace a trusted registered table for final-result shadow validation."""
+        name = _validate_identifier(table.name)
+        if name not in self._registered:
+            raise ForbiddenError("only registered sandbox tables can be replaced")
+        for column, sql_type in table.columns:
+            _validate_identifier(column)
+            if not _bulk_capable_type(sql_type):
+                raise InvalidRequestError("replacement schema uses an unsupported column type")
+        self._conn().execute(f'DROP TABLE "{name}"')  # nosec B608
+        self._registered.remove(name)
+        self.register_table(table)
+
     def _register_rows_bulk(
         self, connection: duckdb.DuckDBPyConnection, name: str, table: SandboxTable
     ) -> bool:
@@ -162,9 +175,7 @@ class InteractionSandbox:
             # binding handles whatever coercion DuckDB can do natively.
             return False
         struct = (
-            "STRUCT("
-            + ", ".join(f'"{column}" {sql_type}' for column, sql_type in columns)
-            + ")[]"
+            "STRUCT(" + ", ".join(f'"{column}" {sql_type}' for column, sql_type in columns) + ")[]"
         )
         try:
             connection.execute(

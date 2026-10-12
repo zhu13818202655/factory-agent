@@ -11,8 +11,6 @@ fallback really crosses a process boundary. A single request can still override
 the scenario with the ``X-Test-Scenario`` header.
 """
 
-
-
 import subprocess
 import sys
 import time

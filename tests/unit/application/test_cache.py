@@ -1,7 +1,6 @@
 """Auth-aware cache: scope fingerprints, versioned keys, fallback, invalidation."""
 
-
-
+import hashlib
 from datetime import datetime, timezone
 
 import pytest
@@ -66,7 +65,9 @@ def test_key_contains_tenant_fingerprint_versions_and_params() -> None:
 
     key = cache.build_key("output", TENANT, fingerprint, {"time_range": "本月"})
 
-    assert key.startswith("fa:mes-v1:metric-v1:data-v1:tenant-a:")
+    tenant_digest = hashlib.sha256(str(TENANT).encode()).hexdigest()
+    assert key.startswith(f"fa:mes-v1:metric-v1:data-v1:{tenant_digest}:")
+    assert str(TENANT) not in key
     assert fingerprint in key
     assert "output" in key
     # Different params -> different key.
@@ -93,7 +94,7 @@ async def test_get_hit_and_miss_are_tracked() -> None:
     fingerprint = cache.scope_fingerprint(make_scope("scope-1"))
     params = {"time_range": "本月"}
 
-    await cache.put("output", TENANT, fingerprint, params, b"rows")
+    assert await cache.put("output", TENANT, fingerprint, params, b"rows") is True
     hit = await cache.get("output", TENANT, fingerprint, params)
     miss = await cache.get("output", TENANT, fingerprint, {"time_range": "上月"})
 
@@ -111,7 +112,7 @@ async def test_store_unavailable_falls_back_to_source_of_truth() -> None:
     cache, _ = make_cache(store)
     fingerprint = cache.scope_fingerprint(make_scope("scope-1"))
     params = {"time_range": "本月"}
-    await cache.put("output", TENANT, fingerprint, params, b"rows")
+    assert await cache.put("output", TENANT, fingerprint, params, b"rows") is True
     store.failure = RuntimeError("redis down")
 
     lookup = await cache.get("output", TENANT, fingerprint, params)
@@ -119,7 +120,7 @@ async def test_store_unavailable_falls_back_to_source_of_truth() -> None:
     assert lookup.value is None
     assert lookup.reason == "store_unavailable"
     # A put during an outage is swallowed, never raised.
-    await cache.put("output", TENANT, fingerprint, params, b"rows")
+    assert await cache.put("output", TENANT, fingerprint, params, b"rows") is False
 
 
 @pytest.mark.asyncio
@@ -190,13 +191,17 @@ class _FakeDirectory:
         self.dept_fetches = 0
         self.employee_fetches = 0
         self._dept = (DeptRecord("dept-a1", "一车间", "YCJ"),)
-        self._employee = (EmployeeRecord("01001", "模拟员工甲", "MNYGJ"),)
+        self._employee = (EmployeeRecord("01001", "模拟员工甲", "MNYGJ", dept="dept-a1"),)
 
     async def list_depts(self, scope: DataScope) -> tuple[object, ...]:
         self.dept_fetches += 1
         return self._dept
 
     async def list_employees(self, scope: DataScope) -> tuple[object, ...]:
+        self.employee_fetches += 1
+        return self._employee
+
+    async def list_employees_for_tenant(self, tenant_id: TenantId) -> tuple[object, ...]:
         self.employee_fetches += 1
         return self._employee
 
@@ -241,3 +246,59 @@ async def test_invalidate_base_data_evicts_shared_roster_after_rebuild() -> None
     assert store.values == {}
     await source.list_employees(make_scope("scope-a"))
     assert directory.employee_fetches == 2  # re-fetched after invalidation
+
+
+@pytest.mark.asyncio
+async def test_roster_cache_preserves_department_for_headcounts_and_target_resolution() -> None:
+    from factory_agent.ports.directory import EmployeeRecord
+
+    cache, _ = make_cache()
+    directory = _FakeDirectory()
+    source = CachedDirectorySource(directory, cache)
+    cold = await source.list_employees(make_scope("cold"))
+    hot = await source.list_employees_for_tenant(TENANT)
+    assert cold == hot
+    assert hot == (EmployeeRecord("01001", "模拟员工甲", "MNYGJ", dept="dept-a1"),)
+    assert directory.employee_fetches == 1
+
+
+class LeaseStore(InMemoryCacheStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.leases: dict[str, str] = {}
+
+    async def acquire_lease(self, key: str, token: str, ttl_seconds: int) -> bool:
+        if self.failure is not None:
+            raise self.failure
+        if key in self.leases:
+            return False
+        self.leases[key] = token
+        return True
+
+    async def release_lease(self, key: str, token: str) -> None:
+        if self.leases.get(key) == token:
+            self.leases.pop(key)
+
+
+@pytest.mark.asyncio
+async def test_producer_lease_excludes_other_replica_and_releases_only_its_token() -> None:
+    store = LeaseStore()
+    first, _ = make_cache(store)
+    second, _ = make_cache(store)
+    async with first.lease(TENANT, {"day": "2026-10-12"}) as acquired:
+        assert acquired
+        async with second.lease(TENANT, {"day": "2026-10-12"}) as other_acquired:
+            assert other_acquired is False
+        key = next(iter(store.leases))
+        store.leases[key] = "new-owner-token"
+    assert store.leases[key] == "new-owner-token"
+
+
+@pytest.mark.asyncio
+async def test_producer_lease_store_failure_is_a_non_blocking_miss() -> None:
+    store = LeaseStore()
+    cache, _ = make_cache(store)
+    store.failure = RuntimeError("store unavailable")
+    async with cache.lease(TENANT, {"day": "2026-10-12"}) as acquired:
+        assert acquired is False
+    assert cache.stats.reasons["store_unavailable"] == 1

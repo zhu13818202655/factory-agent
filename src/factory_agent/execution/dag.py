@@ -6,8 +6,6 @@ budgets, propagates structured cancellation, and marks optional-step failures
 as explicit ``incomplete`` data instead of fabricating numbers.
 """
 
-
-
 import asyncio
 import time
 from dataclasses import dataclass

@@ -6,8 +6,6 @@ engine that fails on ``begin()`` so the isolation contract is proven without a
 database.
 """
 
-
-
 import logging
 from datetime import datetime, timezone
 from typing import Any

@@ -6,8 +6,6 @@ quantization scheme. Model selection changes the payloads a real model produces;
 it must never change the rules asserted here.
 """
 
-
-
 import json
 from dataclasses import asdict
 from datetime import datetime

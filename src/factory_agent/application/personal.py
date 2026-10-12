@@ -7,8 +7,6 @@ intent and the session pipeline re-resolves credentials, scope, metric version,
 and current data.
 """
 
-
-
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone

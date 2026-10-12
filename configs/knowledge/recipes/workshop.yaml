@@ -1,27 +1,9 @@
-# Reviewed L1 workshop recipes. File changes are semantics changes
-# and require human review.
-#
-# 口径来源：``docs/design/V2接口取数重构与缓存加速方案.md``（2026-10-11 换代，
-# 附录 C.3 + §7 G.5 拍板）、``docs/api/工资产量-V2.md``。
-#
-# 产量主源 = ``GongziClQuery`` V2（工资产量）：``groupbyFields`` 直接含
-# ``dept``/``deptname``，行集自带部门名——``DeptQuery`` 关联取消（C.3：V1 的
-# ``YskQuery`` + ``DeptQuery`` 两跳合并为一跳）。行集粒度 = 「部门 × 部门名 ×
-# 大货款号 × uid」（C.3 表分组键 + 要点 1 的 uid）：数值列（sl/je）由服务端合计，
-# ``uid`` 拉进行集用于本地 COUNT(DISTINCT)（「参与人数/人均产量」分母）。
-#
-# 部门可见范围仍由 MES 按角色行级过滤（组长=本组、管理=绑定部门、老板=全厂，
-# mes_filtered），我方 ``requested_dept_ids`` 只做可选收窄（本地过滤，GongziClQuery
-# 无 dept 服务端过滤参数），永不放大。
-#
-# 款号过滤（style_codes）同时匹配 ``bbreed``（大货款号）与 ``huohao``（款号），
-# 与产量族同法（C.3 口径词差宽容）。
-#
-# 排序本地做（§3.2⑤ / C.3）：产量降序；FR-007 的名次窗口只按产量排序（允许并列），
-# 行序以 dept_id 升序打破（G.5 显式 tie-break）。
-# 可见部门数 N 的形态判定不变：N==0 空结果；N==1 单部门形态（名次列 unavailable，
-# 走 FR-010 表格视图）；N>=2 对比形态（名次 + 人均，FR-007 排名视图）。
-version: 3
+# Reviewed L1 workshop output recipes.
+# Shared wage details supply the department/style/employee dimensions.
+# Authorized scope and optional requested departments/styles only narrow the
+# rows; totals, distinct participant counts and per-capita output are local.
+# Rankings permit equal quantities and order equal rows by department id.
+version: 4
 capabilities:
   - capability_id: fr007_workshop_output_comparison
     title: 小组/车间产量对比
@@ -33,7 +15,6 @@ capabilities:
         params:
           Flag: "0"
           Type: "0,1,2"
-          groupbyFields: [dept, deptname, bbreed, uid]
       - step_id: compute
         kind: local
         depends_on: [fetch_cl]
@@ -137,7 +118,6 @@ capabilities:
         params:
           Flag: "0"
           Type: "0,1,2"
-          groupbyFields: [dept, deptname, bbreed, uid]
       - step_id: compute
         kind: local
         depends_on: [fetch_cl]

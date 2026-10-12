@@ -11,8 +11,6 @@ Two distinct threats are addressed:
    apostrophe, so an exported cell is always rendered as text, never executed.
 """
 
-
-
 import re
 from typing import Any
 

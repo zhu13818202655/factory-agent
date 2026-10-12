@@ -5,8 +5,6 @@ application. Gateway transport failures stay ``ModelGatewayError``; a model that
 answers but does not satisfy the schema raises ``StructuredOutputError``.
 """
 
-
-
 import json
 import re
 from dataclasses import dataclass, replace
