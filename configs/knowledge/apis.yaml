@@ -520,6 +520,7 @@ operations:
       # 绝不来自模型文本；bbreed 取值是货号名称、wtname 是工序名称（服务端自动
       # 转编号过滤）；chuanghao 为模糊匹配。
       uid: filter
+      dept: scope
       Flag: filter
       Type: filter
       bbreed: filter

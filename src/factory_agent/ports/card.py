@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from typing import cast
 
 from factory_agent.ports.contracts import UNAVAILABLE_VALUE
 
@@ -36,6 +37,10 @@ _UNAVAILABLE_LABEL = "暂无数据源"
 #: at most two decimal places, matching the answer-text path
 #: (``summary.format_aggregate_value`` quantizes money to 0.01).
 _DISPLAY_QUANTUM = Decimal("0.01")
+
+ALLOWED_ACTION_CLEAR_FIELDS = frozenset(
+    {"order_codes", "style_codes", "plan_codes", "material_ids"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,11 +70,31 @@ class CardAction:
     column values and fills the named slots of the follow-up ``drill`` request.
     Card-level declaration keeps the payload compact; the values themselves
     live in the rows the client already has.
+
+    ``clear_fields`` removes inapplicable business identifiers from the parent
+    context before binding the clicked row. Permission and identity narrowing
+    fields cannot be cleared through an action.
     """
 
     label: str
     capability_id: str
     bind_from: dict[str, str] = field(default_factory=dict[str, str])
+    clear_fields: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(name not in ALLOWED_ACTION_CLEAR_FIELDS for name in self.clear_fields):
+            raise ValueError("Card actions can only clear approved business fields")
+
+    def payload(self) -> dict[str, object]:
+        action: dict[str, object] = {
+            "type": "drill",
+            "label": self.label,
+            "capability_id": self.capability_id,
+            "bind_from": dict(self.bind_from),
+        }
+        if self.clear_fields:
+            action["clear_fields"] = list(self.clear_fields)
+        return action
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +211,7 @@ class CardTableSpec:
     #: notes so a reader always sees the measurement basis before runtime
     #: warnings; they carry no data values.
     notes: tuple[str, ...] = ()
+    hidden_columns: tuple[str, ...] = ()
 
     def has_table(self) -> bool:
         return self.kind in ("table", "ranking")
@@ -223,19 +249,14 @@ def build_card(
         "totals": _totals_payload(spec.totals, by_name, totals),
     }
     if spec.has_table():
-        payload["table"] = _table_payload(spec, by_name, rows)
+        visible_columns = {
+            name: column for name, column in by_name.items() if name not in spec.hidden_columns
+        }
+        payload["table"] = _table_payload(spec, visible_columns, rows)
     if chart is not None:
         payload["chart"] = chart.payload()
     if spec.actions:
-        payload["actions"] = [
-            {
-                "type": "drill",
-                "label": action.label,
-                "capability_id": action.capability_id,
-                "bind_from": dict(action.bind_from),
-            }
-            for action in spec.actions
-        ]
+        payload["actions"] = [action.payload() for action in spec.actions]
     unavailable = _unavailable_titles(spec.metrics, by_name, rows, totals)
     if unavailable:
         payload["unavailable_columns"] = unavailable
@@ -468,7 +489,27 @@ def _decimal_str(value: Decimal, column_type: str | None = None) -> str:
     return format(value.normalize(), "f")
 
 
+def comparable_card(card: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Compare business payloads without snapshot identities used for pagination."""
+    if card is None:
+        return None
+
+    def business_value(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: business_value(item)
+                for key, item in cast(dict[str, object], value).items()
+                if key not in {"data_snapshot", "snapshot_id", "data_snapshot_id"}
+            }
+        if isinstance(value, list):
+            return [business_value(item) for item in cast(list[object], value)]
+        return value
+
+    return {key: business_value(value) for key, value in card.items() if key != "data_snapshot"}
+
+
 __all__ = [
+    "ALLOWED_ACTION_CLEAR_FIELDS",
     "MAX_CHART_DAY_POINTS",
     "MAX_PREVIEW_GROUPS",
     "MAX_PREVIEW_ROWS",
@@ -479,4 +520,5 @@ __all__ = [
     "CardTableSpec",
     "build_card",
     "build_chart_payload",
+    "comparable_card",
 ]

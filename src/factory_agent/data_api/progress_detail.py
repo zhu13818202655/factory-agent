@@ -8,7 +8,7 @@ are excluded from the supported grains.
 """
 
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 
@@ -45,25 +45,36 @@ _DIMENSION_NAMES: Mapping[str, str] = {
 }
 
 
+def normalize_progress_date(value: object) -> str:
+    """Validate the returned business date without interpreting the sheet ID."""
+    if not isinstance(value, str) or not value:
+        raise ProgressDerivationError("invalid_progress_date")
+    try:
+        if len(value) == 10:
+            parsed = date.fromisoformat(value)
+            if parsed.isoformat() != value:
+                raise ValueError
+            return parsed.isoformat()
+        if len(value) > 10 and value[10] in {"T", " "}:
+            return datetime.fromisoformat(value).date().isoformat()
+    except ValueError:
+        pass
+    raise ProgressDerivationError("invalid_progress_date")
+
+
 def derive_progress_rows(
     rows: tuple[Mapping[str, object], ...],
 ) -> tuple[dict[str, str], ...]:
-    """Attach the validated calendar date encoded by each detail row's sheet ID.
+    """Normalize the explicit calendar date returned with each detail row.
 
     Neither the input rows nor their dimensions are changed. A missing or invalid
-    sheet date rejects the complete set; silently dropping rows would undercount.
+    business date rejects the complete set; silently dropping rows would undercount.
     """
     enriched: list[dict[str, str]] = []
     for row in rows:
         normalized = {key: _scalar(value) for key, value in row.items()}
-        head = normalized.get("dh", "")[:8]
-        if len(head) != 8 or not head.isascii() or not head.isdigit():
-            raise ProgressDerivationError("invalid_sheet_date")
-        try:
-            sheet_date = date(int(head[:4]), int(head[4:6]), int(head[6:8]))
-        except ValueError as error:
-            raise ProgressDerivationError("invalid_sheet_date") from error
-        normalized["dh_date"] = sheet_date.isoformat()
+        normalized["rq"] = normalize_progress_date(row.get("rq"))
+        normalized.pop("dh_date", None)
         enriched.append(normalized)
     return tuple(enriched)
 
@@ -102,12 +113,16 @@ def aggregate_progress_rows(
         current = grouped.get(key)
         if current is None:
             dimensions = {column: row[column] for column in columns}
+            if "dh" in columns:
+                dimensions["rq"] = row["rq"]
             totals = {column: Decimal(0) for column in PROGRESS_ADDITIVE_COLUMNS}
             grouped[key] = dimensions, totals
         else:
             dimensions, totals = current
             if any(row[name] != dimensions[name] for name in name_fields):
                 raise ProgressDerivationError("inconsistent_dimension_name")
+            if "dh" in columns and row["rq"] != dimensions["rq"]:
+                raise ProgressDerivationError("inconsistent_progress_date")
         for column in PROGRESS_ADDITIVE_COLUMNS:
             totals[column] += _contribution(row, column)
 

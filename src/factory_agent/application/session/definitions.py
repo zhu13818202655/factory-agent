@@ -17,6 +17,7 @@ from factory_agent.domain import (
     terminal_event_name,
 )
 from factory_agent.observability.logging_adapter import get_logger
+from factory_agent.ports.order_views import OrderViewSelection
 
 IdFactory = Callable[[], str]
 
@@ -85,8 +86,8 @@ class DrillPayload:
     """Structured drill request carried from ``start`` to the claiming executor.
 
     Scope identifiers are absent by design: the drill only carries business
-    narrowing values (a department id set and/or one target employee uid) and
-    the time window of the card the user clicked. Every value is re-validated
+    narrowing values, registered detail selections and the original time
+    window of the card the user clicked. Every value is re-validated
     server-side against the active DataScope before any business call — the
     drill can only narrow, never broaden.
 
@@ -115,6 +116,14 @@ class DrillPayload:
     #: model-proposed range judges this one.
     time_range_start: datetime | None = None
     time_range_end: datetime | None = None
+    order_codes: tuple[str, ...] = ()
+    style_codes: tuple[str, ...] = ()
+    plan_codes: tuple[str, ...] = ()
+    material_ids: tuple[str, ...] = ()
+    order_view: OrderViewSelection | None = None
+    group_page: int = 1
+    group_page_size: int = 50
+    data_snapshot_id: str | None = None
 
 
 @dataclass

@@ -393,9 +393,7 @@ class RecordingCapabilityRunner:
     failure: Exception | None = None
     #: Optional card payload the fake kernel result carries (card-contract tests).
     card: dict[str, object] | None = None
-    #: Opaque parking spot for a recipe registry. Nothing reads it — the session
-    #: service never consults the runner's registry — but a drill test documents
-    #: which capabilities the round could route by setting it.
+    #: Optional reviewed registry used by structural drill validation.
     recipes: object | None = None
 
     async def run(self, request: CapabilityRunRequest) -> CapabilityRunResult:

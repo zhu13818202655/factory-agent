@@ -26,6 +26,7 @@ from pydantic import (
     model_validator,
 )
 
+from factory_agent.data_api.progress_detail import ProgressDerivationError, normalize_progress_date
 from factory_agent.observability.logging_adapter import get_logger
 
 
@@ -739,11 +740,12 @@ class ScjdV2Row(_V2CustomerRow):
 
     口径拍板（方案 §7 T1/T3）：完工率 ``wcl = sssl / fhsl × 100``（实收 ÷ 发卡），
     不随分组维度变化；``bgs``/``bts`` 与 ``wgs``/``wts`` 只是包/工序维度的参考
-    统计，不参与 ``wcl``。行内**没有日期列**——时间锚 = 流程卡制单日期 =
-    ``dh`` 前 8 位（方案附录 A.5 实测零越界），由缓存加工层派生 ``dh_date``。
+    统计，不参与 ``wcl``。时间锚 ``rq`` 为接口返回的流程卡制单日期，
+    制单号仅作为标识，不用于计算日期。
     """
 
     dh: str = ""
+    rq: str = ""
     jhdh: str = ""
     chuanghao: str = ""
     huohao: str = ""
@@ -769,6 +771,16 @@ class ScjdV2Row(_V2CustomerRow):
     wcl: str = ""
     bgs: str = ""
     bts: str = ""
+
+    @field_validator("rq")
+    @classmethod
+    def _normalize_business_date(cls, value: str) -> str:
+        if not value:
+            return value
+        try:
+            return normalize_progress_date(value)
+        except ProgressDerivationError:
+            raise ValueError("production progress date is invalid") from None
 
 
 #: Row model per catalog resource name. V2 动态分组行（``_V2CustomerRow``）与

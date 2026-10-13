@@ -18,8 +18,9 @@ import factory_agent.data_api.result_cache as result_cache_module
 from factory_agent.application.cache import AuthAwareCache
 from factory_agent.application.prefetch import V2PrefetchWorker
 from factory_agent.data_api.catalog import load_catalog
+from factory_agent.data_api.progress_detail import ProgressDerivationError, normalize_progress_date
 from factory_agent.data_api.result_cache import (
-    DERIVED_DH_DATE,
+    PROGRESS_DATE_COLUMN,
     RESULT_SET_VERSION,
     ResultCacheExecutor,
     ResultCacheMode,
@@ -27,7 +28,6 @@ from factory_agent.data_api.result_cache import (
     V2ResultCache,
     cacheable_grain,
     decode_result_set,
-    derive_dh_date,
     encode_result_set,
     footer_reconciles,
     local_view_rows,
@@ -131,14 +131,15 @@ def owner_filters() -> NarrowedFilters:
 # 纯函数
 
 
-def test_derive_dh_date_parses_first_eight_digits():
-    assert derive_dh_date("20260701001") == "2026-07-01"
-    assert derive_dh_date("20261231001") == "2026-12-31"
+def test_progress_date_normalizes_explicit_rq_calendar_day():
+    assert normalize_progress_date("2026-07-01") == "2026-07-01"
+    assert normalize_progress_date("2026-12-31T23:00:00+00:00") == "2026-12-31"
 
 
-@pytest.mark.parametrize("dh", ["20260230001", "2026-07-01", "2026", "", None, "abcdefgh1"])
-def test_derive_dh_date_rejects_unparsable(dh: Any):
-    assert derive_dh_date(dh) is None
+@pytest.mark.parametrize("rq", ["2026-02-30", "20260701001", "2026", "", None, "abcdefgh1"])
+def test_progress_date_rejects_invalid_rq(rq: Any):
+    with pytest.raises(ProgressDerivationError, match="invalid_progress_date"):
+        normalize_progress_date(rq)
 
 
 def test_window_category_three_paths():
@@ -179,14 +180,17 @@ def test_cacheable_grain():
 
 
 def test_result_set_round_trip():
-    rows = ({"dh": "20260701001", "dept": "D1"}, {"dh": "20260702001", "dept": "D2"})
+    rows = (
+        {"dh": "20260701001", "rq": "2026-07-01", "dept": "D1"},
+        {"dh": "20260702001", "rq": "2026-07-02", "dept": "D2"},
+    )
     payload = encode_result_set(
         operation_id="ScjdQuery",
         rows=rows,
         footer={"sssl_total": "10"},
         window=PREFETCH_WINDOW,
         filters={"api": "ScjdQuery"},
-        derived=(DERIVED_DH_DATE,),
+        derived=(),
         generated_at="2026-10-15T02:00:00+00:00",
         source="precompute",
     )
@@ -306,7 +310,7 @@ def test_scope_filtered_rows():
 
 
 def test_time_anchor_column_and_slicing():
-    assert time_anchor_column("ScjdQuery", {}) == DERIVED_DH_DATE
+    assert time_anchor_column("ScjdQuery", {}) == PROGRESS_DATE_COLUMN
     assert time_anchor_column("GongziClQuery", {"Flag": "1"}) == "check_time"
     assert time_anchor_column("GongziClQuery", {"Flag": "0"}) == "inputdate"
     assert time_anchor_column("GongziClQuery", {}) == "inputdate"
@@ -358,7 +362,7 @@ def test_write_and_read_round_trip_payroll():
 
 def test_read_uses_prefetch_key_for_settled_question_window():
     cache = make_result_cache()
-    rows: Rows = ({"dh": "20260701001", "dept": "D1"},)
+    rows: Rows = ({"dh": "NON-DATE-SHEET", "rq": "2026-07-01T12:00:00", "dept": "D1"},)
     asyncio.run(
         cache.write(
             TenantId("t"),
@@ -370,7 +374,7 @@ def test_read_uses_prefetch_key_for_settled_question_window():
             source="precompute",
         )
     )
-    # 问题窗口 ⊆ 回溯范围 → 读预取键（同参、预取窗口）；行集带派生列 dh_date。
+    # 问题窗口落在年度范围内，缓存 rq 保存接口提供的标准业务日期。
     hit = asyncio.run(
         cache.read(
             TenantId("t"),
@@ -380,7 +384,7 @@ def test_read_uses_prefetch_key_for_settled_question_window():
         )
     )
     assert hit is not None
-    assert hit.rows == ({"dh": "20260701001", "dept": "D1", DERIVED_DH_DATE: "2026-07-01"},)
+    assert hit.rows == ({"dh": "NON-DATE-SHEET", "dept": "D1", "rq": "2026-07-01"},)
     assert hit.source == "precompute"
 
 
@@ -515,20 +519,96 @@ def test_write_gate_rejects_footer_mismatch():
     )
 
 
-def test_write_rejects_scjd_rows_without_dh_date():
+def test_write_rejects_scjd_rows_without_explicit_rq():
     cache = make_result_cache()
     stored = asyncio.run(
         cache.write(
             TenantId("t"),
             "ScjdQuery",
-            ({"dh": "bogus"},),
+            ({"dh": "202607010001"},),
             None,
-            {"groupbyFields": M7_GROUPBY},
+            {},
             ("2026-07-01", "2026-07-02"),
             source="query",
         )
     )
     assert stored is False
+
+
+@pytest.mark.parametrize("rq", [None, "", "2026-02-30", "2026-07-01T99:00:00", "DATE-CANARY"])
+def test_bad_rq_cannot_use_date_shaped_sheet_id_or_legacy_anchor_to_enter_cache(rq: object):
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    written = asyncio.run(
+        cache.write(
+            TenantId("t"),
+            "ScjdQuery",
+            ({"dh": "20260701001", "rq": rq, "dh_date": "2026-07-01"},),
+            None,
+            {},
+            PREFETCH_WINDOW,
+            source="precompute",
+        )
+    )
+    assert written is False
+    assert store.data == {}
+
+
+def test_progress_cache_slicing_uses_rq_even_when_sheet_prefix_disagrees():
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    rows: Rows = (
+        {"dh": "NON-DATE-SHEET", "rq": "2026-07-01T12:00:00", "fhsl": "10"},
+        {"dh": "20260701001", "rq": "2026-08-01", "fhsl": "20"},
+    )
+    assert asyncio.run(
+        cache.write(
+            TenantId("t"), "ScjdQuery", rows, None, {}, PREFETCH_WINDOW, source="precompute"
+        )
+    )
+    hit = asyncio.run(cache.read(TenantId("t"), "ScjdQuery", {}, ("2026-07-01", "2026-07-02")))
+    assert hit is not None
+    sliced = local_view_rows(
+        hit.rows, "ScjdQuery", owner_filters(), {}, ("2026-07-01", "2026-07-02"), Role.OWNER
+    )
+    assert sliced == ({"dh": "NON-DATE-SHEET", "rq": "2026-07-01", "fhsl": "10"},)
+    payload = json.loads(next(iter(store.data.values())))
+    assert payload["v"] == 3
+    assert payload["derived"] == []
+    assert "dh_date" not in payload["columns"]
+
+
+@pytest.mark.parametrize("corruption", ["missing_rq", "bad_rq", "timestamp_rq", "old_version"])
+def test_progress_cache_read_rejects_missing_invalid_rq_and_legacy_payload(corruption: str):
+    store = MemoryStore()
+    cache = make_result_cache(store=store)
+    assert asyncio.run(
+        cache.write(
+            TenantId("t"),
+            "ScjdQuery",
+            ({"dh": "SHEET-A", "rq": "2026-07-01"},),
+            None,
+            {},
+            PREFETCH_WINDOW,
+            source="precompute",
+        )
+    )
+    key = next(iter(store.data))
+    payload = json.loads(store.data[key])
+    position = payload["columns"].index("rq")
+    if corruption == "missing_rq":
+        payload["columns"].pop(position)
+        for row in payload["rows"]:
+            row.pop(position)
+    elif corruption == "bad_rq":
+        payload["rows"][0][position] = "2026-02-30"
+    elif corruption == "timestamp_rq":
+        payload["rows"][0][position] = "2026-07-01T08:00:00+08:00"
+    else:
+        payload["v"] = 2
+    store.data[key] = json.dumps(payload).encode()
+    hit = asyncio.run(cache.read(TenantId("t"), "ScjdQuery", {}, ("2026-07-01", "2026-07-02")))
+    assert hit is None
 
 
 def test_ttl_is_window_classified():
@@ -1190,6 +1270,7 @@ def progress_detail_rows() -> Rows:
     return (
         {
             "dh": "20260701001",
+            "rq": "2026-07-01",
             "jhdh": "P1",
             "chuanghao": "C1",
             "huohao": "H1",
@@ -1214,6 +1295,7 @@ def progress_detail_rows() -> Rows:
         },
         {
             "dh": "20260702002",
+            "rq": "2026-07-02",
             "jhdh": "P2",
             "chuanghao": "C2",
             "huohao": "H2",
@@ -1375,7 +1457,7 @@ def test_progress_views_reuse_one_detail_snapshot_after_complete_filtering():
     assert inner.calls == []
 
 
-def test_progress_shadow_keeps_realtime_baseline_without_date_column_false_mismatch():
+def test_progress_shadow_preserves_native_rq_rows_without_false_mismatch():
     rows = progress_detail_rows()
     store = MemoryStore()
     cache = make_result_cache(mode=ResultCacheMode.SHADOW, store=store)
@@ -1392,7 +1474,7 @@ def test_progress_shadow_keeps_realtime_baseline_without_date_column_false_misma
     )
     request = replace(payroll_request(), operation_id="ScjdQuery")
     result = asyncio.run(executor.execute_full_step(owner_filters(), request))
-    assert all(row["dh_date"] for row in result.rows)
+    assert all(row["rq"] for row in result.rows)
     assert result.shadow_result is realtime
     assert alerts == []
     executor.release_cached_result(result)
@@ -1695,9 +1777,11 @@ def test_missing_wage_anchor_is_not_cached_as_a_false_empty_result():
         inner, make_result_cache(store=store), snapshot_provider=snapshot
     )
     result = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
-    assert result.rows == invalid.rows
+    assert result.rows == ()
+    assert result.complete is False
+    assert result.reason == "upstream_invalid"
     assert result.source_call_count == 2
-    assert result.rows != ()
+    assert result.footer is None
     assert len(inner.calls) == 1
     assert store.data == {}
 
@@ -1718,7 +1802,7 @@ def test_style_code_and_name_filter_matches_each_family_contract(
         {
             "inputdate": "2026-07-01",
             "dh": "20260701001",
-            "dh_date": "2026-07-01",
+            "rq": "2026-07-01",
             "huohao": "H1",
             "bbreed": "S1",
         },

@@ -29,6 +29,8 @@ from factory_agent.domain import (
     TimeRange,
     UserId,
 )
+from factory_agent.ports.contracts import RenderTable
+from factory_agent.ports.order_views import OrderViewSelection
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +332,10 @@ class CapabilityRunRequest:
     #: Trusted caller identity stays separate from the population being ranked.
     caller_employee_id: EmployeeId | None = None
     caller_dept_ids: frozenset[DeptId] | None = None
+    order_view: OrderViewSelection | None = None
+    group_page: int = 1
+    group_page_size: int = 50
+    data_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +371,8 @@ class CapabilityRunResult:
     card: dict[str, object] | None = None
     #: Approved cache provenance only; it carries no customer fields or keys.
     cache_source: dict[str, object] | None = None
+    detail_tables: tuple[RenderTable, ...] = ()
+    hidden_columns: tuple[str, ...] = ()
 
 
 class CapabilityRunner(Protocol):

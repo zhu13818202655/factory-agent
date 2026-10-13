@@ -2,7 +2,15 @@
 
 from decimal import Decimal
 
-from factory_agent.ports.card import CardAlertSpec, CardColumn, CardTableSpec, build_card
+import pytest
+
+from factory_agent.ports.card import (
+    CardAction,
+    CardAlertSpec,
+    CardColumn,
+    CardTableSpec,
+    build_card,
+)
 from tests.support.payload import as_dict, as_list
 
 _WAGE_COLUMNS = (
@@ -351,6 +359,52 @@ def test_card_actions_are_declared_as_card_level_drill_entries() -> None:
             "bind_from": {"employee_uid": "uid"},
         }
     ]
+
+
+def test_card_actions_can_clear_inapplicable_business_identifiers() -> None:
+    card = build_card(
+        CardTableSpec(
+            kind="table",
+            actions=(
+                CardAction(
+                    "查看工序",
+                    "fr005_order_worktype_detail",
+                    {"material_ids": "material_id"},
+                    clear_fields=("order_codes",),
+                ),
+            ),
+        ),
+        capability_id="fr005_order_package_detail",
+        title="包明细",
+        columns=(CardColumn("material_id", title="物料编号"),),
+        rows=({"material_id": "MATERIAL-A"},),
+        totals={},
+    )
+    assert card["actions"] == [
+        {
+            "type": "drill",
+            "label": "查看工序",
+            "capability_id": "fr005_order_worktype_detail",
+            "bind_from": {"material_ids": "material_id"},
+            "clear_fields": ["order_codes"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "dept_ids",
+        "employee_uid",
+        "employee_ids",
+        "tenant_id",
+        "user_id",
+        "order_view",
+    ],
+)
+def test_card_action_cannot_clear_identity_or_permission_narrowing(name: str) -> None:
+    with pytest.raises(ValueError, match="only clear approved business fields"):
+        CardAction("动作", "fr005_order_worktype_detail", clear_fields=(name,))
 
 
 def test_aux_metrics_render_values_and_explicit_unavailable() -> None:

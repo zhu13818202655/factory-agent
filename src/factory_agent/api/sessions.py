@@ -13,7 +13,7 @@ the ``(tenant_id, user_id)`` pair the credential resolves to.
 
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Self, cast
+from typing import Annotated, Literal, Self, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
@@ -48,6 +48,7 @@ from factory_agent.ports import (
     InteractionStore,
     MessagePage,
 )
+from factory_agent.ports.order_views import OrderViewSelection
 
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -83,6 +84,39 @@ class StartInteractionRequest(BaseModel):
     drill: "DrillSpec | None" = None
 
 
+class OrderViewSpec(BaseModel):
+    model_config = {"extra": "forbid", "frozen": True}
+
+    view_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    group_kind: Literal["plan", "unlinked"]
+    plan_code: str | None = Field(default=None, min_length=1, max_length=128)
+    page: int = Field(default=1, ge=1, le=100000, strict=True)
+    page_size: int = Field(default=10, ge=1, le=100, strict=True)
+    status: Literal["all", "finished", "unfinished", "unavailable"] = "all"
+    snapshot_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _selection_is_valid(self) -> Self:
+        self.to_selection()
+        if self.page > 1 and self.snapshot_id is None:
+            raise ValueError("order detail pagination requires snapshot_id")
+        return self
+
+    def to_selection(self) -> OrderViewSelection:
+        return OrderViewSelection(
+            view_id=self.view_id,
+            group_kind=self.group_kind,
+            plan_code=self.plan_code,
+            page=self.page,
+            page_size=self.page_size,
+            status=self.status,
+            snapshot_id=self.snapshot_id,
+        )
+
+
+BusinessCode = Annotated[str, Field(min_length=1, max_length=128)]
+
+
 class DrillSpec(BaseModel):
     """Structured drill payload: target capability + business slots."""
 
@@ -97,6 +131,14 @@ class DrillSpec(BaseModel):
     #: rejected instead of being silently completed with a guessed boundary.
     time_range_start: datetime | None = None
     time_range_end: datetime | None = None
+    order_codes: list[BusinessCode] = Field(default_factory=list, max_length=20)
+    style_codes: list[BusinessCode] = Field(default_factory=list, max_length=20)
+    plan_codes: list[BusinessCode] = Field(default_factory=list, max_length=20)
+    material_ids: list[BusinessCode] = Field(default_factory=list, max_length=20)
+    order_view: OrderViewSpec | None = None
+    group_page: int = Field(default=1, ge=1, le=100000, strict=True)
+    group_page_size: int = Field(default=50, ge=1, le=50, strict=True)
+    data_snapshot_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def _window_is_complete(self) -> Self:
@@ -104,6 +146,15 @@ class DrillSpec(BaseModel):
         end_set = self.time_range_end is not None
         if start_set != end_set:
             raise ValueError("time_range_start and time_range_end must be sent together")
+        if self.order_view is not None and not start_set:
+            raise ValueError("order view requires the original absolute time window")
+        if self.group_page > 1:
+            if self.data_snapshot_id is None or not start_set:
+                raise ValueError(
+                    "order group pagination requires snapshot and original time window"
+                )
+            if self.order_view is not None:
+                raise ValueError("order detail selection cannot paginate the group list")
         return self
 
     def to_payload(self) -> DrillPayload:
@@ -114,6 +165,14 @@ class DrillSpec(BaseModel):
             time_expression=self.time_expression,
             time_range_start=self.time_range_start,
             time_range_end=self.time_range_end,
+            order_codes=tuple(self.order_codes),
+            style_codes=tuple(self.style_codes),
+            plan_codes=tuple(self.plan_codes),
+            material_ids=tuple(self.material_ids),
+            order_view=self.order_view.to_selection() if self.order_view else None,
+            group_page=self.group_page,
+            group_page_size=self.group_page_size,
+            data_snapshot_id=self.data_snapshot_id,
         )
 
 

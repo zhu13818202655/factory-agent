@@ -133,6 +133,57 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
             raise ValueError("drill employee_uid is not acceptable")
         if drill.time_expression is not None and len(drill.time_expression) > 64:
             raise ValueError("drill time_expression is not acceptable")
+        for values in (drill.order_codes, drill.style_codes, drill.plan_codes, drill.material_ids):
+            if len(values) > 20 or any(not value or len(value) > 128 for value in values):
+                raise ValueError("drill business filters are not acceptable")
+        if drill.material_ids and recipes is not None:
+            if any(
+                step.operation_id == "GongziClQuery"
+                for step in recipes.get(capability_id).steps
+                if step.kind == "api"
+            ):
+                raise ValueError("wage output does not support material filtering")
+        if drill.order_view is not None:
+            if drill.time_range_start is None or drill.time_range_end is None:
+                raise ValueError("order view requires the original absolute time window")
+            if drill.order_view.page > 1 and drill.order_view.snapshot_id is None:
+                raise ValueError("order detail pagination requires a snapshot")
+            if recipes is not None:
+                recipe = recipes.get(capability_id)
+                view = next(
+                    (
+                        aux
+                        for aux in recipe.aux_outputs
+                        if aux.into == "details" and aux.aux_id == drill.order_view.view_id
+                    ),
+                    None,
+                )
+                if view is None:
+                    raise ValueError("order detail view is not registered")
+                if drill.order_view.status != "all" and view.status_column is None:
+                    raise ValueError("order detail view does not support status filtering")
+        if type(drill.group_page) is not int or not 1 <= drill.group_page <= 100000:
+            raise ValueError("order group page is invalid")
+        if type(drill.group_page_size) is not int or not 1 <= drill.group_page_size <= 50:
+            raise ValueError("order group page size is invalid")
+        if drill.group_page > 1:
+            if (
+                drill.data_snapshot_id is None
+                or drill.time_range_start is None
+                or drill.time_range_end is None
+            ):
+                raise ValueError(
+                    "order group pagination requires snapshot and original time window"
+                )
+            if drill.order_view is not None:
+                raise ValueError("order detail selection cannot paginate the group list")
+        if recipes is not None and (
+            drill.group_page != 1
+            or drill.group_page_size != 50
+            or drill.data_snapshot_id is not None
+        ):
+            if not any(aux.into == "details" for aux in recipes.get(capability_id).aux_outputs):
+                raise ValueError("capability does not support order group pagination")
 
     async def stream(
         self,

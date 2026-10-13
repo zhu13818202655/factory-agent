@@ -4,109 +4,118 @@
 # and request conditions and projects each reviewed groupbyFields grain before
 # sandbox loading. Local ratios use sum(received)/sum(issued), never an average
 # of row ratios. Order dimensions use jhdh; empty plans share one group.
-version: 5
+version: 7
 capabilities:
   - capability_id: fr005_order_progress
     title: 订单/款号进度
-    required_slots: [time_range]
+    required_slots:
+      - time_range
     steps:
       - step_id: fetch_scjd
         kind: api
         operation_id: ScjdQuery
         params:
-          groupbyFields: [dh, jhdh, chuanghao, huohao, bbreed, dept, deptname]
+          groupbyFields:
+            - dh
+            - jhdh
+            - chuanghao
+            - huohao
+            - bbreed
+            - dept
+            - deptname
       - step_id: compute
         kind: local
-        depends_on: [fetch_scjd]
+        depends_on:
+          - fetch_scjd
         filter_bindings:
           order_codes: order_codes
           style_codes: style_codes
+          plan_codes: plan_codes
         compute: |
-          WITH order_codes AS (
-            SELECT unnest($order_codes) AS c
-          ),
-          style_codes AS (
-            SELECT unnest($style_codes) AS c
-          ),
+          WITH order_codes AS (SELECT unnest($order_codes) AS c),
+          style_codes AS (SELECT unnest($style_codes) AS c),
+          plan_codes AS (SELECT unnest($plan_codes) AS c),
           scoped AS (
             SELECT * FROM fetch_scjd
-            WHERE ((SELECT COUNT(*) FROM order_codes) = 0
-                   OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
-              AND ((SELECT COUNT(*) FROM style_codes) = 0
-                   OR bbreed IN (SELECT c FROM style_codes))
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0 OR bbreed IN (SELECT c FROM style_codes))
+          AND ((SELECT COUNT(*) FROM plan_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM plan_codes))
+          AND (NOT (SELECT filter_dept FROM _meta) OR dept IN (SELECT dept_id FROM _dept_scope))
+          AND ((SELECT order_view_kind FROM _meta) = ''
+               OR ((SELECT order_view_kind FROM _meta) = 'unlinked' AND TRIM(COALESCE(jhdh, '')) = '')
+               OR ((SELECT order_view_kind FROM _meta) = 'plan' AND jhdh = (SELECT order_view_plan FROM _meta)))
           ),
           dated AS (
             SELECT
               CASE WHEN TRIM(COALESCE(jhdh, '')) = '' THEN NULL ELSE jhdh END AS plan_code,
-              NULLIF(dh, '') AS sheet_code,
-              NULLIF(bbreed, '') AS style_code,
+              CASE WHEN TRIM(COALESCE(dh, '')) = '' THEN NULL ELSE dh END AS sheet_code,
+              NULLIF(huohao, '') AS style_code, NULLIF(bbreed, '') AS style_name,
               NULLIF(chuanghao, '') AS bed_code,
-              CASE WHEN LENGTH(COALESCE(dh, '')) >= 8
-                        AND TRY_CAST(SUBSTR(dh, 1, 8) AS INTEGER) IS NOT NULL
-                   THEN CONCAT(SUBSTR(dh, 1, 4), '-', SUBSTR(dh, 5, 2), '-',
-                               SUBSTR(dh, 7, 2))
-                   ELSE NULL END AS created_date,
+              CAST(TRY_CAST(rq AS DATE) AS VARCHAR) AS created_date,
               CAST(COALESCE(TRY_CAST(bs AS DECIMAL), 0) AS DECIMAL) AS bs,
               CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS fhsl,
               CAST(COALESCE(TRY_CAST(sssl AS DECIMAL), 0) AS DECIMAL) AS sssl,
               CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS wts
             FROM scoped
           ),
-          per_plan AS (
-            SELECT
-              plan_code,
-              CASE WHEN COUNT(sheet_code) = COUNT(*) AND COUNT(DISTINCT sheet_code) = 1
-                   THEN MIN(sheet_code) END AS sheet_code,
-              CASE WHEN COUNT(style_code) = COUNT(*) AND COUNT(DISTINCT style_code) = 1
-                   THEN MIN(style_code) END AS style_code,
-              CASE WHEN COUNT(bed_code) = COUNT(*) AND COUNT(DISTINCT bed_code) = 1
-                   THEN MIN(bed_code) END AS bed_code,
-              CASE WHEN COUNT(created_date) = COUNT(*) AND COUNT(DISTINCT created_date) = 1
-                   THEN MIN(created_date) END AS created_date,
-              CAST(1 AS DECIMAL) AS order_count,
-              CAST(COUNT(DISTINCT sheet_code) AS DECIMAL) AS sheet_count,
-              SUM(bs) AS package_count,
-              SUM(fhsl) AS issued_qty,
-              SUM(sssl) AS received_qty,
-              SUM(wts) AS worktype_count
-            FROM dated
-            GROUP BY plan_code
+          per_sheet AS (
+            SELECT plan_code, sheet_code,
+              CASE WHEN COUNT(style_code) = COUNT(*) AND COUNT(DISTINCT style_code) = 1 THEN MIN(style_code) END AS style_code,
+              CASE WHEN COUNT(style_name) = COUNT(*) AND COUNT(DISTINCT style_name) = 1 THEN MIN(style_name) END AS style_name,
+              CASE WHEN COUNT(bed_code) = COUNT(*) AND COUNT(DISTINCT bed_code) = 1 THEN MIN(bed_code) END AS bed_code,
+              CASE WHEN COUNT(created_date) = COUNT(*) AND COUNT(DISTINCT created_date) = 1 THEN MIN(created_date) END AS created_date,
+              SUM(bs) AS package_count, SUM(fhsl) AS issued_qty, SUM(sssl) AS received_qty, SUM(wts) AS worktype_count
+            FROM dated GROUP BY plan_code, sheet_code
+          ),
+          sheet_states AS (
+            SELECT *,
+              CASE WHEN sheet_code IS NULL OR issued_qty <= 0 THEN '无法判断'
+                   WHEN received_qty >= issued_qty THEN '已完工' ELSE '未完工' END AS finish_state
+            FROM per_sheet
           )
-          SELECT
-            COALESCE(plan_code, '未关联计划号') AS order_code,
-            sheet_code,
-            style_code,
-            bed_code,
-            created_date,
-            CAST(order_count AS VARCHAR) AS order_count,
-            CAST(sheet_count AS VARCHAR) AS sheet_count,
-            CAST(package_count AS VARCHAR) AS package_count,
-            CAST(issued_qty AS VARCHAR) AS issued_qty,
-            CAST(CASE WHEN issued_qty > 0
-                      THEN ROUND(received_qty / issued_qty * 100, 2)
-                      ELSE 0 END AS VARCHAR) AS progress_ratio,
+          , per_plan AS (
+            SELECT plan_code, CAST(COUNT(sheet_code) AS DECIMAL) AS sheet_count,
+              SUM(package_count) AS package_count, SUM(issued_qty) AS issued_qty,
+              SUM(received_qty) AS received_qty, SUM(worktype_count) AS worktype_count,
+              SUM(CASE WHEN sheet_code IS NOT NULL AND finish_state = '已完工' THEN 1 ELSE 0 END) AS finished_sheet_count,
+              SUM(CASE WHEN sheet_code IS NOT NULL AND finish_state = '未完工' THEN 1 ELSE 0 END) AS unfinished_sheet_count,
+              SUM(CASE WHEN sheet_code IS NOT NULL AND finish_state = '无法判断' THEN 1 ELSE 0 END) AS unavailable_sheet_count,
+              SUM(CASE WHEN sheet_code IS NULL THEN 1 ELSE 0 END) AS missing_sheet_rows
+            FROM sheet_states GROUP BY plan_code
+          )
+          SELECT COALESCE(plan_code, '未关联计划号') AS order_code,
+            plan_code, plan_code IS NULL AS plan_missing,
+            CAST(1 AS VARCHAR) AS order_count, CAST(sheet_count AS VARCHAR) AS sheet_count,
+            CAST(package_count AS VARCHAR) AS package_count, CAST(issued_qty AS VARCHAR) AS issued_qty,
+            CAST(received_qty AS VARCHAR) AS received_qty,
+            CAST(CASE WHEN issued_qty > 0 THEN ROUND(received_qty / issued_qty * 100, 2) ELSE 0 END AS VARCHAR) AS progress_ratio,
+            CASE WHEN issued_qty <= 0 THEN '暂无发卡'
+                 WHEN unfinished_sheet_count > 0 AND received_qty < issued_qty AND ROUND(received_qty / issued_qty * 100, 2) = 100
+                   THEN '接近100%（仍有未完工）'
+                 WHEN unfinished_sheet_count > 0
+                   THEN CONCAT(CAST(ROUND(received_qty / issued_qty * 100, 2) AS VARCHAR), '%（仍有未完工）')
+                 WHEN unavailable_sheet_count > 0 OR missing_sheet_rows > 0
+                   THEN CONCAT(CAST(ROUND(received_qty / issued_qty * 100, 2) AS VARCHAR), '%（部分制单无法判断）')
+                 ELSE CONCAT(CAST(ROUND(received_qty / issued_qty * 100, 2) AS VARCHAR), '%')
+                 END AS progress_label,
             CAST(worktype_count AS VARCHAR) AS worktype_count,
-            CASE WHEN issued_qty > 0 AND received_qty >= issued_qty
-                 THEN '已完工' ELSE '未完工' END AS finish_state
-          FROM per_plan
-          ORDER BY plan_code NULLS LAST
+            CAST(finished_sheet_count AS VARCHAR) AS finished_sheet_count,
+            CAST(unfinished_sheet_count AS VARCHAR) AS unfinished_sheet_count,
+            CAST(unavailable_sheet_count AS VARCHAR) AS unavailable_sheet_count,
+            CASE WHEN unfinished_sheet_count > 0 THEN '未完工'
+                 WHEN unavailable_sheet_count > 0 OR missing_sheet_rows > 0 THEN '无法判断'
+                 WHEN finished_sheet_count > 0 THEN '全部完工' ELSE '无法判断' END AS finish_state
+          FROM per_plan ORDER BY plan_code NULLS LAST
     result_columns:
       - name: order_code
-        title: 订单号
+        title: 计划号
         source_step: compute
-      - name: sheet_code
-        title: 制单号
+      - name: plan_code
+        title: 计划号标识
         source_step: compute
-      - name: style_code
-        title: 款号
+      - name: plan_missing
+        title: 未关联计划号
         source_step: compute
-      - name: bed_code
-        title: 床号
-        source_step: compute
-      - name: created_date
-        title: 制单日期
-        source_step: compute
-        column_type: date
       - name: order_count
         title: 订单统计组数
         source_step: compute
@@ -131,18 +140,45 @@ capabilities:
         metric: progress_issued_qty
         column_type: quantity
         unit: 件
+      - name: received_qty
+        title: 实收数量
+        source_step: compute
+        metric: progress_received_qty
+        column_type: quantity
+        unit: 件
       - name: progress_ratio
-        title: 进度
+        title: 进度数值
         source_step: compute
         metric: progress_package_ratio
         column_type: percent
-        unit: "%"
+        unit: '%'
+      - name: progress_label
+        title: 进度
+        source_step: compute
       - name: worktype_count
         title: 工序数
         source_step: compute
         metric: progress_worktype_count
         column_type: quantity
         unit: 道
+      - name: finished_sheet_count
+        title: 已完工制单
+        source_step: compute
+        metric: progress_finished_sheet_count
+        column_type: quantity
+        unit: 单
+      - name: unfinished_sheet_count
+        title: 未完工制单
+        source_step: compute
+        metric: progress_unfinished_sheet_count
+        column_type: quantity
+        unit: 单
+      - name: unavailable_sheet_count
+        title: 无法判断制单
+        source_step: compute
+        metric: progress_unavailable_sheet_count
+        column_type: quantity
+        unit: 单
       - name: finish_state
         title: 状态
         source_step: compute
@@ -153,119 +189,283 @@ capabilities:
       progress_issued_qty: customer-progress-v2
       progress_package_ratio: customer-progress-v2
       progress_worktype_count: customer-progress-v2
+      progress_received_qty: customer-progress-v2
+      progress_finished_sheet_count: factory-sheet-state-v1
+      progress_unfinished_sheet_count: factory-sheet-state-v1
+      progress_unavailable_sheet_count: factory-sheet-state-v1
     degradation: incomplete_marker
     card:
       kind: table
-      metrics: [order_count, sheet_count, package_count, issued_qty]
+      metrics:
+        - sheet_count
+        - package_count
+        - issued_qty
+        - finished_sheet_count
+        - unfinished_sheet_count
+        - unavailable_sheet_count
       preview_max_rows: 10
       notes:
-        - "「进度」列 = 累计实收数量 ÷ 发卡数量 × 100。"
-        - "一行一个计划号统计组；空计划号统一归入「未关联计划号」。订单统计组数包含该空值组，不代表它有已确认的计划号；制单数按不同制单号计数。"
-        - "制单号、款号、床号、制单日期仅在组内唯一且完整时展示；多值或缺失时留空，不取一个值代表整组。"
-        - "「制单日期」由制单号前 8 位派生；「发卡数量」是组内各制单的发卡贡献合计。多制单组需指定真实制单号才能查询该制单的包明细。"
-        - "款号仅筛选参与汇总的数据，不拆分计划号统计组；进度按 Σ实收 ÷ Σ发卡 重算，工序数为客户贡献合计。"
-
+        - 一行一个计划号统计组；空计划号统一归入「未关联计划号」，该组不代表一个已确认的真实订单。
+        - 展开组内制单可查看款式、床号、创建日期和各自进度；制单按真实非空制单号计数，跨部门不重复。
+        - 组进度 = Σ累计实收 ÷ Σ发卡 × 100；状态逐制单判断，超收不能抵消其他制单未完工。
+        - 发卡为零时数值进度按客户口径为零，但完工状态无法判断；接近100%的未完工制单不会标成已完工。
+        - 实收是截至数据更新时间的累计量；历史月份筛选当月创建的制单，不能解释为当月新做的量。
+        - 制单包明细使用真实制单号，物料工序明细使用物料编号；显示名称不能代替查询标识。
+      hidden_columns:
+        - plan_code
+        - plan_missing
+        - order_count
+        - progress_ratio
+    aux_outputs:
+      - aux_id: sheet_details
+        into: details
+        title: 制单进度
+        group_by: plan_code
+        status_column: finish_state
+        hidden_columns:
+          - plan_code
+          - plan_missing
+          - style_name
+          - progress_ratio
+        actions:
+          - label: 查看包明细
+            capability_id: fr005_order_package_detail
+            bind_from:
+              order_codes: sheet_code
+        depends_on:
+          - fetch_scjd
+        filter_bindings:
+          order_codes: order_codes
+          style_codes: style_codes
+          plan_codes: plan_codes
+        columns:
+          - name: plan_code
+            title: 计划号标识
+            source_step: fetch_scjd
+          - name: plan_missing
+            title: 未关联计划号
+            source_step: fetch_scjd
+          - name: sheet_code
+            title: 制单号
+            source_step: fetch_scjd
+          - name: style_code
+            title: 款式编码
+            source_step: fetch_scjd
+          - name: style_name
+            title: 款号
+            source_step: fetch_scjd
+          - name: style_label
+            title: 款式
+            source_step: fetch_scjd
+          - name: bed_code
+            title: 床号
+            source_step: fetch_scjd
+          - name: created_date
+            title: 制单日期
+            source_step: fetch_scjd
+            column_type: date
+          - name: package_count
+            title: 包数
+            source_step: fetch_scjd
+            metric: progress_package_count
+            column_type: quantity
+            unit: 包
+          - name: issued_qty
+            title: 发卡数量
+            source_step: fetch_scjd
+            metric: progress_issued_qty
+            column_type: quantity
+            unit: 件
+          - name: received_qty
+            title: 实收数量
+            source_step: fetch_scjd
+            metric: progress_received_qty
+            column_type: quantity
+            unit: 件
+          - name: progress_ratio
+            title: 进度数值
+            source_step: fetch_scjd
+            metric: progress_package_ratio
+            column_type: percent
+            unit: '%'
+          - name: progress_label
+            title: 进度
+            source_step: fetch_scjd
+          - name: worktype_count
+            title: 工序数
+            source_step: fetch_scjd
+            metric: progress_worktype_count
+            column_type: quantity
+            unit: 道
+          - name: finish_state
+            title: 状态
+            source_step: fetch_scjd
+        compute: |
+          WITH order_codes AS (SELECT unnest($order_codes) AS c),
+          style_codes AS (SELECT unnest($style_codes) AS c),
+          plan_codes AS (SELECT unnest($plan_codes) AS c),
+          scoped AS (
+            SELECT * FROM fetch_scjd
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0 OR bbreed IN (SELECT c FROM style_codes))
+          AND ((SELECT COUNT(*) FROM plan_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM plan_codes))
+          AND (NOT (SELECT filter_dept FROM _meta) OR dept IN (SELECT dept_id FROM _dept_scope))
+          AND ((SELECT order_view_kind FROM _meta) = ''
+               OR ((SELECT order_view_kind FROM _meta) = 'unlinked' AND TRIM(COALESCE(jhdh, '')) = '')
+               OR ((SELECT order_view_kind FROM _meta) = 'plan' AND jhdh = (SELECT order_view_plan FROM _meta)))
+          ),
+          dated AS (
+            SELECT
+              CASE WHEN TRIM(COALESCE(jhdh, '')) = '' THEN NULL ELSE jhdh END AS plan_code,
+              CASE WHEN TRIM(COALESCE(dh, '')) = '' THEN NULL ELSE dh END AS sheet_code,
+              NULLIF(huohao, '') AS style_code, NULLIF(bbreed, '') AS style_name,
+              NULLIF(chuanghao, '') AS bed_code,
+              CAST(TRY_CAST(rq AS DATE) AS VARCHAR) AS created_date,
+              CAST(COALESCE(TRY_CAST(bs AS DECIMAL), 0) AS DECIMAL) AS bs,
+              CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS fhsl,
+              CAST(COALESCE(TRY_CAST(sssl AS DECIMAL), 0) AS DECIMAL) AS sssl,
+              CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS wts
+            FROM scoped
+          ),
+          per_sheet AS (
+            SELECT plan_code, sheet_code,
+              CASE WHEN COUNT(style_code) = COUNT(*) AND COUNT(DISTINCT style_code) = 1 THEN MIN(style_code) END AS style_code,
+              CASE WHEN COUNT(style_name) = COUNT(*) AND COUNT(DISTINCT style_name) = 1 THEN MIN(style_name) END AS style_name,
+              CASE WHEN COUNT(bed_code) = COUNT(*) AND COUNT(DISTINCT bed_code) = 1 THEN MIN(bed_code) END AS bed_code,
+              CASE WHEN COUNT(created_date) = COUNT(*) AND COUNT(DISTINCT created_date) = 1 THEN MIN(created_date) END AS created_date,
+              SUM(bs) AS package_count, SUM(fhsl) AS issued_qty, SUM(sssl) AS received_qty, SUM(wts) AS worktype_count
+            FROM dated GROUP BY plan_code, sheet_code
+          ),
+          sheet_states AS (
+            SELECT *,
+              CASE WHEN sheet_code IS NULL OR issued_qty <= 0 THEN '无法判断'
+                   WHEN received_qty >= issued_qty THEN '已完工' ELSE '未完工' END AS finish_state
+            FROM per_sheet
+          )
+          SELECT plan_code, plan_code IS NULL AS plan_missing,
+            sheet_code, style_code, style_name, COALESCE(style_name, style_code, '款式待确认') AS style_label,
+            bed_code, created_date,
+            CAST(package_count AS VARCHAR) AS package_count, CAST(issued_qty AS VARCHAR) AS issued_qty,
+            CAST(received_qty AS VARCHAR) AS received_qty,
+            CAST(CASE WHEN issued_qty > 0 THEN ROUND(received_qty / issued_qty * 100, 2) ELSE 0 END AS VARCHAR) AS progress_ratio,
+            CASE WHEN issued_qty <= 0 THEN '暂无发卡'
+                 WHEN finish_state = '未完工' AND ROUND(received_qty / issued_qty * 100, 2) = 100 THEN '接近100%'
+                 ELSE CONCAT(CAST(ROUND(received_qty / issued_qty * 100, 2) AS VARCHAR), '%') END AS progress_label,
+            CAST(worktype_count AS VARCHAR) AS worktype_count, finish_state
+          FROM sheet_states
+          ORDER BY plan_code NULLS LAST,
+            CASE finish_state WHEN '未完工' THEN 0 WHEN '无法判断' THEN 1 ELSE 2 END,
+            sheet_code NULLS LAST
   - capability_id: fr009_factory_order_overview
     title: 全厂订单进度总览
-    required_slots: [time_range]
+    required_slots:
+      - time_range
     steps:
       - step_id: fetch_scjd
         kind: api
         operation_id: ScjdQuery
         params:
-          groupbyFields: [dh, jhdh, chuanghao, huohao, bbreed, dept, deptname]
+          groupbyFields:
+            - dh
+            - jhdh
+            - chuanghao
+            - huohao
+            - bbreed
+            - dept
+            - deptname
       - step_id: compute
         kind: local
-        depends_on: [fetch_scjd]
+        depends_on:
+          - fetch_scjd
         filter_bindings:
           order_codes: order_codes
           style_codes: style_codes
+          plan_codes: plan_codes
         compute: |
-          WITH order_codes AS (
-            SELECT unnest($order_codes) AS c
-          ),
-          style_codes AS (
-            SELECT unnest($style_codes) AS c
-          ),
+          WITH order_codes AS (SELECT unnest($order_codes) AS c),
+          style_codes AS (SELECT unnest($style_codes) AS c),
+          plan_codes AS (SELECT unnest($plan_codes) AS c),
           scoped AS (
             SELECT * FROM fetch_scjd
-            WHERE ((SELECT COUNT(*) FROM order_codes) = 0
-                   OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
-              AND ((SELECT COUNT(*) FROM style_codes) = 0
-                   OR bbreed IN (SELECT c FROM style_codes))
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0 OR bbreed IN (SELECT c FROM style_codes))
+          AND ((SELECT COUNT(*) FROM plan_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM plan_codes))
+          AND (NOT (SELECT filter_dept FROM _meta) OR dept IN (SELECT dept_id FROM _dept_scope))
+          AND ((SELECT order_view_kind FROM _meta) = ''
+               OR ((SELECT order_view_kind FROM _meta) = 'unlinked' AND TRIM(COALESCE(jhdh, '')) = '')
+               OR ((SELECT order_view_kind FROM _meta) = 'plan' AND jhdh = (SELECT order_view_plan FROM _meta)))
           ),
           dated AS (
             SELECT
               CASE WHEN TRIM(COALESCE(jhdh, '')) = '' THEN NULL ELSE jhdh END AS plan_code,
-              NULLIF(dh, '') AS sheet_code,
-              NULLIF(bbreed, '') AS style_code,
+              CASE WHEN TRIM(COALESCE(dh, '')) = '' THEN NULL ELSE dh END AS sheet_code,
+              NULLIF(huohao, '') AS style_code, NULLIF(bbreed, '') AS style_name,
               NULLIF(chuanghao, '') AS bed_code,
-              CASE WHEN LENGTH(COALESCE(dh, '')) >= 8
-                        AND TRY_CAST(SUBSTR(dh, 1, 8) AS INTEGER) IS NOT NULL
-                   THEN CONCAT(SUBSTR(dh, 1, 4), '-', SUBSTR(dh, 5, 2), '-',
-                               SUBSTR(dh, 7, 2))
-                   ELSE NULL END AS created_date,
+              CAST(TRY_CAST(rq AS DATE) AS VARCHAR) AS created_date,
               CAST(COALESCE(TRY_CAST(bs AS DECIMAL), 0) AS DECIMAL) AS bs,
               CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS fhsl,
               CAST(COALESCE(TRY_CAST(sssl AS DECIMAL), 0) AS DECIMAL) AS sssl,
               CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS wts
             FROM scoped
           ),
-          per_plan AS (
-            SELECT
-              plan_code,
-              CASE WHEN COUNT(sheet_code) = COUNT(*) AND COUNT(DISTINCT sheet_code) = 1
-                   THEN MIN(sheet_code) END AS sheet_code,
-              CASE WHEN COUNT(style_code) = COUNT(*) AND COUNT(DISTINCT style_code) = 1
-                   THEN MIN(style_code) END AS style_code,
-              CASE WHEN COUNT(bed_code) = COUNT(*) AND COUNT(DISTINCT bed_code) = 1
-                   THEN MIN(bed_code) END AS bed_code,
-              CASE WHEN COUNT(created_date) = COUNT(*) AND COUNT(DISTINCT created_date) = 1
-                   THEN MIN(created_date) END AS created_date,
-              CAST(1 AS DECIMAL) AS order_count,
-              CAST(COUNT(DISTINCT sheet_code) AS DECIMAL) AS sheet_count,
-              SUM(bs) AS package_count,
-              SUM(fhsl) AS issued_qty,
-              SUM(sssl) AS received_qty,
-              SUM(wts) AS worktype_count
-            FROM dated
-            GROUP BY plan_code
+          per_sheet AS (
+            SELECT plan_code, sheet_code,
+              CASE WHEN COUNT(style_code) = COUNT(*) AND COUNT(DISTINCT style_code) = 1 THEN MIN(style_code) END AS style_code,
+              CASE WHEN COUNT(style_name) = COUNT(*) AND COUNT(DISTINCT style_name) = 1 THEN MIN(style_name) END AS style_name,
+              CASE WHEN COUNT(bed_code) = COUNT(*) AND COUNT(DISTINCT bed_code) = 1 THEN MIN(bed_code) END AS bed_code,
+              CASE WHEN COUNT(created_date) = COUNT(*) AND COUNT(DISTINCT created_date) = 1 THEN MIN(created_date) END AS created_date,
+              SUM(bs) AS package_count, SUM(fhsl) AS issued_qty, SUM(sssl) AS received_qty, SUM(wts) AS worktype_count
+            FROM dated GROUP BY plan_code, sheet_code
+          ),
+          sheet_states AS (
+            SELECT *,
+              CASE WHEN sheet_code IS NULL OR issued_qty <= 0 THEN '无法判断'
+                   WHEN received_qty >= issued_qty THEN '已完工' ELSE '未完工' END AS finish_state
+            FROM per_sheet
           )
-          SELECT
-            COALESCE(plan_code, '未关联计划号') AS order_code,
-            sheet_code,
-            style_code,
-            bed_code,
-            created_date,
-            CAST(order_count AS VARCHAR) AS order_count,
-            CAST(sheet_count AS VARCHAR) AS sheet_count,
-            CAST(package_count AS VARCHAR) AS package_count,
-            CAST(issued_qty AS VARCHAR) AS issued_qty,
-            CAST(CASE WHEN issued_qty > 0
-                      THEN ROUND(received_qty / issued_qty * 100, 2)
-                      ELSE 0 END AS VARCHAR) AS progress_ratio,
+          , per_plan AS (
+            SELECT plan_code, CAST(COUNT(sheet_code) AS DECIMAL) AS sheet_count,
+              SUM(package_count) AS package_count, SUM(issued_qty) AS issued_qty,
+              SUM(received_qty) AS received_qty, SUM(worktype_count) AS worktype_count,
+              SUM(CASE WHEN sheet_code IS NOT NULL AND finish_state = '已完工' THEN 1 ELSE 0 END) AS finished_sheet_count,
+              SUM(CASE WHEN sheet_code IS NOT NULL AND finish_state = '未完工' THEN 1 ELSE 0 END) AS unfinished_sheet_count,
+              SUM(CASE WHEN sheet_code IS NOT NULL AND finish_state = '无法判断' THEN 1 ELSE 0 END) AS unavailable_sheet_count,
+              SUM(CASE WHEN sheet_code IS NULL THEN 1 ELSE 0 END) AS missing_sheet_rows
+            FROM sheet_states GROUP BY plan_code
+          )
+          SELECT COALESCE(plan_code, '未关联计划号') AS order_code,
+            plan_code, plan_code IS NULL AS plan_missing,
+            CAST(1 AS VARCHAR) AS order_count, CAST(sheet_count AS VARCHAR) AS sheet_count,
+            CAST(package_count AS VARCHAR) AS package_count, CAST(issued_qty AS VARCHAR) AS issued_qty,
+            CAST(received_qty AS VARCHAR) AS received_qty,
+            CAST(CASE WHEN issued_qty > 0 THEN ROUND(received_qty / issued_qty * 100, 2) ELSE 0 END AS VARCHAR) AS progress_ratio,
+            CASE WHEN issued_qty <= 0 THEN '暂无发卡'
+                 WHEN unfinished_sheet_count > 0 AND received_qty < issued_qty AND ROUND(received_qty / issued_qty * 100, 2) = 100
+                   THEN '接近100%（仍有未完工）'
+                 WHEN unfinished_sheet_count > 0
+                   THEN CONCAT(CAST(ROUND(received_qty / issued_qty * 100, 2) AS VARCHAR), '%（仍有未完工）')
+                 WHEN unavailable_sheet_count > 0 OR missing_sheet_rows > 0
+                   THEN CONCAT(CAST(ROUND(received_qty / issued_qty * 100, 2) AS VARCHAR), '%（部分制单无法判断）')
+                 ELSE CONCAT(CAST(ROUND(received_qty / issued_qty * 100, 2) AS VARCHAR), '%')
+                 END AS progress_label,
             CAST(worktype_count AS VARCHAR) AS worktype_count,
-            CASE WHEN issued_qty > 0 AND received_qty >= issued_qty
-                 THEN '已完工' ELSE '未完工' END AS finish_state
-          FROM per_plan
-          ORDER BY plan_code NULLS LAST
+            CAST(finished_sheet_count AS VARCHAR) AS finished_sheet_count,
+            CAST(unfinished_sheet_count AS VARCHAR) AS unfinished_sheet_count,
+            CAST(unavailable_sheet_count AS VARCHAR) AS unavailable_sheet_count,
+            CASE WHEN unfinished_sheet_count > 0 THEN '未完工'
+                 WHEN unavailable_sheet_count > 0 OR missing_sheet_rows > 0 THEN '无法判断'
+                 WHEN finished_sheet_count > 0 THEN '全部完工' ELSE '无法判断' END AS finish_state
+          FROM per_plan ORDER BY plan_code NULLS LAST
     result_columns:
       - name: order_code
-        title: 订单号
+        title: 计划号
         source_step: compute
-      - name: sheet_code
-        title: 制单号
+      - name: plan_code
+        title: 计划号标识
         source_step: compute
-      - name: style_code
-        title: 款号
+      - name: plan_missing
+        title: 未关联计划号
         source_step: compute
-      - name: bed_code
-        title: 床号
-        source_step: compute
-      - name: created_date
-        title: 制单日期
-        source_step: compute
-        column_type: date
       - name: order_count
         title: 订单统计组数
         source_step: compute
@@ -290,18 +490,45 @@ capabilities:
         metric: progress_issued_qty
         column_type: quantity
         unit: 件
+      - name: received_qty
+        title: 实收数量
+        source_step: compute
+        metric: progress_received_qty
+        column_type: quantity
+        unit: 件
       - name: progress_ratio
-        title: 进度
+        title: 进度数值
         source_step: compute
         metric: progress_package_ratio
         column_type: percent
-        unit: "%"
+        unit: '%'
+      - name: progress_label
+        title: 进度
+        source_step: compute
       - name: worktype_count
         title: 工序数
         source_step: compute
         metric: progress_worktype_count
         column_type: quantity
         unit: 道
+      - name: finished_sheet_count
+        title: 已完工制单
+        source_step: compute
+        metric: progress_finished_sheet_count
+        column_type: quantity
+        unit: 单
+      - name: unfinished_sheet_count
+        title: 未完工制单
+        source_step: compute
+        metric: progress_unfinished_sheet_count
+        column_type: quantity
+        unit: 单
+      - name: unavailable_sheet_count
+        title: 无法判断制单
+        source_step: compute
+        metric: progress_unavailable_sheet_count
+        column_type: quantity
+        unit: 单
       - name: finish_state
         title: 状态
         source_step: compute
@@ -312,17 +539,173 @@ capabilities:
       progress_issued_qty: customer-progress-v2
       progress_package_ratio: customer-progress-v2
       progress_worktype_count: customer-progress-v2
+      progress_received_qty: customer-progress-v2
+      progress_finished_sheet_count: factory-sheet-state-v1
+      progress_unfinished_sheet_count: factory-sheet-state-v1
+      progress_unavailable_sheet_count: factory-sheet-state-v1
     degradation: incomplete_marker
     card:
       kind: table
-      metrics: [order_count, sheet_count, package_count, issued_qty]
+      metrics:
+        - sheet_count
+        - package_count
+        - issued_qty
+        - finished_sheet_count
+        - unfinished_sheet_count
+        - unavailable_sheet_count
       preview_max_rows: 10
       notes:
-        - "全厂按计划号汇总，一行一个统计组；空计划号统一归入「未关联计划号」。订单统计组数包含该空值组，不代表它有已确认的计划号；制单数按不同制单号计数。"
-        - "制单号、款号、床号、制单日期仅在组内唯一且完整时展示；多值或缺失时留空，不取一个值代表整组。"
-        - "款号仅筛选参与汇总的数据，不拆分计划号统计组；列表不会逐单调包级明细。多制单组需指定真实制单号才能查询该制单的包明细。"
-        - "「进度」列 = 实收数量 ÷ 发卡数量 × 100；包级查询使用真实制单号，工序查询使用物料编号，各是一次新的查询。"
-        - "「sssl」是截至查询时刻的累计实收量：「上个月的进度」= 上月创建的制单截至现在的完成情况，不是该月新做的量。"
+        - 一行一个计划号统计组；空计划号统一归入「未关联计划号」，该组不代表一个已确认的真实订单。
+        - 展开组内制单可查看款式、床号、创建日期和各自进度；制单按真实非空制单号计数，跨部门不重复。
+        - 组进度 = Σ累计实收 ÷ Σ发卡 × 100；状态逐制单判断，超收不能抵消其他制单未完工。
+        - 发卡为零时数值进度按客户口径为零，但完工状态无法判断；接近100%的未完工制单不会标成已完工。
+        - 实收是截至数据更新时间的累计量；历史月份筛选当月创建的制单，不能解释为当月新做的量。
+        - 制单包明细使用真实制单号，物料工序明细使用物料编号；显示名称不能代替查询标识。
+      hidden_columns:
+        - plan_code
+        - plan_missing
+        - order_count
+        - progress_ratio
+    aux_outputs:
+      - aux_id: sheet_details
+        into: details
+        title: 制单进度
+        group_by: plan_code
+        status_column: finish_state
+        hidden_columns:
+          - plan_code
+          - plan_missing
+          - style_name
+          - progress_ratio
+        actions:
+          - label: 查看包明细
+            capability_id: fr005_order_package_detail
+            bind_from:
+              order_codes: sheet_code
+        depends_on:
+          - fetch_scjd
+        filter_bindings:
+          order_codes: order_codes
+          style_codes: style_codes
+          plan_codes: plan_codes
+        columns:
+          - name: plan_code
+            title: 计划号标识
+            source_step: fetch_scjd
+          - name: plan_missing
+            title: 未关联计划号
+            source_step: fetch_scjd
+          - name: sheet_code
+            title: 制单号
+            source_step: fetch_scjd
+          - name: style_code
+            title: 款式编码
+            source_step: fetch_scjd
+          - name: style_name
+            title: 款号
+            source_step: fetch_scjd
+          - name: style_label
+            title: 款式
+            source_step: fetch_scjd
+          - name: bed_code
+            title: 床号
+            source_step: fetch_scjd
+          - name: created_date
+            title: 制单日期
+            source_step: fetch_scjd
+            column_type: date
+          - name: package_count
+            title: 包数
+            source_step: fetch_scjd
+            metric: progress_package_count
+            column_type: quantity
+            unit: 包
+          - name: issued_qty
+            title: 发卡数量
+            source_step: fetch_scjd
+            metric: progress_issued_qty
+            column_type: quantity
+            unit: 件
+          - name: received_qty
+            title: 实收数量
+            source_step: fetch_scjd
+            metric: progress_received_qty
+            column_type: quantity
+            unit: 件
+          - name: progress_ratio
+            title: 进度数值
+            source_step: fetch_scjd
+            metric: progress_package_ratio
+            column_type: percent
+            unit: '%'
+          - name: progress_label
+            title: 进度
+            source_step: fetch_scjd
+          - name: worktype_count
+            title: 工序数
+            source_step: fetch_scjd
+            metric: progress_worktype_count
+            column_type: quantity
+            unit: 道
+          - name: finish_state
+            title: 状态
+            source_step: fetch_scjd
+        compute: |
+          WITH order_codes AS (SELECT unnest($order_codes) AS c),
+          style_codes AS (SELECT unnest($style_codes) AS c),
+          plan_codes AS (SELECT unnest($plan_codes) AS c),
+          scoped AS (
+            SELECT * FROM fetch_scjd
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0 OR bbreed IN (SELECT c FROM style_codes))
+          AND ((SELECT COUNT(*) FROM plan_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM plan_codes))
+          AND (NOT (SELECT filter_dept FROM _meta) OR dept IN (SELECT dept_id FROM _dept_scope))
+          AND ((SELECT order_view_kind FROM _meta) = ''
+               OR ((SELECT order_view_kind FROM _meta) = 'unlinked' AND TRIM(COALESCE(jhdh, '')) = '')
+               OR ((SELECT order_view_kind FROM _meta) = 'plan' AND jhdh = (SELECT order_view_plan FROM _meta)))
+          ),
+          dated AS (
+            SELECT
+              CASE WHEN TRIM(COALESCE(jhdh, '')) = '' THEN NULL ELSE jhdh END AS plan_code,
+              CASE WHEN TRIM(COALESCE(dh, '')) = '' THEN NULL ELSE dh END AS sheet_code,
+              NULLIF(huohao, '') AS style_code, NULLIF(bbreed, '') AS style_name,
+              NULLIF(chuanghao, '') AS bed_code,
+              CAST(TRY_CAST(rq AS DATE) AS VARCHAR) AS created_date,
+              CAST(COALESCE(TRY_CAST(bs AS DECIMAL), 0) AS DECIMAL) AS bs,
+              CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL) AS fhsl,
+              CAST(COALESCE(TRY_CAST(sssl AS DECIMAL), 0) AS DECIMAL) AS sssl,
+              CAST(COALESCE(TRY_CAST(wts AS DECIMAL), 0) AS DECIMAL) AS wts
+            FROM scoped
+          ),
+          per_sheet AS (
+            SELECT plan_code, sheet_code,
+              CASE WHEN COUNT(style_code) = COUNT(*) AND COUNT(DISTINCT style_code) = 1 THEN MIN(style_code) END AS style_code,
+              CASE WHEN COUNT(style_name) = COUNT(*) AND COUNT(DISTINCT style_name) = 1 THEN MIN(style_name) END AS style_name,
+              CASE WHEN COUNT(bed_code) = COUNT(*) AND COUNT(DISTINCT bed_code) = 1 THEN MIN(bed_code) END AS bed_code,
+              CASE WHEN COUNT(created_date) = COUNT(*) AND COUNT(DISTINCT created_date) = 1 THEN MIN(created_date) END AS created_date,
+              SUM(bs) AS package_count, SUM(fhsl) AS issued_qty, SUM(sssl) AS received_qty, SUM(wts) AS worktype_count
+            FROM dated GROUP BY plan_code, sheet_code
+          ),
+          sheet_states AS (
+            SELECT *,
+              CASE WHEN sheet_code IS NULL OR issued_qty <= 0 THEN '无法判断'
+                   WHEN received_qty >= issued_qty THEN '已完工' ELSE '未完工' END AS finish_state
+            FROM per_sheet
+          )
+          SELECT plan_code, plan_code IS NULL AS plan_missing,
+            sheet_code, style_code, style_name, COALESCE(style_name, style_code, '款式待确认') AS style_label,
+            bed_code, created_date,
+            CAST(package_count AS VARCHAR) AS package_count, CAST(issued_qty AS VARCHAR) AS issued_qty,
+            CAST(received_qty AS VARCHAR) AS received_qty,
+            CAST(CASE WHEN issued_qty > 0 THEN ROUND(received_qty / issued_qty * 100, 2) ELSE 0 END AS VARCHAR) AS progress_ratio,
+            CASE WHEN issued_qty <= 0 THEN '暂无发卡'
+                 WHEN finish_state = '未完工' AND ROUND(received_qty / issued_qty * 100, 2) = 100 THEN '接近100%'
+                 ELSE CONCAT(CAST(ROUND(received_qty / issued_qty * 100, 2) AS VARCHAR), '%') END AS progress_label,
+            CAST(worktype_count AS VARCHAR) AS worktype_count, finish_state
+          FROM sheet_states
+          ORDER BY plan_code NULLS LAST,
+            CASE finish_state WHEN '未完工' THEN 0 WHEN '无法判断' THEN 1 ELSE 2 END,
+            sheet_code NULLS LAST
 
   - capability_id: fr005_order_package_detail
     title: 订单进度-包级明细
@@ -402,6 +785,12 @@ capabilities:
     card:
       kind: table
       metrics: [issued_qty]
+      actions:
+        - label: 查看工序明细
+          capability_id: fr005_order_worktype_detail
+          clear_fields: [order_codes]
+          bind_from:
+            material_ids: material_id
       preview_max_rows: 10
       notes:
         - "「完成率」= 实收数量 ÷ 发卡数量（件数口径）；「工序数 / 已完工工序数」是该包的工序维度参考统计。"

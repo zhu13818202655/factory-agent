@@ -97,11 +97,14 @@ def canonical_interval(window: tuple[str, str], zone: ZoneInfo) -> tuple[datetim
 
 
 def equal_results(left: "CapabilityRunResult", right: "CapabilityRunResult") -> bool:
+    from factory_agent.ports.card import comparable_card
+
     return (
         left.column_names == right.column_names
         and left.rows == right.rows
         and left.totals == right.totals
-        and left.card == right.card
+        and comparable_card(left.card) == comparable_card(right.card)
+        and left.detail_tables == right.detail_tables
         and left.warnings == right.warnings
         and left.incomplete == right.incomplete
         and left.incomplete_reason == right.incomplete_reason

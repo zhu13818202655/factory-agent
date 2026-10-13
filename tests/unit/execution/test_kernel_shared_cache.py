@@ -30,6 +30,7 @@ from factory_agent.execution.kernel import KernelCapabilityRunner
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import default_metric_registry
 from factory_agent.execution.sandbox_runtime import duckdb
+from factory_agent.ports.card import comparable_card
 from factory_agent.ports.contracts import ResourceFetchResult
 from factory_agent.ports.session import CapabilityRunRequest, CapabilityRunResult
 
@@ -89,6 +90,7 @@ def progress(**values: object) -> dict[str, object]:
 
 SHEET1 = {
     "dh": "20260701001",
+    "rq": "2026-07-01",
     "jhdh": "P1",
     "chuanghao": "1",
     "huohao": "S1",
@@ -100,6 +102,7 @@ SHEET1 = {
 }
 SHEET2 = {
     "dh": "20260703001",
+    "rq": "2026-07-03",
     "jhdh": "P2",
     "chuanghao": "2",
     "huohao": "S2",
@@ -423,9 +426,12 @@ def plan_group_contribution(
     packages: str,
     worktypes: str,
     worktype: str,
+    *,
+    rq: str,
 ) -> dict[str, object]:
     return progress(
         dh=sheet,
+        rq=rq,
         jhdh=plan,
         chuanghao=bed,
         huohao=style,
@@ -452,17 +458,33 @@ def plan_group_contribution(
 
 
 PLAN_GROUP_DETAIL = (
-    plan_group_contribution("20260701001", "P1", "S1", "1", "D1", "60", "6", "1", "1", "W1"),
-    plan_group_contribution("20260701001", "P1", "S1", "1", "D1", "40", "4", "1", "1", "W2"),
-    plan_group_contribution("20260701001", "P1", "S1", "1", "D2", "20", "20", "1", "1", "W3"),
-    plan_group_contribution("20260702001", "P1", "S2", "2", "D2", "80", "70", "3", "3", "W4"),
-    plan_group_contribution("20260703001", None, "S3", "3", "D1", "10", "10", "1", "1", "W5"),
-    plan_group_contribution("20260704001", "", "S4", "4", "D2", "90", "0", "2", "2", "W6"),
-    plan_group_contribution("20260705001", "   ", "S5", "5", "", "50", "40", "4", "4", "W7"),
     plan_group_contribution(
-        "20260706001", "未关联计划号", "S6", "6", "D1", "25", "25", "1", "1", "W8"
+        "20260701001", "P1", "S1", "1", "D1", "60", "6", "1", "1", "W1", rq="2026-07-01"
     ),
-    plan_group_contribution("20260707001", "P2", "S7", "7", "D2", "30", "0", "1", "1", "W9"),
+    plan_group_contribution(
+        "20260701001", "P1", "S1", "1", "D1", "40", "4", "1", "1", "W2", rq="2026-07-01"
+    ),
+    plan_group_contribution(
+        "20260701001", "P1", "S1", "1", "D2", "20", "20", "1", "1", "W3", rq="2026-07-01"
+    ),
+    plan_group_contribution(
+        "20260702001", "P1", "S2", "2", "D2", "80", "70", "3", "3", "W4", rq="2026-07-02"
+    ),
+    plan_group_contribution(
+        "20260703001", None, "S3", "3", "D1", "10", "10", "1", "1", "W5", rq="2026-07-03"
+    ),
+    plan_group_contribution(
+        "20260704001", "", "S4", "4", "D2", "90", "0", "2", "2", "W6", rq="2026-07-04"
+    ),
+    plan_group_contribution(
+        "20260705001", "   ", "S5", "5", "", "50", "40", "4", "4", "W7", rq="2026-07-05"
+    ),
+    plan_group_contribution(
+        "20260706001", "未关联计划号", "S6", "6", "D1", "25", "25", "1", "1", "W8", rq="2026-07-06"
+    ),
+    plan_group_contribution(
+        "20260707001", "P2", "S7", "7", "D2", "30", "0", "1", "1", "W9", rq="2026-07-07"
+    ),
 )
 
 
@@ -480,7 +502,7 @@ class PlanGroupLiveExecutor(LiveExecutor):
         assert frozenset((extra_params or {}).get("groupbyFields", ())) == frozenset(M7)
         self.calls.append(request.operation_id)
         first = plan_group_contribution(
-            "20260701001", "P1", "S1", "1", "D1", "100", "10", "2", "2", "W1"
+            "20260701001", "P1", "S1", "1", "D1", "100", "10", "2", "2", "W1", rq="2026-07-01"
         )
         return fetch_result((first, *PLAN_GROUP_DETAIL[2:]))
 
@@ -513,8 +535,11 @@ async def test_plan_group_progress_keeps_one_row_per_plan_from_shared_detail(
     assert Decimal(str(joined["progress_ratio"])) == Decimal("50")
     assert joined["finish_state"] == "未完工"
     assert all(
-        joined[name] is None for name in ("sheet_code", "style_code", "bed_code", "created_date")
+        name not in joined for name in ("sheet_code", "style_code", "bed_code", "created_date")
     )
+    details = result.detail_tables[0].rows
+    joined_details = [row for row in details if row["plan_code"] == "P1"]
+    assert len(joined_details) == 2
 
     unlabeled = [row for row in rows if row["order_code"] == "未关联计划号"]
     assert len(unlabeled) == 2
@@ -525,16 +550,16 @@ async def test_plan_group_progress_keeps_one_row_per_plan_from_shared_detail(
     assert Decimal(str(empty_plan["progress_ratio"])) == Decimal("33.33")
     assert empty_plan["finish_state"] == "未完工"
     assert all(
-        empty_plan[name] is None
-        for name in ("sheet_code", "style_code", "bed_code", "created_date")
+        name not in empty_plan for name in ("sheet_code", "style_code", "bed_code", "created_date")
     )
     literal_plan = next(row for row in unlabeled if row["sheet_count"] == Decimal("1"))
-    assert literal_plan["sheet_code"] == "20260706001"
-    assert literal_plan["style_code"] == "S6"
-    assert literal_plan["bed_code"] == "6"
-    assert literal_plan["created_date"] == "2026-07-06"
+    literal_detail = next(row for row in details if row["plan_code"] == "未关联计划号")
+    assert literal_detail["sheet_code"] == "20260706001"
+    assert literal_detail["style_name"] == "S6"
+    assert literal_detail["bed_code"] == "6"
+    assert literal_detail["created_date"] == "2026-07-06"
     assert literal_plan["issued_qty"] == Decimal("25")
-    assert literal_plan["finish_state"] == "已完工"
+    assert literal_plan["finish_state"] == "全部完工"
 
     assert sum(cast(Decimal, row["sheet_count"]) for row in rows) == Decimal("7")
     assert sum(cast(Decimal, row["package_count"]) for row in rows) == Decimal("15")
@@ -543,7 +568,7 @@ async def test_plan_group_progress_keeps_one_row_per_plan_from_shared_detail(
         live = await runner(PlanGroupLiveExecutor()).run(request)
         assert result.rows == live.rows
         assert result.totals == live.totals
-        assert result.card == live.card
+        assert comparable_card(result.card) == comparable_card(live.card)
 
 
 @pytest.mark.parametrize("fr", ("FR-005", "FR-009"))
@@ -564,7 +589,8 @@ async def test_style_selection_narrows_cached_progress_without_splitting_the_emp
     assert row["order_code"] == "未关联计划号"
     assert row["order_count"] == Decimal("1")
     assert row["sheet_count"] == Decimal("3")
-    assert row["style_code"] is None
+    assert "style_code" not in row
+    assert {entry["style_name"] for entry in result.detail_tables[0].rows} == {"S3", "S4", "S5"}
     assert row["package_count"] == Decimal("7")
     assert row["issued_qty"] == Decimal("150")
     assert Decimal(str(row["progress_ratio"])) == Decimal("33.33")
@@ -595,7 +621,7 @@ async def test_every_allowed_fr_and_drill_matches_live_without_mes_calls(
     assert set(cached.cache_source) == {"sources", "generated_at"}
     assert cached.rows == live.rows
     assert cached.totals == live.totals
-    assert cached.card == live.card
+    assert comparable_card(cached.card) == comparable_card(live.card)
     assert cached.incomplete is live.incomplete is False
     assert len(store.values) == 2
     if fr == "FR-004":
@@ -655,7 +681,7 @@ async def test_actual_shadow_executor_preserves_consistent_cache_for_reviewed_ou
     result = await runner(ResultCacheExecutor(live, cache)).run(request)
     expected = await runner(LiveExecutor()).run(request)
     assert result.rows == expected.rows
-    assert result.card == expected.card
+    assert comparable_card(result.card) == comparable_card(expected.card)
     assert result.cache_source is not None
     assert result.api_call_count == len(live.calls)
     assert len(store.values) == 2
@@ -703,7 +729,7 @@ async def test_every_allowed_cold_snapshot_counts_mes_then_same_query_cache_is_z
     expected_calls = 2 if fr in {"FR-006", "FR-013"} else 1
     assert first.api_call_count == len(snapshots.calls) == expected_calls
     assert first.rows == expected.rows
-    assert first.card == expected.card
+    assert comparable_card(first.card) == comparable_card(expected.card)
     assert first.cache_source is not None
     assert first.cache_source["sources"] == ["query"]
     second = await cached_runner.run(request)
@@ -711,7 +737,7 @@ async def test_every_allowed_cold_snapshot_counts_mes_then_same_query_cache_is_z
     assert len(snapshots.calls) == expected_calls
     assert no_mes.calls == []
     assert second.rows == expected.rows
-    assert second.card == expected.card
+    assert comparable_card(second.card) == comparable_card(expected.card)
     assert second.cache_source == first.cache_source
 
 
@@ -735,7 +761,7 @@ async def test_cold_shadow_counts_owner_snapshot_and_caller_live_fetch(fr: str) 
     expected_calls = 2 if fr == "FR-013" else 1
     assert first.api_call_count == len(snapshots.calls) + len(live.calls) == expected_calls * 2
     assert first.rows == expected.rows
-    assert first.card == expected.card
+    assert comparable_card(first.card) == comparable_card(expected.card)
     live.calls.clear()
     second = await cached_runner.run(request)
     assert second.api_call_count == len(live.calls) == expected_calls
@@ -752,7 +778,7 @@ async def test_actual_shadow_evicts_hit_snapshots_when_daily_chart_differs() -> 
     actual = await runner(ResultCacheExecutor(LiveExecutor(), cache)).run(request)
     expected = await runner(LiveExecutor()).run(request)
     assert actual.rows == expected.rows
-    assert actual.card == expected.card
+    assert comparable_card(actual.card) == comparable_card(expected.card)
     assert actual.cache_source is None
     assert store.values == {}
 
@@ -791,7 +817,7 @@ async def test_narrow_business_filters_reuse_the_same_two_snapshots(
     result = await runner(ResultCacheExecutor(no_mes, cache)).run(request)
     expected = await runner(LiveExecutor()).run(request)
     assert result.rows == expected.rows
-    assert result.card == expected.card
+    assert comparable_card(result.card) == comparable_card(expected.card)
     assert result.rows
     assert no_mes.calls == []
     assert len(store.values) == 2
@@ -813,7 +839,7 @@ async def test_shadow_accepts_different_input_order_when_final_outputs_match(fr:
     result = await runner(executor).run(request)
     expected = await runner(LiveExecutor()).run(request)
     assert result.rows == expected.rows
-    assert result.card == expected.card
+    assert comparable_card(result.card) == comparable_card(expected.card)
     assert executor.discarded == []
     assert executor.released
 
@@ -826,7 +852,7 @@ async def test_shadow_checks_aux_daily_chart_and_returns_live_on_mismatch() -> N
     expected = await runner(LiveExecutor()).run(request)
     assert result.rows == expected.rows
     assert result.totals == expected.totals
-    assert result.card == expected.card
+    assert comparable_card(result.card) == comparable_card(expected.card)
     assert result.cache_source is None
     assert len(executor.discarded) == 2
     assert executor.released == []

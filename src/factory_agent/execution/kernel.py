@@ -13,7 +13,9 @@ reach the executor only through ``NarrowedFilters`` and reviewed recipe params.
 """
 
 import asyncio
+import hashlib
 import itertools
+import json
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -35,7 +37,12 @@ from factory_agent.execution.recipes import (
     ParamBinding,
     RecipeRegistry,
 )
-from factory_agent.execution.result_table import MetricRegistry, ResultColumnMeta, ResultTable
+from factory_agent.execution.result_table import (
+    MetricRegistry,
+    ResultColumnMeta,
+    ResultDetailTable,
+    ResultTable,
+)
 from factory_agent.execution.sandbox_runtime import InteractionSandbox, SandboxTable
 from factory_agent.observability.logging_adapter import get_logger
 from factory_agent.ports.card import CardChart, CardColumn, build_card, build_chart_payload
@@ -45,6 +52,7 @@ from factory_agent.ports.contracts import (
     RenderTable,
     ResourceFetchResult,
 )
+from factory_agent.ports.order_views import OrderDetailData, OrderViewSelection, build_order_groups
 from factory_agent.ports.session import CapabilityRunRequest, CapabilityRunResult
 
 _METADATA_TABLE = "_meta"
@@ -190,21 +198,40 @@ class KernelCapabilityRunner:
         recipe = self._recipes.get(str(request.capability_id))
         filters = request.filters
         time_range = request.time_range
+        _validate_order_view(recipe, request.order_view)
+        _validate_group_page(recipe, request)
 
         with InteractionSandbox(allowed_tables=tuple(self._allowed_tables(recipe))) as sandbox:
             self._register_meta(sandbox, time_range, filters, request)
             fetches, call_count = await self._fetch_api_steps(
                 sandbox, recipe, filters, time_range, request.role
             )
-            render_table = self._build_table(sandbox, recipe, fetches, filters, time_range)
+            render_table = self._build_table(
+                sandbox,
+                recipe,
+                fetches,
+                filters,
+                time_range,
+                request.order_view,
+                request.group_page,
+                request.group_page_size,
+            )
             render_table, fetches = await self._verify_final_shadow(
-                sandbox, recipe, fetches, filters, time_range, render_table
+                sandbox,
+                recipe,
+                fetches,
+                filters,
+                time_range,
+                render_table,
+                request.order_view,
+                request.group_page,
+                request.group_page_size,
             )
             observed = _observe_ownership(recipe, fetches, self._base_data_operations)
         result = self._to_run_result(
-            render_table, time_range, fetches, call_count, started, observed
+            render_table, time_range, fetches, call_count, started, observed, request.order_view
         )
-        return result
+        return _attach_order_view_context(result, request, recipe, fetches)
 
     def to_render_table(self, result: CapabilityRunResult) -> RenderTable:
         """Reconstruct a renderable table from a run result (for exporters)."""
@@ -249,8 +276,20 @@ class KernelCapabilityRunner:
                         "self_uid": self_uid,
                         "self_dept": self_dept,
                         "whole_tenant": request.role is Role.OWNER,
+                        "filter_employee": filters.employee_ids is not None,
+                        "filter_dept": (
+                            filters.requested_dept_ids is not None
+                            if request.role is Role.OWNER
+                            else filters.dept_ids is not None
+                        ),
                         "warning_ratio_pct": self._settings.delivery_warning_ratio_percent,
                         "warning_fallback_days": self._settings.delivery_warning_fallback_days,
+                        "order_view_kind": request.order_view.group_kind
+                        if request.order_view
+                        else "",
+                        "order_view_plan": (request.order_view.plan_code or "")
+                        if request.order_view
+                        else "",
                     },
                 ),
                 columns=(
@@ -259,8 +298,12 @@ class KernelCapabilityRunner:
                     ("self_uid", "VARCHAR"),
                     ("self_dept", "VARCHAR"),
                     ("whole_tenant", "BOOLEAN"),
+                    ("filter_employee", "BOOLEAN"),
+                    ("filter_dept", "BOOLEAN"),
                     ("warning_ratio_pct", "INTEGER"),
                     ("warning_fallback_days", "INTEGER"),
+                    ("order_view_kind", "VARCHAR"),
+                    ("order_view_plan", "VARCHAR"),
                 ),
             )
         )
@@ -492,6 +535,9 @@ class KernelCapabilityRunner:
         filters: Any,
         time_range: TimeRange,
         cached: ResultTable,
+        order_view: OrderViewSelection | None = None,
+        group_page: int = 1,
+        group_page_size: int = 50,
     ) -> tuple[ResultTable, dict[str, ResourceFetchResult]]:
         """Compare fully computed rows, totals and card outputs in one sandbox."""
         shadow_fetches = {
@@ -510,12 +556,22 @@ class KernelCapabilityRunner:
                     columns=self._table_columns_for(step, fetched.rows, recipe),
                 )
             )
-        realtime = self._build_table(sandbox, recipe, shadow_fetches, filters, time_range)
+        realtime = self._build_table(
+            sandbox,
+            recipe,
+            shadow_fetches,
+            filters,
+            time_range,
+            order_view,
+            group_page,
+            group_page_size,
+        )
         consistent = (
             cached.columns == realtime.columns
             and cached.rows == realtime.rows
             and cached.totals == realtime.totals
             and cached.card == realtime.card
+            and cached.detail_tables == realtime.detail_tables
             and cached.incomplete == realtime.incomplete
             and cached.incomplete_reason == realtime.incomplete_reason
             and cached.warnings == realtime.warnings
@@ -552,6 +608,9 @@ class KernelCapabilityRunner:
         fetches: dict[str, ResourceFetchResult],
         filters: Any,
         time_range: TimeRange,
+        order_view: OrderViewSelection | None = None,
+        group_page: int = 1,
+        group_page_size: int = 50,
     ) -> ResultTable:
         warnings: list[str] = []
         incomplete = False
@@ -622,7 +681,9 @@ class KernelCapabilityRunner:
         self._reconcile(recipe, fetches)
 
         totals = _build_totals(recipe, table_rows, fetches)
-        aux_results = self._run_aux_steps(sandbox, recipe, fetches)
+        aux_results = self._run_aux_steps(sandbox, recipe, fetches, filters)
+        _apply_aux_totals(recipe, aux_results, totals)
+        detail_tables = self._build_detail_tables(recipe, aux_results)
         chart, aux_metrics = _build_aux_card_payloads(recipe, aux_results)
         card = self._build_card(
             recipe,
@@ -635,6 +696,45 @@ class KernelCapabilityRunner:
             chart=chart,
             aux_metrics=aux_metrics,
         )
+        if card is not None and detail_tables:
+            if recipe.card is None:
+                raise InvalidRequestError("order details require a reviewed card")
+            try:
+                card["order_groups"] = build_order_groups(
+                    capability_id=recipe.capability_id,
+                    summary_rows=table_rows,
+                    summary_columns=_card_columns(
+                        [
+                            column
+                            for column in column_metas
+                            if column.name not in recipe.card.hidden_columns
+                        ]
+                    ),
+                    details=tuple(
+                        OrderDetailData(
+                            view_id=detail.view_id,
+                            title=detail.title,
+                            group_by=detail.group_by,
+                            columns=_card_columns(detail.columns),
+                            rows=detail.rows,
+                            status_column=detail.status_column,
+                            hidden_columns=detail.hidden_columns,
+                            actions=tuple(
+                                action.to_spec()
+                                for aux in recipe.aux_outputs
+                                if aux.aux_id == detail.view_id
+                                for action in aux.actions
+                            ),
+                        )
+                        for detail in detail_tables
+                    ),
+                    selection=order_view if table_rows else None,
+                    max_groups=min(recipe.card.preview_max_groups, group_page_size, 50),
+                    preview_rows=recipe.card.preview_max_rows or 10,
+                    group_page=group_page,
+                )
+            except ValueError as error:
+                raise InvalidRequestError("order_view_unavailable") from error
         return ResultTable(
             capability_id=recipe.capability_id,
             columns=tuple(column_metas),
@@ -645,7 +745,58 @@ class KernelCapabilityRunner:
             incomplete=incomplete,
             incomplete_reason=incomplete_reason,
             card=card,
+            detail_tables=detail_tables,
+            hidden_columns=recipe.card.hidden_columns if recipe.card else (),
         )
+
+    def _build_detail_tables(
+        self,
+        recipe: CapabilityRecipe,
+        aux_results: Mapping[str, list[dict[str, object]]],
+    ) -> tuple[ResultDetailTable, ...]:
+        details: list[ResultDetailTable] = []
+        sources = _source_operations(recipe)
+        for aux in recipe.aux_outputs:
+            if aux.into != "details":
+                continue
+            columns: list[ResultColumnMeta] = []
+            unavailable: set[str] = set()
+            for column in aux.columns:
+                metric = self._resolve_metric(recipe, column)
+                columns.append(
+                    ResultColumnMeta(
+                        name=column.name,
+                        metric_name=metric.name if metric else None,
+                        metric_version=metric.version if metric else None,
+                        source_operations=sources.get(column.source_step, ()),
+                        column_type=column.column_type,
+                        unit=column.unit,
+                        title=column.title,
+                    )
+                )
+                if metric is not None and not metric.allows_numeric_rendering():
+                    unavailable.add(column.name)
+            rows = tuple(
+                {
+                    column.name: UNAVAILABLE_VALUE
+                    if column.name in unavailable
+                    else row.get(column.name)
+                    for column in columns
+                }
+                for row in aux_results.get(aux.aux_id, ())
+            )
+            details.append(
+                ResultDetailTable(
+                    view_id=aux.aux_id,
+                    title=aux.title or aux.aux_id,
+                    group_by=aux.group_by or "plan_code",
+                    columns=tuple(columns),
+                    rows=rows,
+                    status_column=aux.status_column,
+                    hidden_columns=aux.hidden_columns,
+                )
+            )
+        return tuple(details)
 
     def _build_card(
         self,
@@ -747,6 +898,7 @@ class KernelCapabilityRunner:
         sandbox: InteractionSandbox,
         recipe: CapabilityRecipe,
         fetches: dict[str, ResourceFetchResult],
+        filters: Any,
     ) -> dict[str, list[dict[str, object]]]:
         """Run every aux output and keep its rows (card-only, never exported).
 
@@ -763,7 +915,9 @@ class KernelCapabilityRunner:
                 results[aux.aux_id] = []
                 continue
             try:
-                columns, rows = sandbox.execute_typed(aux.compute)
+                columns, rows = sandbox.execute_typed(
+                    aux.compute, self._business_filter_params(aux, filters)
+                )
             except InvalidRequestError as error:
                 raise InvalidRequestError(
                     f"sandbox rejected aux compute for {aux.aux_id}: {error}"
@@ -857,6 +1011,7 @@ class KernelCapabilityRunner:
         call_count: int,
         started: float,
         observed: "OwnershipObservation | None" = None,
+        order_view: OrderViewSelection | None = None,
     ) -> CapabilityRunResult:
         column_names = tuple(column.name for column in table.columns)
         rows = tuple(
@@ -889,6 +1044,10 @@ class KernelCapabilityRunner:
             observed_dept_values=observed.depts if observed is not None else (),
             card=table.card,
             cache_source=_cache_provenance(fetches),
+            detail_tables=tuple(
+                _detail_render_table(table, detail, order_view) for detail in table.detail_tables
+            ),
+            hidden_columns=table.hidden_columns,
         )
 
     @staticmethod
@@ -904,6 +1063,252 @@ class KernelCapabilityRunner:
 # ----------------------------------------------------------------------
 # Pure helpers.
 # ----------------------------------------------------------------------
+
+
+def _card_columns(
+    columns: tuple[ResultColumnMeta, ...] | list[ResultColumnMeta],
+) -> tuple[CardColumn, ...]:
+    return tuple(
+        CardColumn(
+            name=column.name, title=column.title, column_type=column.column_type, unit=column.unit
+        )
+        for column in columns
+    )
+
+
+def _validate_order_view(recipe: CapabilityRecipe, selection: OrderViewSelection | None) -> None:
+    if selection is None:
+        return
+    if selection.page > 1 and selection.snapshot_id is None:
+        raise InvalidRequestError("order_view_invalid")
+    view = next(
+        (
+            aux
+            for aux in recipe.aux_outputs
+            if aux.into == "details" and aux.aux_id == selection.view_id
+        ),
+        None,
+    )
+    if view is None or (selection.status != "all" and view.status_column is None):
+        raise InvalidRequestError("order_view_invalid")
+
+
+def _validate_group_page(recipe: CapabilityRecipe, request: CapabilityRunRequest) -> None:
+    if type(request.group_page) is not int or not 1 <= request.group_page <= 100000:
+        raise InvalidRequestError("order_view_invalid")
+    if type(request.group_page_size) is not int or not 1 <= request.group_page_size <= 50:
+        raise InvalidRequestError("order_view_invalid")
+    if request.order_view is not None and request.group_page != 1:
+        raise InvalidRequestError("order_view_invalid")
+    if request.group_page > 1 and request.data_snapshot_id is None:
+        raise InvalidRequestError("order_view_invalid")
+    if request.data_snapshot_id is not None and (
+        len(request.data_snapshot_id) != 64
+        or any(character not in "0123456789abcdef" for character in request.data_snapshot_id)
+    ):
+        raise InvalidRequestError("order_view_invalid")
+    if (
+        request.group_page != 1
+        or request.group_page_size != 50
+        or request.data_snapshot_id is not None
+    ) and not any(aux.into == "details" for aux in recipe.aux_outputs):
+        raise InvalidRequestError("order_view_invalid")
+
+
+def _apply_aux_totals(
+    recipe: CapabilityRecipe,
+    results: Mapping[str, list[dict[str, object]]],
+    totals: dict[str, Decimal],
+) -> None:
+    for aux in recipe.aux_outputs:
+        for metric in aux.metrics:
+            if metric.total_key is None:
+                continue
+            rows = results.get(aux.aux_id, ())
+            if len(rows) > 1:
+                raise InvalidRequestError("nonadditive total requires one reviewed row")
+            value = rows[0].get(metric.name) if rows else None
+            if value is None or value == UNAVAILABLE_VALUE:
+                totals.pop(metric.total_key, None)
+                continue
+            try:
+                number = Decimal(str(value))
+            except InvalidOperation as error:
+                raise InvalidRequestError("nonadditive total is invalid") from error
+            if not number.is_finite():
+                raise InvalidRequestError("nonadditive total is invalid")
+            totals[metric.total_key] = number
+
+
+def _detail_render_table(
+    table: ResultTable,
+    detail: ResultDetailTable,
+    selection: OrderViewSelection | None = None,
+) -> RenderTable:
+    visible = tuple(
+        column for column in detail.columns if column.name not in {"order_code", "plan_link_state"}
+    )
+    rows = detail.rows
+    if selection is not None and selection.view_id == detail.view_id and selection.status != "all":
+        rows = tuple(
+            row
+            for row in rows
+            if {"已完工": "finished", "未完工": "unfinished"}.get(
+                str(row.get(detail.status_column or "")), "unavailable"
+            )
+            == selection.status
+        )
+    export_rows: list[dict[str, object]] = []
+    for row in rows:
+        plan_code = row.get(detail.group_by)
+        unlinked = (
+            row.get("plan_missing") is True
+            or plan_code is None
+            or (isinstance(plan_code, str) and not plan_code.strip())
+        )
+        export_rows.append(
+            {
+                "order_code": "未关联计划号" if unlinked else plan_code,
+                "plan_link_state": "未关联" if unlinked else "已关联",
+                **{column.name: _to_value(row.get(column.name), column) for column in visible},
+            }
+        )
+    return RenderTable(
+        capability_id=table.capability_id,
+        title=detail.title,
+        columns=(
+            RenderColumn(
+                name="order_code",
+                metric_name=None,
+                metric_version=None,
+                source_operations=table.source_operations,
+                title="计划号",
+            ),
+            RenderColumn(
+                name="plan_link_state",
+                metric_name=None,
+                metric_version=None,
+                source_operations=table.source_operations,
+                title="关联状态",
+            ),
+            *(
+                RenderColumn(
+                    name=column.name,
+                    metric_name=column.metric_name,
+                    metric_version=column.metric_version,
+                    source_operations=column.source_operations,
+                    column_type=column.column_type,
+                    unit=column.unit,
+                    title=column.title,
+                )
+                for column in visible
+            ),
+        ),
+        rows=tuple(export_rows),
+        totals={},
+        source_operations=table.source_operations,
+        warnings=table.warnings,
+        incomplete=table.incomplete,
+        incomplete_reason=table.incomplete_reason,
+        hidden_columns=detail.hidden_columns,
+    )
+
+
+def _attach_order_view_context(
+    result: CapabilityRunResult,
+    request: CapabilityRunRequest,
+    recipe: CapabilityRecipe,
+    fetches: Mapping[str, ResourceFetchResult],
+) -> CapabilityRunResult:
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(sort_keys=True, default=str, separators=(",", ":"))
+    context: dict[str, object] = {
+        "recipe": recipe.model_dump(mode="json"),
+        "capability": str(request.capability_id),
+        "role": request.role.value if request.role else None,
+        "time": [request.time_range.start.isoformat(), request.time_range.end.isoformat()],
+        "filters": {
+            key: (
+                sorted(str(value) for value in cast(frozenset[object], values))
+                if isinstance(values, frozenset)
+                else str(values)
+                if values is not None
+                else None
+            )
+            for key, values in vars_from_filters(request.filters).items()
+        },
+    }
+    for part in encoder.iterencode(context):
+        digest.update(part.encode("utf-8"))
+    for step_id, fetched in sorted(fetches.items()):
+        digest.update(step_id.encode("utf-8"))
+        if fetched.cache_generated_at is not None:
+            digest.update(fetched.cache_generated_at.encode("utf-8"))
+        for part in encoder.iterencode(fetched.rows):
+            digest.update(part.encode("utf-8"))
+    snapshot_id = digest.hexdigest()
+    if (
+        request.order_view is not None
+        and request.order_view.snapshot_id is not None
+        and request.order_view.snapshot_id != snapshot_id
+    ):
+        raise InvalidRequestError("order_view_snapshot_changed")
+    if request.data_snapshot_id is not None and request.data_snapshot_id != snapshot_id:
+        raise InvalidRequestError("order_view_snapshot_changed")
+    if result.card is None:
+        if request.order_view is not None:
+            raise InvalidRequestError("order_view_unavailable")
+        return result
+    context_request: dict[str, object] = {
+        "time_range_start": request.time_range.start.isoformat(),
+        "time_range_end": request.time_range.end.isoformat(),
+        "order_codes": sorted(request.filters.order_codes or ()),
+        "style_codes": sorted(request.filters.style_codes or ()),
+        "plan_codes": sorted(request.filters.plan_codes or ()),
+        "material_ids": sorted(request.filters.material_ids or ()),
+        "dept_ids": sorted(request.filters.requested_dept_ids or ()),
+    }
+    result.card["drill_context"] = context_request
+    if request.filters.employee_ids is not None and len(request.filters.employee_ids) == 1:
+        context_request["employee_uid"] = next(iter(request.filters.employee_ids))
+    if not isinstance(result.card.get("order_groups"), dict):
+        if request.order_view is not None:
+            raise InvalidRequestError("order_view_unavailable")
+        return result
+    result.card["data_snapshot"] = {"id": snapshot_id}
+    group_payload = cast(dict[str, Any], result.card["order_groups"])
+    if request.order_view is not None and not group_payload.get("groups"):
+        raise InvalidRequestError("order_view_unavailable")
+    group_payload["request"] = {
+        **context_request,
+        "capability_id": str(request.capability_id),
+        "group_page": int(group_payload.get("page", 1)) + 1,
+        "group_page_size": int(group_payload.get("page_size", 50)),
+        "data_snapshot_id": snapshot_id,
+    }
+    for group in group_payload.get("groups", ()):
+        for view in group.get("views", ()):
+            raw_template = view.get("request")
+            if isinstance(raw_template, dict):
+                template = cast(dict[str, object], raw_template)
+                template.update(context_request)
+                raw_selection = template.get("order_view")
+                if isinstance(raw_selection, dict):
+                    cast(dict[str, object], raw_selection)["snapshot_id"] = snapshot_id
+    return result
+
+
+def vars_from_filters(filters: NarrowedFilters) -> dict[str, object]:
+    return {
+        "tenant_id": filters.tenant_id,
+        "employee_ids": filters.employee_ids,
+        "dept_ids": filters.dept_ids,
+        "requested_dept_ids": filters.requested_dept_ids,
+        "order_codes": filters.order_codes,
+        "style_codes": filters.style_codes,
+        "plan_codes": filters.plan_codes,
+        "material_ids": filters.material_ids,
+    }
 
 
 def _source_call_count(fetched: ResourceFetchResult) -> int:
@@ -957,6 +1362,9 @@ def render_table_from_run_result(result: CapabilityRunResult) -> RenderTable:
         warnings=result.warnings,
         incomplete=result.incomplete,
         incomplete_reason=result.incomplete_reason,
+        title=(str(result.card.get("title")) if result.card and result.card.get("title") else None),
+        detail_tables=result.detail_tables,
+        hidden_columns=result.hidden_columns,
     )
 
 
@@ -1200,6 +1608,8 @@ def _build_totals(
 ) -> dict[str, Decimal]:
     totals: dict[str, Decimal] = {}
     for column in recipe.result_columns:
+        if column.aggregation == "none":
+            continue
         if column.column_type not in ("money", "quantity"):
             continue
         if rows:

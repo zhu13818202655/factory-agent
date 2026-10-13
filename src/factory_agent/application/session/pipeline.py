@@ -77,7 +77,7 @@ from factory_agent.domain import (
     TimeRange,
     terminal_event_name,
 )
-from factory_agent.domain.errors import ForbiddenError
+from factory_agent.domain.errors import ForbiddenError, InvalidRequestError
 from factory_agent.observability.debug_trace import (
     CaptureScope,
     close_capture_scope,
@@ -207,6 +207,8 @@ def result_aggregates(result: CapabilityRunResult) -> list[tuple[str, str]]:
     types = result.column_types or {}
     aggregates: list[tuple[str, str]] = []
     for name in result.column_names:
+        if name in result.hidden_columns:
+            continue
         value = result.totals.get(name)
         if value is None:
             continue
@@ -511,6 +513,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
             else:
                 filters = self._narrower.narrow(
                     scope,
+                    tenant_resolved_employee_ids=resolved.employee_ids,
                     dept_ids=resolved.dept_ids,
                     order_ids=resolved.order_codes,
                     style_ids=resolved.style_codes,
@@ -611,10 +614,10 @@ class SessionPipelineMixin(SessionNarrationMixin):
         return ResolvedBusinessFilters(
             employee_ids=employee_ids,
             dept_ids=dept_ids,
-            order_codes=None,
-            style_codes=None,
-            plan_codes=None,
-            material_ids=None,
+            order_codes=frozenset(drill.order_codes) or None,
+            style_codes=frozenset(drill.style_codes) or None,
+            plan_codes=frozenset(drill.plan_codes) or None,
+            material_ids=frozenset(drill.material_ids) or None,
         )
 
     async def _pipeline(
@@ -866,6 +869,10 @@ class SessionPipelineMixin(SessionNarrationMixin):
                         role=decision_context.role,
                         caller_employee_id=decision_context.employee_id,
                         caller_dept_ids=scope.dept_ids,
+                        order_view=drill.order_view if drill is not None else None,
+                        group_page=drill.group_page if drill is not None else 1,
+                        group_page_size=drill.group_page_size if drill is not None else 50,
+                        data_snapshot_id=drill.data_snapshot_id if drill is not None else None,
                     )
                 ),
                 run_slot,
@@ -880,6 +887,23 @@ class SessionPipelineMixin(SessionNarrationMixin):
             async for event in self._reject_message(
                 state, f"forbidden_{exc.code.value}", exc.message, usage_events
             ):
+                yield event
+            return
+        except InvalidRequestError as error:
+            if error.message in {
+                "order_view_invalid",
+                "order_view_unavailable",
+                "order_view_snapshot_changed",
+            }:
+                notice = (
+                    "数据已刷新，请重新查看汇总后再展开明细。"
+                    if error.message == "order_view_snapshot_changed"
+                    else "该明细视图在当前查询范围内不可用，请重新查看汇总。"
+                )
+                async for event in self._reject_message(state, error.message, notice, usage_events):
+                    yield event
+                return
+            async for event in self._fail(state, "execution_failed", usage_events):
                 yield event
             return
         except Exception:

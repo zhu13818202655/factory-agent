@@ -374,6 +374,13 @@ class HongzhaoMesAdapter:
         dates, datee = local_calendar_dates(start, end, zone)
         params: dict[str, Any] = {"dates": dates, "datee": datee}
         if extra_params:
+            protected = {
+                name.lower()
+                for name, source in self._operation(operation_id).parameter_sources.items()
+                if source in {"scope", "credential"}
+            }
+            if protected.intersection(name.lower() for name in extra_params):
+                raise InvalidRequestError("scope and credential parameters cannot be supplied")
             params.update(extra_params)
         if operation_id in {
             "EmployeeQuery",
@@ -394,6 +401,12 @@ class HongzhaoMesAdapter:
                     params["uid"] = str(employee_id)
                 else:
                     params["Uid"] = str(employee_id)
+        if operation_id == "GongziClQuery":
+            bundle = self._active_bundle()
+            role_code = bundle.roles[0].strip() if bundle.roles else None
+            dept_ids = filters.requested_dept_ids if role_code in {"00", "99"} else filters.dept_ids
+            if dept_ids is not None and len(dept_ids) == 1:
+                params["dept"] = str(next(iter(dept_ids)))
         if operation_id == "HuohaoWtCLQuery":
             # Server-side filter pushdown (接口文档 §7.2 实测：huohao 取值是
             # 款号 bbreed，与 NarrowedFilters.style_codes 同口径). The customer

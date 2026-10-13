@@ -211,8 +211,36 @@ def default_metric_registry() -> MetricRegistry:
                 status="confirmed",
                 assumption_status=(
                     "客户接口字段：生产进度 V2 wts（总工序数，工序维度参考统计）；"
-                    "V2 行集无独立日期列，制单日期由 dh 前 8 位派生（方案 §4.4）"
+                    "制单日期使用 V2 响应 rq 的业务日历日期，不根据制单号推断（方案 §4.4）"
                 ),
+            ),
+            MetricDefinition(
+                name="progress_finished_sheet_count",
+                version="factory-sheet-state-v1",
+                description="Distinct flowcards whose received quantity reaches issued quantity",
+                status="confirmed",
+                assumption_status="逐制单合计发卡和实收，发卡大于零且实收达到发卡计为已完工；跨部门不重复计数",
+            ),
+            MetricDefinition(
+                name="progress_unfinished_sheet_count",
+                version="factory-sheet-state-v1",
+                description="Distinct flowcards whose received quantity is below issued quantity",
+                status="confirmed",
+                assumption_status="逐制单合计发卡和实收，发卡大于零且实收低于发卡计为未完工；超收不能抵消其他制单欠收",
+            ),
+            MetricDefinition(
+                name="progress_unavailable_sheet_count",
+                version="factory-sheet-state-v1",
+                description="Distinct flowcards without positive issued quantity",
+                status="confirmed",
+                assumption_status="真实非空制单号对应的发卡合计小于等于零，完工状态无法判断；零分母进度仍按客户口径为零",
+            ),
+            MetricDefinition(
+                name="output_style_count",
+                version="factory-output-style-v1",
+                description="Distinct nonempty style code and name pairs in scoped output",
+                status="confirmed",
+                assumption_status="参与报工的款式按原始内部编码与业务款名组合去重；不从问题文本补写款式",
             ),
             MetricDefinition(
                 name="progress_received_qty",
@@ -434,6 +462,17 @@ class ResultColumnMeta:
 
 
 @dataclass(frozen=True, slots=True)
+class ResultDetailTable:
+    view_id: str
+    title: str
+    group_by: str
+    columns: tuple[ResultColumnMeta, ...]
+    rows: tuple[dict[str, Any], ...]
+    status_column: str | None = None
+    hidden_columns: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ResultTable:
     """Typed result with full provenance for every number."""
 
@@ -448,6 +487,8 @@ class ResultTable:
     #: Front-end card payload built by the kernel when the recipe declares a
     #: ``card:`` block; ``None`` = recipe has no card or the result is empty.
     card: dict[str, object] | None = None
+    detail_tables: tuple[ResultDetailTable, ...] = ()
+    hidden_columns: tuple[str, ...] = ()
 
     def trace_for(self, column_name: str) -> ResultColumnMeta:
         for column in self.columns:

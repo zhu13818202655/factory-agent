@@ -593,7 +593,7 @@ def _build_cache(settings: FactoryAgentSettings) -> AuthAwareCache | None:
         store,
         contract_version="mes-contract-v2",
         metric_version="metric-registry-v1",
-        data_version="mes-detail-v2",
+        data_version="mes-detail-v3",
     )
 
 

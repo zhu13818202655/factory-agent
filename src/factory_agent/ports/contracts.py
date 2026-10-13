@@ -161,6 +161,10 @@ class RenderTable:
     warnings: tuple[str, ...] = ()
     incomplete: bool = False
     incomplete_reason: str | None = None
+    title: str | None = None
+    #: Full authorized detail results, independent of each card's preview page.
+    detail_tables: tuple["RenderTable", ...] = ()
+    hidden_columns: tuple[str, ...] = ()
 
 
 class MesDataSource(Protocol[MesRequestT, MesResponseT]):

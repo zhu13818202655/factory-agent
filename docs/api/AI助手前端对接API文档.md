@@ -245,6 +245,9 @@
 | `drill.capability_id` | 必填，下钻目标能力（与 `card.actions[].capability_id` 一致）；未登记的能力返回 400 |
 | `drill.dept_ids` | 可选，目标车间/小组编号数组（来自被点行的 `bind_from` 映射列）；最多 20 个 |
 | `drill.employee_uid` | 可选，目标员工工号（成员工资条下钻，fr012） |
+| `drill.order_codes` / `style_codes` / `plan_codes` / `material_ids` | 可选业务筛选数组，每项 1–128 字符、每类最多 20 项；从服务端模板或已审核 `bind_from` 取真实标识，不能使用显示标签。`order_codes` 在计划汇总能力中指计划号，在包明细能力中指制单号。`material_ids` 可用于进度能力的默认明细先筛选再聚合；FR6 及任何工资来源能力不支持物料筛选，发送非空 `material_ids` 在开始交互前返回 400，不静默忽略 |
+| `drill.order_view` | 可选组内明细选择，字段与校验见 §5.3.2；存在时必须同时提供绝对 `time_range_start/end`。同能力展开、状态筛选、组内翻页都发起新的 interaction |
+| `drill.group_page` / `group_page_size` / `data_snapshot_id` | 订单组列表分页，默认 1 / 50；每页最多 50 组。第 2 页起必须回传版本摘要和绝对时间；只用于已登记组内明细的能力，不与具体 `order_view` 混用，见 §5.3.2 |
 | `drill.time_range_start` / `drill.time_range_end` | **可选，但必须成对**：值原样取自上一轮结果的 `card.time_range.start` / `card.time_range.end`（§5.3.1），ISO 8601 带时区（UTC 半开区间，`end` 为排他上界）。只给一半返回 **422**（客户端缺陷，服务端不猜边界）。**强烈建议前端总是回传**，否则下钻可能落到另一个窗口 |
 | `drill.time_expression` | 可选，时间范围表述（如 `本月`）；**当 `time_range_start/end` 同时存在时它只是展示标签**，不参与取数窗口决策 |
 
@@ -801,7 +804,7 @@ data: {"question":"请问您要查询哪个时间范围的产量？","missing":[
 ```text
 id: 5
 event: interaction.result
-data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","style_code","product_name","bed_code","cut_date","package_count","cut_qty","finished_packages","progress_ratio","worktype_count","finish_state"],"column_titles":{"order_code":"订单号","style_code":"款号","product_name":"品名","bed_code":"床号","cut_date":"裁剪日期","package_count":"包数","cut_qty":"裁剪数量","finished_packages":"完工包数","progress_ratio":"进度","worktype_count":"工序数","finish_state":"状态"},"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx","answer":"查询完成，共 12 行结果，详情请查看下方结果卡片。"}
+data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","plan_code","plan_missing","order_count","sheet_count","package_count","issued_qty","received_qty","progress_ratio","progress_label","worktype_count","finished_sheet_count","unfinished_sheet_count","unavailable_sheet_count","finish_state"],"column_titles":{"order_code":"计划号","plan_code":"计划号标识","plan_missing":"未关联计划号","order_count":"订单统计组数","sheet_count":"制单数","package_count":"包数","issued_qty":"发卡数量","received_qty":"实收数量","progress_ratio":"进度数值","progress_label":"进度","worktype_count":"工序数","finished_sheet_count":"已完工制单","unfinished_sheet_count":"未完工制单","unavailable_sheet_count":"无法判断制单","finish_state":"状态"},"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx","answer":"查询完成，共 12 行结果，详情请查看下方结果卡片。"}
 ```
 
 字段：
@@ -893,12 +896,15 @@ FR-001～FR-013 及现有下钻均可使用服务器两族公共明细缓存；�
 | `table.group_by` / `groups` / `groups_total` | **分组卡**（组长/老板工资名单）：按 `group_by` 列分组、组内已按金额降序；`groups[]` 每项 `{group, name, row_count, total_rows, truncated}`（`name` 为组显示名，可缺席，缺席时用 `group` 原值）。同组成员在 `rows` 里**连续存放、段落顺序与 `groups[]` 一致**，前端按每组 `row_count` 顺序切片即可（tab 切换 + 组内展开成员，**不需要自己重新分组**）；建议每个 tab 文案为「组名（本组总人数）」 |
 | `table.page` / `page_size` / `has_more` | **分页三字段**（总是同时下发）：预览模式下固定 `page=1`，`page_size` = 预览行上限，`has_more` 派生自 `truncated`；完整行走导出文件 |
 | `chart` | **图表区**（可缺席）：`type` 本期仅 `"bar"`（枚举位预留）；`granularity` 为 `day`/`week`——日粒度点数超过 62 时服务端自动降为周粒度（`label` 为周起始日），**前端零聚合逻辑**；`points[]` 每项 `{label, value}`，`label` 为原始日期（`MM-DD`），本地化展示由前端负责；`points` 已按服务端排好序；无数据时整个 `chart` 区块缺席（不下发空数组） |
-| `actions` | **卡片级下钻声明**（可缺席）：`{type: "drill", label, capability_id, bind_from}`；`bind_from` 为「下钻槽位键 → 结果列名」映射（如 `{"dept_ids": "dept"}`、`{"employee_uid": "uid"}`）——用户点击某行时，前端从该行取对应列值填入 `drill` 载荷（§4.2）发起新一轮请求。**纯提示性字段**：前端忽略它零行为变化；无权角色不会收到对应入口（服务端按角色裁剪） |
+| `actions` | **卡片级下钻声明**（可缺席）：`{type: "drill", label, capability_id, bind_from, clear_fields?}`；`bind_from` 为「下钻槽位键 → 结果列名」映射。先复制 `drill_context` 并清除 `clear_fields` 指定的旧业务条件，再从被点行绑定目标值，发起新一轮请求（§4.2 / §5.3.2）；无权角色不会收到对应入口 |
 | `time_range` | **本轮真实取数窗口**（2026-09-20 D-7 新增，可缺席）：与同一轮的 `interaction.result` 顶层 `time_range` **是同一份数据**（`{start, end, label, expression?}`，见 §5.3）。前端点击下钻时应把它原样回传给 `drill.time_range_start` / `drill.time_range_end`（§4.2）——这是「下钻进用户看到的那一个窗口」的唯一依据，`expression` 只是展示标签，服务端不会用它重新解算窗口 |
 | `table.alert_marker` | 语义高亮：`{column, equals}`——行内该列值等于 `equals` 时整行标红。**当前无能力使用**（原 FR-009 交期预警随生产计划接口弃用而取消，2026-09-15）；字段保留以便将来有新的预警列时复用 |
 | `totals` | 合计区（卡片底部），结构同 `metrics` |
 | `unavailable_columns` | 无数据源的 KPI 列中文名列表 |
 | `notes` | 面向用户的提示文本（口径说明、不完整提示等），逐条展示即可 |
+| `order_groups` | 可选订单分组视图，当前 `version=1`；计划汇总与组内明细分别提供，不同于工资表的 `table.groups`，详见 §5.3.2 |
+| `data_snapshot` | 订单分组数据版本标识 `{id: string}`，供组内翻页检测范围或底料版本变化；是 64 位小写十六进制不透明摘要，不是缓存键、权限凭据或保证长期保留的快照 |
+| `drill_context` | 原查询的绝对时间、部门及订单/款号/计划/物料业务条件，普通卡片与订单分组卡片均可提供。用于跨能力下钻：先执行动作 `clear_fields`，再按被点行 `bind_from` 覆盖槽位，见 §5.3.2；它不包含父层视图、页码或版本选择 |
 
 各能力默认卡形态（未列出的能力暂无 `card`，按旧形态渲染）：
 
@@ -909,21 +915,17 @@ FR-001～FR-013 及现有下钻均可使用服务器两族公共明细缓存；�
 | fr004_group_income_rank | 收入排名（我在组里排第几） | `kpi` | 金额 / 名次 / 组内名次 / 组内人数（单行） | 无 |
 | fr003_personal_wage_detail | 个人工资明细 | `table` | 小计金额（合计） | 日期/款号/工序/完成数量/工价单价/小计金额 |
 | fr001_personal_output | 个人产量统计 | `table` | 产量（合计） | 日期/款号/工序/产量 |
-| fr006_order_output | 订单/款号产量 | `table` | 裁剪数量 / 进度 / 报工产量合计（`件·工序` 口径） | 款号/工序/产量/参与人数/工序占比；**各工序产量之和不得当作订单总产量**，需在 `notes` 注明 |
-| fr005_order_progress | 订单/款号进度 | `table` | 包数 / 裁剪数量 / 完工包数 / 进度（包完工率） | 订单号/款号/品名/床号/裁剪日期/包数/裁剪数量/完工包数/进度/工序数/状态；**进度 = 完工包数 ÷ 包数** |
-| fr009_factory_order_overview | 全厂订单进度总览 | `table` | — | 订单号/款号/品名/床号/裁剪日期/包数/裁剪数量/完工包数/进度/工序数/状态；**无客户、无交期、无交期预警、无 `alert_marker`** |
+| fr006_order_output | 订单/款号产量 | `table` | 报工工作量 / 报工金额 / 全查询范围去重参与人数 | 一行一个计划号组，展开 `worktype_details` 查看真实款式与工序。工作量单位为 `件·工序`；工序人数、组人数不能相加成全范围人数；没有可比发卡分母时工序占比不可用 |
+| fr005_order_progress | 订单/款号进度 | `table` | 制单数 / 包数 / 发卡数量 / 已完工制单 / 未完工制单 / 无法判断制单 | 一行一个计划号组，空计划号统一一组；展开 `sheet_details` 查看制单进度。进度为累计实收合计 ÷ 发卡合计 × 100，状态逐制单判断 |
+| fr009_factory_order_overview | 全厂订单进度总览 | `table` | 制单数 / 包数 / 发卡数量 / 已完工制单 / 未完工制单 / 无法判断制单 | 与 FR5 使用相同计划号组与制单明细结构；组内差异在子表展示。无客户、交期及交期预警 |
 | fr008_payroll_ranking | 员工工资清单与排名 | `ranking` | 工资金额（合计） | 工号/姓名/车间小组/计件件数/工资金额/名次/组内名次；**`group_by: dept` 按组 tab 切换**；**actions（点成员行 → fr012 工资条，01/02/99 均下发）** |
 | fr011_factory_payroll_stats | 全厂工资统计 | `table` | 工资总额 / 人均工资 / 在册人数（aux KPI） | 车间小组/应发合计/在册人数/人均工资；**actions（点车间行 → fr008 工资清单）** |
 | fr007_workshop_output_comparison | 车间产量对比 | `ranking` | 报工产量（合计） | 车间小组/报工产量/参与人数/人均产量/名次；**可见部门数为 1 时 `rank_position` 取值不可用（单元格为 `null`，渲染「—」/暂无数据源）**，列本身仍下发、卡片仍是 `ranking` 形态（1 行），`notes` 说明「无对比对象」 |
 | fr010_workshop_output_overview | 小组/车间产量 | `table` | — | 车间小组/款号/报工产量/参与人数/人均产量；**无计划数量、无完工数量、无达成率** |
-| fr013_factory_output_dashboard | 全厂产量总览（综合看板，仅老板） | `ranking` | 总产量 / 在产订单（D-2 口径）/ 人均月产（aux KPI） | 车间小组/报工产量/参与人数/人均产量/名次 + **日产量柱状图（`chart`）** + **actions（点车间行 → fr010 产量明细）**；「报工产量」为 `件·工序` 口径（`notes` 注明） |
+| fr013_factory_output_dashboard | 全厂产量总览（综合看板，仅老板） | `ranking` | 总产量 / 在产制单 / 人均月产（aux KPI） | 车间小组/报工产量/参与人数/人均产量/名次 + 日产量柱状图 + 点车间行查看 FR10 产量明细；在产制单按不同真实制单号计算，不能解释为计划号订单数；报工产量为 `件·工序` |
 
-**三层下钻（进度类新增）**：进度类能力支持「列表 → 包级 → 工序级」三层，**每层都是一次独立的问答轮次**
-（不是同一次 SSE 塞三层）。前端在用户点击时发起**新一轮提问**并把下钻键作为业务条件提交：
-第二层传订单号（复用 `order_codes`），第三层传物料编号（需新增槽位，见 `ALLOWED_SLOT_NAMES`）。
-第二层列：物料编号/包号/颜色/尺码/缸号/裁剪数量/工序数/总数/完成数/完成率；
-第三层列：工序/工序顺序/已完成/预发数量/正品数量/操作人/部门/刷卡时间。
-第二层「总数/完成数」是 **`件·工序` 口径**（总数 = 裁剪数量 × 工序数），**不是件数**，必须在 `notes` 注明。
+进度查询采用「计划号汇总 → 组内制单 → 制单包明细 → 物料工序明细」。同能力组内展开与翻页、
+切换到包或工序能力均是新的问答轮次，真实业务标识与上下文的传递见 §5.3.2。
 
 空结果（`row_count=0` 且 `incomplete=false`）**不下发 `card`**，前端按"没有查询到相关记录"空态处理；`incomplete=true` 时 `card` 照常下发，并附 `notes` 提示。
 
@@ -937,6 +939,170 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 
 注意：`data.status` 有两种取值——`"completed"`（结果就绪）与 `"clarifying"`
 （本轮以追问收尾，等待用户补充后发起新一轮）。
+
+#### 5.3.2 订单分组、展开与组内分页（`card.order_groups.version=1`）
+
+FR5/FR9 的主结果按计划号汇总，组内是制单进度；FR6 的主结果也按计划号汇总，组内是款式与
+工序报工明细。空计划号只产生一个未关联组，组内仍保留全部制单或工序记录。
+前端优先使用 `order_groups` 渲染“汇总区 + 可展开明细”，不在父级摆放无法代表整组的制单号、
+床号和日期。标题可组合为“未关联计划号 · 3 张制单”，数字取该组 `summary`，不能从预览行数计算。
+只有一个组时默认展开，否则展示各组汇总；制单表提供“只看未完工”入口。
+组内 `created_date` 是服务端验证并标准化后的真实制单日期；ISO 日期时间取字段自身的业务日期，
+不按时区偏移移动到另一日。
+前端直接显示该列，不解析制单编号推断日期。未知日期保持不可用，不能从编号或提问文本补写。
+
+| 字段 | 契约 |
+| --- | --- |
+| `order_groups.version` | 当前为 `1`；未知版本兼容展示普通主表与导出入口 |
+| `groups_total` / `page` / `page_size` / `has_more` | 当前范围内的统计组总数、当前组列表页、每页组数及是否有下一页；默认每页 50 组。完整组在导出中，组列表也可按服务端模板继续翻页 |
+| `order_groups.request` | 下一组列表页的同能力 `drill` 模板，包含 `group_page`、`group_page_size`、`data_snapshot_id`、绝对时间与原筛选；只有 `has_more=true` 时展示下一页入口 |
+| `groups[].id` / `name` | `id` 是稳定组标识，`name` 仅用于显示；空组 ID 为 `unlinked`，真实计划号 ID 为摘要。相同显示名不能作为合并依据 |
+| `groups[].kind` / `plan_code` | `kind` 为 `plan` 或 `unlinked`。`plan` 携带真实原始计划号，非空值保留原值；`unlinked` 的 `plan_code=null`，统一覆盖 NULL、空串及纯空白 |
+| `summary` | 已计算的指标或状态数组 `{name,title,type,unit,value}`；未知值为 `unavailable:true`。不重复隐藏的内部组键 |
+| `state_counts` | 制单状态分布 `{finished,unfinished,unavailable}`，值为已计算数值文本或 `null`；FR6 没有制单状态分布时为 `{}` |
+| `default_expanded` | 当前结果只有一个统计组时为 `true` |
+| `views[]` | 每项 `{view_id,title,table,request}`；FR5/FR9 注册 `sheet_details`，FR6 注册 `worktype_details` |
+| `views[].table` | `columns`、`column_titles`、二维 `rows` 沿用现有表结构；`column_metadata` 每列包含 `{name,title,type,unit}` |
+| `total_rows` / `filtered_total_rows` | 同一组明细的完整行数 / 状态筛选后的完整行数；均在分页之前计算 |
+| `status` / `page` / `page_size` / `has_more` | 状态筛选、当前页、每页条数、是否有下一页；先筛选后分页。默认第一页 10 行，每页最多 100 行，页码 1–100000 |
+| `unavailable_columns` | 整组均未知的列从显示列移除，在此提供完整列元数据；部分行未知仍显示 `null`。不要补零或根据第一页推断整列可用性 |
+| `table.actions` | 该明细表的审核下钻动作，结构为 `{type:"drill",label,capability_id,bind_from,clear_fields?}`；清除旧业务条件后再绑定被点行 |
+| `views[].request` | 可直接放入下一轮请求 `drill` 的模板，含同一能力、绝对时间、原业务条件和 `order_view`。修改页码或状态时保留其它字段 |
+
+`drill.order_view` 的字段：
+
+| 字段 | 约束 |
+| --- | --- |
+| `view_id` | 必填，已登记的明细视图名，1–64 字符的普通标识符；必须与该能力匹配 |
+| `group_kind` | 必填，`plan` / `unlinked` |
+| `plan_code` | `plan` 必须提供非空真实计划号（最长 128 字符）；`unlinked` 必须为 `null` 或缺席，不能发送中文标签 |
+| `page` / `page_size` | 默认 1 / 10，范围见上表；必须为整数，布尔值或数字字符串不接受 |
+| `status` | `all` / `finished` / `unfinished` / `unavailable`，默认 `all`；状态筛选仅用于注册了状态列的制单明细，工序报工视图不支持 |
+| `snapshot_id` | 64 位小写十六进制摘要；第一页可缺席，第 2 页起必填。服务端模板总是给出，前端展开、筛选、翻页时必须原样保留，不自行生成 |
+
+组列表翻页使用 `drill.group_page`（整数 1–100000）、`group_page_size`（整数 1–50）及
+`data_snapshot_id`（64 位小写十六进制摘要）。第 2 页起必须回传摘要和绝对时间，否则请求结构
+校验返回 422；不能将具体 `order_view` 与组列表第 2 页混用。明细第 2 页起缺少 `snapshot_id`
+也返回 422。所有翻页只在原能力、原范围和原窗口内执行。
+
+匿名合成响应节选（省略普通卡片指标、主表及其它列，数字仅用于说明契约）：
+
+```json
+{
+  "card": {
+    "data_snapshot": {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "drill_context": {
+      "time_range_start": "2026-08-31T16:00:00+00:00",
+      "time_range_end": "2026-09-30T16:00:00+00:00",
+      "order_codes": [], "style_codes": [], "plan_codes": [], "material_ids": [], "dept_ids": []
+    },
+    "order_groups": {
+      "version": 1, "groups_total": 1, "page": 1, "page_size": 50, "has_more": false,
+      "groups": [{
+        "id": "unlinked", "name": "未关联计划号", "kind": "unlinked", "plan_code": null,
+        "summary": [{"name": "sheet_count", "title": "制单数", "type": "quantity", "unit": "单", "value": "3"}],
+        "state_counts": {"finished": "2", "unfinished": "1", "unavailable": "0"},
+        "default_expanded": true,
+        "views": [{
+          "view_id": "sheet_details", "title": "制单进度",
+          "table": {
+            "columns": ["sheet_code", "finish_state"],
+            "column_titles": {"sheet_code": "制单号", "finish_state": "状态"},
+            "column_metadata": [{"name": "sheet_code", "title": "制单号", "type": null, "unit": null}, {"name": "finish_state", "title": "状态", "type": null, "unit": null}],
+            "rows": [["SAMPLE-SHEET-1", "未完工"]],
+            "total_rows": 3, "filtered_total_rows": 3,
+            "status": "all", "page": 1, "page_size": 1, "has_more": true,
+            "unavailable_columns": [],
+            "actions": [{"type": "drill", "label": "查看包明细", "capability_id": "fr005_order_package_detail", "bind_from": {"order_codes": "sheet_code"}}]
+          },
+          "request": {
+            "capability_id": "fr009_factory_order_overview",
+            "time_range_start": "2026-08-31T16:00:00+00:00", "time_range_end": "2026-09-30T16:00:00+00:00",
+            "order_codes": [], "style_codes": [], "plan_codes": [], "material_ids": [], "dept_ids": [],
+            "order_view": {"view_id": "sheet_details", "group_kind": "unlinked", "plan_code": null, "page": 1, "page_size": 1, "status": "all", "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }]
+      }]
+    }
+  }
+}
+```
+
+点击“只看未完工”：复制该 `view.request` 到 `drill`，仅把 `order_view.status` 改成 `unfinished`、
+`page` 重置为 1。点击下一页：保留同一状态、窗口、筛选和 `snapshot_id`，仅增加 `page`。
+请求示例：
+
+```json
+{
+  "text": "查看未关联组的未完工制单",
+  "drill": {
+    "capability_id": "fr009_factory_order_overview",
+    "time_range_start": "2026-08-31T16:00:00+00:00", "time_range_end": "2026-09-30T16:00:00+00:00",
+    "order_codes": [], "style_codes": [], "plan_codes": [], "material_ids": [], "dept_ids": [],
+    "order_view": {"view_id": "sheet_details", "group_kind": "unlinked", "plan_code": null, "page": 1, "page_size": 10, "status": "unfinished", "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  }
+}
+```
+
+组列表超过一页时，复制 `order_groups.request` 到 `drill`，保留同一窗口和原筛选。
+匿名下一组页请求示例（版本摘要仍应使用实际响应值）：
+
+```json
+{
+  "text": "查看下一页计划号汇总",
+  "drill": {
+    "capability_id": "fr009_factory_order_overview",
+    "time_range_start": "2026-08-31T16:00:00+00:00", "time_range_end": "2026-09-30T16:00:00+00:00",
+    "order_codes": [], "style_codes": [], "plan_codes": [], "material_ids": [], "dept_ids": [],
+    "group_page": 2, "group_page_size": 50,
+    "data_snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}
+```
+
+点击某张制单的“查看包明细”：复制 `card.drill_context`，将 `capability_id` 改为动作目标，
+先按动作 `clear_fields` 清除旧业务条件，再按 `bind_from` 用被点行真实 `sheet_code`
+**覆盖** `order_codes`，包装为数组。
+这是从计划号层切到制单层，不能把父层计划号和制单号追加到同一数组；不携带父层 `order_view`。
+包表点击“查看工序”时，动作声明 `clear_fields:["order_codes"]`：**先清除父层作为制单号使用的
+`order_codes`**，再用真实 `material_id` 覆盖 `material_ids`，保留原时间、部门、款式及仍适用
+的计划条件。工序层的 `order_codes` 按计划号解释，不能把制单号继续带入；物料标识限定目标。
+`clear_fields` 仅允许 `order_codes/style_codes/plan_codes/material_ids`，不允许清除
+`dept_ids`、`employee_uid` 或任何身份/范围字段。跨能力下钻复制 `drill_context`，不复制
+`views[].request` 或组列表模板，因此父层 `order_view/group_page/data_snapshot_id` 不继承。
+同能力组内翻页则使用 `views[].request`，其模板保留当前实际状态和页码，前端只修改目标页码。
+不发送“未关联计划号”、款式显示名或组摘要作为业务标识。
+
+包卡上的动作示例：
+
+```json
+{
+  "type": "drill", "label": "查看工序", "capability_id": "fr005_order_worktype_detail",
+  "bind_from": {"material_ids": "material_id"}, "clear_fields": ["order_codes"]
+}
+```
+
+每轮重新授权，业务条件只能收窄有效范围；历史卡片不保存访问权限。`snapshot_id` 与组列表的
+`data_snapshot_id` 均回传 `card.data_snapshot.id`，绑定配方版本、
+角色/租户/员工/部门有效范围、绝对时间、业务条件、完整获准取数内容及可用的底料生成版本。
+服务端重新执行时版本不同，以 `interaction.failed` 的
+`error_category=order_view_snapshot_changed` 终结，持久化提示“数据已刷新，请重新查看汇总后再展开明细。”。
+前端引导重新查询汇总，不继续拼接两份版本的页；这不是 HTTP 409。
+未知或失效组内视图在执行阶段以 `order_view_invalid` / `order_view_unavailable` 友好拒绝。
+请求结构缺失、未注册视图或不支持的状态筛选仍在请求校验阶段返回 400/422。
+
+前端不能对预览行求和、相加工序人数或重算全组进度。进度优先显示服务端 `progress_label`：
+四舍五入到 100% 但实收仍不足时显示“接近100%（仍有未完工）”；超收相抵后合计达到 100% 但
+仍有未完工制单时保留未完工说明，不将整个组标成全部完工。真实款式名和内部编码分别展示，
+不能根据问句猜测二者对应。FR6 主卡参与人数在整个获准查询范围独立去重。
+FR6 指定员工时，工资按该员工收窄；发卡资料不能认定为全订单的可比分母，工序占比保持
+`unavailable`，不为获得分母扩大员工范围。所有工资来源能力均不适用 `material_ids`，结构化
+物料筛选提前以 400 拒绝；进度能力则在获准默认明细上先筛选物料，再计算所选视图。
+
+分页只切卡片预览，Excel 导出包含完整主汇总和完整明细工作表；指定明细状态时导出该状态匹配
+的全部行，不只导出当前页。每个明细工作表前两列为“计划号”“关联状态”：空组显示
+“未关联计划号 / 未关联”，真实计划号即使文字恰好为“未关联计划号”也显示“已关联”，
+不凭显示名误合并。内部 `plan_code/plan_missing` 等元数据保持隐藏。
 
 ### 5.4 闲聊应答（`interaction.answer`）
 
@@ -985,6 +1151,8 @@ data: {"interaction_id":"it_xxx","error_category":"forbidden"}
 | `time_range_missing` | 缺少时间条件，且**同会话也没有可继承的窗口**（只有在没有任何前序结果可参照时才追问/终止） |
 | `time_range_exceeds_limit` | 时间范围超过近一年上限（友好终止，不发起取数） |
 | `drill_invalid_time` | 结构化下钻携带的时间窗口不可用（起止倒置 / 超上限 / 落在未来）；零业务调用，文案「下钻时间范围无法识别，请重新发起查询。」 |
+| `order_view_invalid` / `order_view_unavailable` | 组内明细在当前查询范围内不可用，提示重新查看汇总；不回退为宽范围结果 |
+| `order_view_snapshot_changed` | 原汇总与本轮底料/范围版本不一致，提示“数据已刷新，请重新查看汇总后再展开明细。”；不得继续拼接旧页 |
 | `clarification_exhausted` | 追问轮次用尽 |
 | `capability_unresolved` / `capability_unregistered` | 意图无法落到已注册能力 |
 | `gateway_*` / `model_output_invalid` | 模型调用失败或输出校验失败 |
@@ -1072,7 +1240,7 @@ data: {"text":"","seq":9,"done":true,"elapsed_ms":3650}
 
 id: 18
 event: interaction.result
-data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","style_code","product_name","bed_code","cut_date","package_count","cut_qty","finished_packages","progress_ratio","worktype_count","finish_state"],"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx"}
+data: {"capability_id":"fr009_factory_order_overview","columns":["order_code","plan_code","plan_missing","order_count","sheet_count","package_count","issued_qty","received_qty","progress_ratio","progress_label","worktype_count","finished_sheet_count","unfinished_sheet_count","unavailable_sheet_count","finish_state"],"row_count":12,"incomplete":false,"incomplete_reason":null,"artifact_id":"art_xxx"}
 
 id: 19
 event: interaction.completed
@@ -1084,6 +1252,7 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 `interaction.thinking` 分片穿插在这两段等待中，**全部**早于 `interaction.result`（最后一片
 `done:true` 之后不再有本轮分片）；`seq` 只在本轮内递增，与帧的 `id:` 不是同一个计数器
 （例：`seq=9` 对应 `id: 17`）。`interaction.heartbeat` 可出现在任意位置，前端忽略即可。
+结果帧为元数据节选；真实结果还包含汇总卡片、订单分组视图和时间窗口，字段见 §5.3.2。
 
 ## 6. 错误码约定
 
@@ -1188,10 +1357,10 @@ data: {"interaction_id":"it_xxx","status":"completed"}
 （无权限查看工资排名），故员工角色问「我在小组里排第几」将得到 §5.5 的友好拒绝文案；
 FR-005~FR-008 为管理能力，组长/管理可用；FR-010 车间产量总览对组长/管理/老板开放，返回范围由 MES
 按角色行级过滤收窄（组长=本组、管理=绑定的部门/车间、老板=全厂），我方不做本地部门切分；
-FR-009/FR-011/FR-012 为全厂能力，仅老板。
+FR-009/FR-011/FR-013 为全厂能力，仅老板；FR-012 面向 01/02/99，目标员工必须在可查范围内。
 **老板拥有所有能力**：其数据范围是下级角色的超集，因此 FR-005~FR-008 同样对老板开放
 （老板问某款号/某订单/某小组的数据不应被拒）；反向不成立，01/02 不因老板能力而获得
-FR-009/FR-011/FR-012。矩阵外的请求以友好拒绝处理（§5.5）。
+FR-009/FR-011/FR-013。矩阵外的请求以友好拒绝处理（§5.5）。
 闲聊（保留能力 `chitchat`）不属于业务矩阵：四角色均可用、不占用追问轮次、不进查询历史/
 收藏。
 

@@ -22,6 +22,7 @@ from factory_agent.data_api.progress_detail import (
     ProgressDerivationError,
     aggregate_progress_rows,
     derive_progress_rows,
+    normalize_progress_date,
 )
 from factory_agent.domain import NarrowedFilters, Role, local_calendar_dates
 from factory_agent.domain.errors import InvalidRequestError
@@ -37,8 +38,8 @@ PAYROLL_OPERATION = "GongziClQuery"
 PROGRESS_OPERATION = "ScjdQuery"
 
 #: 缓存值结构版本（附录 F.1 ``v``）；派生逻辑或值结构变更时 bump。
-RESULT_SET_VERSION = 2
-DETAIL_GRAIN = "default-detail-v2"
+RESULT_SET_VERSION = 3
+DETAIL_GRAIN = "default-detail-v3"
 _FORBIDDEN_ROW_FIELDS = frozenset({"app_key", "accesstoken", "sign", "movepassword"})
 _FORBIDDEN_REQUEST_PARAMS = _FORBIDDEN_ROW_FIELDS | frozenset(
     {"timestamp", "uid", "dept", "tenant_id", "employee_ids", "dept_ids"}
@@ -49,8 +50,8 @@ def _has_credential_fields(keys: Iterable[object]) -> bool:
     return any(str(key).lower().removesuffix("_total") in _FORBIDDEN_ROW_FIELDS for key in keys)
 
 
-#: 进度行的派生日期列（§4.4）：``dh`` 前 8 位解析成的标准日期。
-DERIVED_DH_DATE = "dh_date"
+#: 进度时间锚来自接口返回的流程卡制单日期，规范化后仍使用原字段。
+PROGRESS_DATE_COLUMN = "rq"
 
 #: 全厂范围签名（键内 ``scope_sig`` 位）：缓存只有一份，范围过滤发生在读取时。
 OWNER_SCOPE_SIGNATURE = "owner-99"
@@ -132,25 +133,6 @@ class ResultCachePolicy:
     settled_ttl_seconds: int = 86400
     #: 影子比对 / footer 对账的浮点容差（相对偏差）。
     float_tolerance: float = 1e-6
-
-
-def derive_dh_date(dh: object) -> str | None:
-    """``dh`` 前 8 位 → ``YYYY-MM-DD``；解析失败返回 None（§4.4 格式校验）。
-
-    制单日期恒等于制单号前 8 位（附录 A.5 实测零越界）；不符合 ``YYYYMMDD…``
-    或不是合法日期的行不写缓存、回退实时。
-    """
-    text = str(dh or EMPTY)
-    if len(text) < 8:
-        return None
-    head = text[:8]
-    if not head.isdigit():
-        return None
-    year, month, day = int(head[:4]), int(head[4:6]), int(head[6:8])
-    try:
-        return date(year, month, day).isoformat()
-    except ValueError:
-        return None
 
 
 def window_category(dates: str, datee: str, today: str, backtrack_days: int = 365) -> str:
@@ -511,9 +493,9 @@ def scope_filtered_rows(
 
 def time_anchor_column(operation_id: str, extra_params: Mapping[str, Any]) -> str:
     """时间锚列（附录 A.5）：工资 Flag=0 按 inputdate / Flag=1 按 check_time；
-    进度行集无日期列，用派生列 ``dh_date``。"""
+    进度使用返回的流程卡制单日期 ``rq``。"""
     if operation_id == PROGRESS_OPERATION:
-        return DERIVED_DH_DATE
+        return PROGRESS_DATE_COLUMN
     if str(extra_params.get("Flag") or "0").strip() == "1":
         return "check_time"
     return "inputdate"
@@ -563,6 +545,15 @@ def local_view_rows(
     """
     scoped = scope_filtered_rows(rows, operation_id, filters, role)
     sliced = time_sliced_rows(scoped, time_anchor_column(operation_id, extra_params), window)
+    return _business_filtered_rows(sliced, operation_id, filters, extra_params)
+
+
+def _business_filtered_rows(
+    rows: tuple[Mapping[str, Any], ...],
+    operation_id: str,
+    filters: NarrowedFilters,
+    extra_params: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
     groupby = extra_params.get("groupbyFields") or ()
     order_column = "dh" if operation_id == PROGRESS_OPERATION and "baohao" in groupby else "jhdh"
 
@@ -584,7 +575,7 @@ def local_view_rows(
             values is None or str(row.get(column) or EMPTY) in values for values, column in checks
         )
 
-    return tuple(row for row in sliced if matches(row))
+    return tuple(row for row in rows if matches(row))
 
 
 # ---------------------------------------------------------------------------
@@ -720,11 +711,22 @@ class V2ResultCache:
                 or payload.get("window") != {"dates": window[0], "datee": window[1]}
                 or (
                     operation_id == PROGRESS_OPERATION
-                    and DERIVED_DH_DATE not in payload.get("derived", ())
+                    and payload.get("decoded_rows")
+                    and PROGRESS_DATE_COLUMN not in payload.get("columns", ())
                 )
             ):
                 continue
             rows = cast("tuple[Mapping[str, Any], ...]", tuple(payload.get("decoded_rows") or ()))
+            if operation_id == PROGRESS_OPERATION:
+                try:
+                    if any(
+                        normalize_progress_date(row.get(PROGRESS_DATE_COLUMN))
+                        != row.get(PROGRESS_DATE_COLUMN)
+                        for row in rows
+                    ):
+                        continue
+                except ProgressDerivationError:
+                    continue
             if any(
                 _FORBIDDEN_ROW_FIELDS.intersection(str(key).lower() for key in row) for row in rows
             ):
@@ -811,11 +813,10 @@ class V2ResultCache:
                 stored_rows = derive_progress_rows(rows)
             except ProgressDerivationError:
                 _LOGGER.warning(
-                    "v2_result.dh_date_parse_failed",
+                    "v2_result.progress_date_invalid",
                     extra={"operation": operation_id, "rows": len(rows)},
                 )
                 return False
-            derived = (DERIVED_DH_DATE,)
         try:
             _validate_time_anchors(stored_rows, operation_id, extra_params)
         except InvalidRequestError:
@@ -961,9 +962,7 @@ class ResultCacheExecutor:
             or not cacheable_grain(operation_id, params)
             or window_start is None
         ):
-            return await self._inner.execute_full_step(
-                filters, request, active_scope=active_scope, extra_params=extra_params
-            )
+            return await self._fetch_realtime(filters, request, active_scope, params)
         window = local_calendar_dates(window_start, request.time_range[1], self._cache.timezone)
         snapshot_calls = 0
         hit = await self._cache.read(filters.tenant_id, operation_id, params, window)
@@ -993,9 +992,7 @@ class ResultCacheExecutor:
                 _LOGGER.warning("v2_result.view_invalid", extra={"operation": operation_id})
             else:
                 if self._cache.mode.verifies:
-                    realtime = await self._inner.execute_full_step(
-                        filters, request, active_scope=active_scope, extra_params=extra_params
-                    )
+                    realtime = await self._fetch_realtime(filters, request, active_scope, params)
                     served = replace(
                         served,
                         shadow_result=realtime,
@@ -1004,15 +1001,137 @@ class ResultCacheExecutor:
                     )
                     self._remember_hit(served, filters, request, params, hit)
                 return served
-        realtime = await self._inner.execute_full_step(
-            filters, request, active_scope=active_scope, extra_params=extra_params
-        )
+        realtime = await self._fetch_realtime(filters, request, active_scope, params)
         await self._maybe_write(realtime, filters, request, params, window)
         if snapshot_calls:
             return replace(
                 realtime, source_call_count=snapshot_calls + _source_call_count(realtime)
             )
         return realtime
+
+    async def _fetch_realtime(
+        self,
+        filters: NarrowedFilters,
+        request: CacheableRequest,
+        active_scope: Any | None,
+        params: dict[str, Any],
+        *,
+        force_detail: bool = False,
+    ) -> ResourceFetchResult:
+        window_start = cast("datetime | None", request.time_range[0])
+        if not cacheable_grain(request.operation_id, params) or window_start is None:
+            return await self._inner.execute_full_step(
+                filters, request, active_scope=active_scope, extra_params=params or None
+            )
+        native_progress = (
+            not force_detail
+            and request.operation_id == PROGRESS_OPERATION
+            and self._native_progress_has_filters(filters, request, params)
+        )
+        fetch_params = params if native_progress else detail_params(params)
+        fetch_filters = filters
+        if request.operation_id == PROGRESS_OPERATION:
+            # Material IDs are a returned detail dimension; the V2 contract
+            # does not declare a material-ID request parameter.
+            fetch_filters = replace(fetch_filters, material_ids=None)
+            groupby = params.get("groupbyFields") or ()
+            if not native_progress and "baohao" in groupby:
+                # A package view's order slot carries sheet IDs. Default detail
+                # must not reinterpret those values as plan IDs.
+                fetch_filters = replace(fetch_filters, order_codes=None)
+                if filters.order_codes is not None and len(filters.order_codes) == 1:
+                    fetch_params["dh"] = next(iter(filters.order_codes))
+        fetched = await self._inner.execute_full_step(
+            fetch_filters,
+            request,
+            active_scope=active_scope,
+            extra_params=fetch_params or None,
+        )
+        if (
+            native_progress
+            and "dh" in (params.get("groupbyFields") or ())
+            and any(not row.get(PROGRESS_DATE_COLUMN) for row in fetched.rows)
+        ):
+            # A grouped response can omit the date even though default detail
+            # supplies it. Fetch detail once rather than infer a date from IDs.
+            detailed = await self._fetch_realtime(
+                filters, request, active_scope, params, force_detail=True
+            )
+            return replace(
+                detailed,
+                source_call_count=_source_call_count(fetched) + _source_call_count(detailed),
+            )
+        if native_progress:
+            # Preserve the customer's grouped calculation as an independent
+            # baseline. Filter retained dimensions without recomputing its sums.
+            rows = scope_filtered_rows(fetched.rows, request.operation_id, filters, request.role)
+            rows = _business_filtered_rows(rows, request.operation_id, filters, params)
+            if rows == fetched.rows:
+                return fetched
+            return replace(
+                fetched,
+                rows=tuple(dict(row) for row in rows),
+                total=len(rows),
+                footer=recomputed_footer(rows, fetched.footer),
+            )
+        window = local_calendar_dates(window_start, request.time_range[1], self._cache.timezone)
+        try:
+            rows = self._project_rows(fetched.rows, filters, request, params, window)
+        except (ProgressDerivationError, InvalidRequestError, InvalidOperation):
+            _LOGGER.warning(
+                "v2_result.realtime_view_invalid", extra={"operation": request.operation_id}
+            )
+            return replace(
+                fetched, rows=(), total=0, footer=None, complete=False, reason="upstream_invalid"
+            )
+        projected = replace(
+            fetched,
+            rows=tuple(dict(row) for row in rows),
+            total=len(rows),
+            footer=recomputed_footer(rows, fetched.footer),
+        )
+        # Validate the original source totals before a local projection changes
+        # their grain; otherwise a bad source footer could become a valid cache.
+        if fetched.complete and not footer_reconciles(
+            fetched.rows, fetched.footer, tolerance=self._cache.policy.float_tolerance
+        ):
+            return replace(projected, complete=False, reason="upstream_invalid")
+        if (
+            projected.rows == fetched.rows
+            and projected.total == fetched.total
+            and projected.footer == fetched.footer
+        ):
+            return fetched
+        return projected
+
+    @staticmethod
+    def _native_progress_has_filters(
+        filters: NarrowedFilters,
+        request: CacheableRequest,
+        params: dict[str, Any],
+    ) -> bool:
+        fields = params.get("groupbyFields") or ()
+        if not fields:
+            return True
+        needed: set[str] = set()
+        dept_ids = (
+            filters.requested_dept_ids
+            if request.role in (Role.OWNER, Role.EMPLOYEE)
+            else filters.dept_ids
+        )
+        if dept_ids is not None:
+            needed.add("dept")
+        if filters.employee_ids is not None:
+            needed.add("uid")
+        if filters.order_codes is not None:
+            needed.add("dh" if "baohao" in fields else "jhdh")
+        if filters.style_codes is not None:
+            needed.add("bbreed")
+        if filters.plan_codes is not None:
+            needed.add("jhdh")
+        if filters.material_ids is not None:
+            needed.add("userid")
+        return needed <= set(fields)
 
     async def _fetch_snapshot(
         self,
@@ -1081,8 +1200,30 @@ class ResultCacheExecutor:
         params: dict[str, Any],
         window: tuple[str, str],
     ) -> ResourceFetchResult:
+        rows = self._project_rows(hit.rows, filters, request, params, window)
+        return ResourceFetchResult(
+            rows=tuple(dict(row) for row in rows),
+            total=len(rows),
+            pages_fetched=0,
+            complete=True,
+            footer=recomputed_footer(rows, hit.footer),
+            cache_source=hit.source,
+            cache_generated_at=hit.generated_at,
+            source_call_count=hit.source_call_count,
+        )
+
+    @staticmethod
+    def _project_rows(
+        source_rows: tuple[Mapping[str, Any], ...],
+        filters: NarrowedFilters,
+        request: CacheableRequest,
+        params: dict[str, Any],
+        window: tuple[str, str],
+    ) -> tuple[Mapping[str, Any], ...]:
         operation_id = request.operation_id
-        detail = derive_progress_rows(hit.rows) if operation_id == PROGRESS_OPERATION else hit.rows
+        detail = (
+            derive_progress_rows(source_rows) if operation_id == PROGRESS_OPERATION else source_rows
+        )
         _validate_time_anchors(detail, operation_id, params)
         rows = local_view_rows(detail, operation_id, filters, params, window, request.role)
         raw_groupby = params.get("groupbyFields") or ()
@@ -1096,16 +1237,7 @@ class ResultCacheExecutor:
             rows = aggregate_progress_rows(rows, groupby)
         elif groupby:
             rows = _aggregate_payroll_rows(rows, groupby)
-        return ResourceFetchResult(
-            rows=tuple(dict(row) for row in rows),
-            total=len(rows),
-            pages_fetched=0,
-            complete=True,
-            footer=recomputed_footer(rows, hit.footer),
-            cache_source=hit.source,
-            cache_generated_at=hit.generated_at,
-            source_call_count=hit.source_call_count,
-        )
+        return rows
 
     def _remember_hit(
         self,
@@ -1215,7 +1347,7 @@ def _aggregate_payroll_rows(
 
 
 __all__ = [
-    "DERIVED_DH_DATE",
+    "PROGRESS_DATE_COLUMN",
     "NON_ADDITIVE_FOOTER_COLUMNS",
     "OWNER_SCOPE_SIGNATURE",
     "RESULT_CACHE_DOMAIN",
@@ -1229,7 +1361,6 @@ __all__ = [
     "cacheable_grain",
     "decode_result_set",
     "detail_params",
-    "derive_dh_date",
     "encode_result_set",
     "footer_reconciles",
     "local_view_rows",

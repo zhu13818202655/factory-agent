@@ -3,7 +3,7 @@
 # The progress dataset supplies active sheet counts through its reviewed grain.
 # The shared safe employee roster supplies registered headcount, including
 # employees without reported output. Per-capita output uses that headcount.
-version: 4
+version: 5
 capabilities:
   - capability_id: fr013_factory_output_dashboard
     title: 全厂产量总览
@@ -67,7 +67,7 @@ capabilities:
         source_step: compute
         metric: output_reported_qty
         column_type: quantity
-        unit: 件
+        unit: 件·工序
       - name: participant_count
         title: 参与人数
         source_step: compute
@@ -79,7 +79,7 @@ capabilities:
         source_step: compute
         metric: workshop_output_per_capita
         column_type: quantity
-        unit: 件/人
+        unit: 件·工序/人
     metric_versions:
       workshop_rank: factory-rank-v2
       output_reported_qty: customer-cl-v2
@@ -87,20 +87,20 @@ capabilities:
       workshop_output_per_capita: factory-per-capita-v1
     degradation: incomplete_marker
     aux_outputs:
-      # 全厂级单值 KPI：总产量 / 在产订单/ 人均月产。
+      # 全厂级单值 KPI：总产量 / 在产制单/ 人均月产。
       - aux_id: factory_kpi
         into: metrics
         depends_on: [fetch_cl, fetch_scjd, fetch_employee]
         metrics:
           - name: total_output
             title: 总产量
-            unit: 件
+            unit: 件·工序
           - name: active_orders
-            title: 在产订单
+            title: 在产制单
             unit: 单
           - name: per_capita_output
             title: 人均月产
-            unit: 件/人
+            unit: 件·工序/人
         compute: |
           WITH outputs AS (
             SELECT COALESCE(SUM(CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL)), 0)
@@ -114,6 +114,7 @@ capabilities:
                      SUM(CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL)) AS issued_qty,
                      SUM(CAST(COALESCE(TRY_CAST(sssl AS DECIMAL), 0) AS DECIMAL)) AS received_qty
               FROM fetch_scjd
+              WHERE TRIM(COALESCE(dh, '')) <> ''
               GROUP BY dh
             ) per_sheet
             WHERE per_sheet.received_qty < per_sheet.issued_qty
@@ -133,7 +134,7 @@ capabilities:
         into: chart
         depends_on: [fetch_cl]
         chart_type: bar
-        chart_unit: 件
+        chart_unit: 件·工序
         label_column: label
         value_column: value
         compute: |
@@ -157,5 +158,5 @@ capabilities:
             dept_ids: dept_id
       notes:
         - "「报工产量」是 Σ 报工数量，按工序累计：同一件衣服做 3 道工序就有 3 条报工，因此它是工序口径工作量，不是完工件数。"
-        - "「在产订单」是统计窗内实收数量尚未达到发卡数量（完成率不到 100%）的制单去重数；「人均月产」= 总产量 ÷ 在册人数。"
+        - "「在产制单」是统计窗内实收数量尚未达到发卡数量（完成率不到 100%）的制单去重数；「人均月产」= 总产量 ÷ 在册人数。"
         - "点击车间行可继续查看该车间按款号的产量明细。"

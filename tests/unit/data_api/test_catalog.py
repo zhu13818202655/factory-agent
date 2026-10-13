@@ -50,13 +50,13 @@ def test_unknown_operation_is_rejected_at_runtime() -> None:
 
 
 def test_scope_sourced_params_only_carry_data_scope_identifiers() -> None:
-    """``scope`` params may only originate from DataScope (uid/Uid), never filters."""
+    """Scope params originate from authorized employee or department values."""
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
     for operation_id in catalog.operation_ids:
         operation = catalog.get(operation_id)
         for parameter, source in operation.parameter_sources.items():
             if source == "scope":
-                assert parameter in {"uid", "Uid"}, (operation_id, parameter)
+                assert parameter in {"uid", "Uid", "dept"}, (operation_id, parameter)
             if source == "credential":
                 assert parameter in {"app_key", "timestamp", "sign"}, (operation_id, parameter)
 
@@ -68,6 +68,12 @@ def test_credential_sourced_params_are_never_filters_or_model_output() -> None:
         for parameter, source in operation.parameter_sources.items():
             if parameter in {"app_key", "timestamp", "sign"}:
                 assert source == "credential", (operation_id, parameter)
+
+
+def test_payroll_department_is_an_optional_scope_parameter() -> None:
+    operation = load_catalog(DEFAULT_CATALOG_PATH).get("GongziClQuery")
+    assert operation.parameter_sources["dept"] == "scope"
+    assert "dept" not in operation.required_params
 
 
 def test_catalog_operations_carry_no_wire_body_style() -> None:

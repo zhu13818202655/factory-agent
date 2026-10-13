@@ -119,6 +119,7 @@ class ResultColumn(BaseModel):
     metric: str | None = None
     column_type: ColumnType | None = None
     unit: str | None = None
+    aggregation: Literal["sum", "none"] = "sum"
 
 
 class CardAlertMarker(BaseModel):
@@ -134,7 +135,9 @@ class CardAlertMarker(BaseModel):
 #: request payload). They are business narrowing keys only; scope identifiers
 #: (employee/dept *scope* sets, tenant, user) are absent by design and are
 #: re-validated server-side on every drill round.
-ALLOWED_DRILL_SLOT_KEYS: frozenset[str] = frozenset({"dept_ids", "employee_uid"})
+ALLOWED_DRILL_SLOT_KEYS: frozenset[str] = frozenset(
+    {"dept_ids", "employee_uid", "order_codes", "style_codes", "plan_codes", "material_ids"}
+)
 
 
 class CardActionSpec(BaseModel):
@@ -149,12 +152,19 @@ class CardActionSpec(BaseModel):
     label: str
     capability_id: str
     bind_from: dict[str, str] = {}
+    clear_fields: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _clear_fields_are_business_fields(self) -> "CardActionSpec":
+        self.to_spec()
+        return self
 
     def to_spec(self) -> CardAction:
         return CardAction(
             label=self.label,
             capability_id=self.capability_id,
             bind_from=dict(self.bind_from),
+            clear_fields=self.clear_fields,
         )
 
 
@@ -166,21 +176,21 @@ class AuxMetric(BaseModel):
     name: str
     title: str
     unit: str | None = None
+    total_key: str | None = None
 
 
 class AuxOutput(BaseModel):
-    """A secondary compute output that feeds the card only (§4.2 of the plan).
+    """Reviewed compute output for charts, independent KPIs and order details.
 
-    Aux rows never enter the main result table or the export file; they carry
-    the chart series and the factory-level single-value KPIs the main table's
-    SUM-totals cannot express. Row count stays bounded: a chart longer than
-    ``MAX_CHART_DAY_POINTS`` is downsampled to weeks by the card builder.
+    Chart and KPI rows supplement the main result without entering its export.
+    Detail views retain complete rows for export and expose bounded card pages.
+    Long chart series are downsampled by the card builder.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     aux_id: str
-    into: Literal["chart", "metrics"]
+    into: Literal["chart", "metrics", "details"]
     compute: str
     depends_on: tuple[str, ...] = ()
     #: ``into=chart`` declaration (D4-1/D4-2 拍板).
@@ -190,6 +200,13 @@ class AuxOutput(BaseModel):
     value_column: str = "value"
     #: ``into=metrics`` declaration: one entry per KPI column of the output.
     metrics: tuple[AuxMetric, ...] = ()
+    title: str | None = None
+    columns: tuple[ResultColumn, ...] = ()
+    group_by: str | None = None
+    status_column: str | None = None
+    hidden_columns: tuple[str, ...] = ()
+    filter_bindings: dict[str, str] | None = None
+    actions: tuple[CardActionSpec, ...] = ()
 
 
 class CardSpec(BaseModel):
@@ -218,6 +235,7 @@ class CardSpec(BaseModel):
     #: column's meaning is not self-evident (e.g. a 件·工序 figure that must not
     #: be read as a piece count).
     notes: tuple[str, ...] = ()
+    hidden_columns: tuple[str, ...] = ()
 
     def to_table_spec(self) -> CardTableSpec:
         """Runtime projection for the ports-layer card builder."""
@@ -229,6 +247,7 @@ class CardSpec(BaseModel):
             preview_max_groups=self.preview_max_groups,
             group_by=self.group_by,
             group_name_from=self.group_name_from,
+            hidden_columns=self.hidden_columns,
             rank_column=self.rank_column,
             alert_marker=(
                 CardAlertSpec(column=self.alert_marker.column, equals=self.alert_marker.equals)
@@ -253,7 +272,7 @@ class CapabilityRecipe(BaseModel):
     metric_versions: dict[str, str]
     #: Optional front-end card declaration; absent = no card is emitted.
     card: CardSpec | None = None
-    #: Optional card-only auxiliary outputs (chart series / single-value KPIs).
+    #: Reviewed chart series, single-value KPIs and exportable detail views.
     aux_outputs: tuple[AuxOutput, ...] = ()
     degradation: Literal["incomplete_marker", "fail"] = "incomplete_marker"
     #: Optional footer reconciliation: ``{result_column: footer_field}``. The
@@ -356,13 +375,63 @@ def _validate_aux_outputs(recipe: CapabilityRecipe, api_step_ids: set[str]) -> N
                 )
         if not aux.compute.strip():
             raise InvalidRequestError(f"aux output {aux.aux_id} requires a compute rule")
+        for sql_param, filter_key in (aux.filter_bindings or {}).items():
+            if not _is_safe_identifier(sql_param) or filter_key not in BUSINESS_FILTER_KEYS:
+                raise InvalidRequestError(f"aux output {aux.aux_id} has an invalid filter binding")
         if aux.into == "chart":
             if aux.chart_unit is None:
                 raise InvalidRequestError(
                     f"aux output {aux.aux_id} declares a chart without chart_unit"
                 )
+        elif aux.into == "details":
+            names = tuple(column.name for column in aux.columns)
+            if not aux.title or not names or len(names) != len(set(names)):
+                raise InvalidRequestError(
+                    f"aux output {aux.aux_id} requires unique detail columns and title"
+                )
+            if aux.group_by not in names or aux.group_by not in {
+                column.name for column in recipe.result_columns
+            }:
+                raise InvalidRequestError(
+                    f"aux output {aux.aux_id} requires a shared result group key"
+                )
+            if aux.status_column is not None and aux.status_column not in names:
+                raise InvalidRequestError(f"aux output {aux.aux_id} has an unknown status column")
+            if not set(aux.hidden_columns) <= set(names):
+                raise InvalidRequestError(f"aux output {aux.aux_id} has unknown hidden columns")
+            for column in aux.columns:
+                if not _is_safe_identifier(column.name) or column.source_step not in {
+                    step.step_id for step in recipe.steps
+                }:
+                    raise InvalidRequestError(
+                        f"aux output {aux.aux_id} has an invalid detail source"
+                    )
+                if column.metric is not None and column.metric not in recipe.metric_versions:
+                    raise InvalidRequestError(f"aux output {aux.aux_id} has an unversioned metric")
+            for action in aux.actions:
+                if not _is_safe_identifier(action.capability_id):
+                    raise InvalidRequestError("detail action has an invalid capability")
+                if any(
+                    slot not in ALLOWED_DRILL_SLOT_KEYS or column not in names
+                    for slot, column in action.bind_from.items()
+                ):
+                    raise InvalidRequestError("detail action has an invalid business binding")
         elif not aux.metrics:
             raise InvalidRequestError(f"aux output {aux.aux_id} declares metrics without entries")
+        for metric in aux.metrics:
+            if metric.total_key is not None:
+                result_column = next(
+                    (column for column in recipe.result_columns if column.name == metric.total_key),
+                    None,
+                )
+                if (
+                    result_column is None
+                    or result_column.column_type not in CARD_METRIC_TYPES
+                    or result_column.aggregation != "none"
+                ):
+                    raise InvalidRequestError(
+                        f"aux output {aux.aux_id} has an invalid nonadditive total"
+                    )
 
 
 def _validate_card(recipe: CapabilityRecipe) -> None:
@@ -371,6 +440,8 @@ def _validate_card(recipe: CapabilityRecipe) -> None:
     if card is None:
         raise InvalidRequestError("card validation requires a card declaration")
     columns_by_name = {column.name: column for column in recipe.result_columns}
+    if not set(card.hidden_columns) <= set(columns_by_name):
+        raise InvalidRequestError("card has unknown hidden columns")
 
     references = (*card.metrics, *card.totals)
     if card.group_by is not None:
@@ -485,9 +556,11 @@ def load_recipes(
 def _validate_card_action_targets(recipes: dict[str, CapabilityRecipe]) -> None:
     """Every card drill action must target a registered capability recipe."""
     for recipe in recipes.values():
-        if recipe.card is None:
-            continue
-        for action in recipe.card.actions:
+        actions = (
+            *(recipe.card.actions if recipe.card else ()),
+            *(action for aux in recipe.aux_outputs for action in aux.actions),
+        )
+        for action in actions:
             if action.capability_id not in recipes:
                 raise InvalidRequestError(
                     f"card action of {recipe.capability_id} targets unregistered "

@@ -4,133 +4,277 @@
 # before loading. Local aggregation counts distinct participants and computes
 # each worktype share against the same plan's issued quantity fhsl.
 # Empty plan numbers share one group. Output uses piece-worktype units.
-version: 4
+version: 5
 capabilities:
   - capability_id: fr006_order_output
     title: 订单/款号产量
-    required_slots: [time_range]
+    required_slots:
+      - time_range
     steps:
       - step_id: fetch_cl
         kind: api
         operation_id: GongziClQuery
         params:
-          Flag: "0"
-          Type: "0,1,2"
+          Flag: '0'
+          Type: 0,1,2
       - step_id: fetch_scjd
         kind: api
         operation_id: ScjdQuery
-        depends_on: [fetch_cl]
+        depends_on:
+          - fetch_cl
         params:
-          groupbyFields: [dh, jhdh, chuanghao, huohao, bbreed, dept, deptname]
+          groupbyFields:
+            - dh
+            - jhdh
+            - chuanghao
+            - huohao
+            - bbreed
+            - dept
+            - deptname
       - step_id: compute
         kind: local
-        depends_on: [fetch_cl, fetch_scjd]
+        depends_on:
+          - fetch_cl
+          - fetch_scjd
         filter_bindings:
           order_codes: order_codes
           style_codes: style_codes
+          plan_codes: plan_codes
         compute: |
-          WITH order_codes AS (
-            SELECT unnest($order_codes) AS c
-          ),
-          style_codes AS (
-            SELECT unnest($style_codes) AS c
-          ),
+          WITH order_codes AS (SELECT unnest($order_codes) AS c),
+          style_codes AS (SELECT unnest($style_codes) AS c),
+          plan_codes AS (SELECT unnest($plan_codes) AS c),
           scoped AS (
-            SELECT * FROM fetch_cl
-            WHERE ((SELECT COUNT(*) FROM order_codes) = 0
-                   OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
-              AND ((SELECT COUNT(*) FROM style_codes) = 0
-                   OR COALESCE(huohao, '') IN (SELECT c FROM style_codes)
+            SELECT CASE WHEN TRIM(COALESCE(jhdh, '')) = '' THEN NULL ELSE jhdh END AS plan_code,
+              NULLIF(huohao, '') AS style_code, NULLIF(bbreed, '') AS style_name,
+              worktype AS worktype_code, COALESCE(NULLIF(wtname, ''), worktype) AS worktype,
+              uid, CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL) AS output_qty_num,
+              CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL) AS output_amount_num
+            FROM fetch_cl
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0 OR COALESCE(huohao, '') IN (SELECT c FROM style_codes)
                    OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes))
-          ),
-          -- 分母：同计划号 Σfhsl（发卡数量）。同样的槽位过滤保持与产量行集同范围，
-          -- 款号在进度侧匹配 bbreed/huohao 两个字段（与产量侧同法）。
-          issued AS (
-            SELECT
-              CASE WHEN COALESCE(jhdh, '') = '' THEN '未关联计划号' ELSE jhdh END
-                AS order_code,
-              SUM(CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL)) AS issued_qty
-            FROM fetch_scjd
-            WHERE ((SELECT COUNT(*) FROM order_codes) = 0
-                   OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
-              AND ((SELECT COUNT(*) FROM style_codes) = 0
-                   OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes)
-                   OR COALESCE(huohao, '') IN (SELECT c FROM style_codes))
-            GROUP BY 1
-          ),
-          agg AS (
-            SELECT
-              CASE WHEN COALESCE(jhdh, '') = '' THEN '未关联计划号' ELSE jhdh END
-                AS order_code,
-              COALESCE(NULLIF(huohao, ''), bbreed) AS style_code,
-              COALESCE(NULLIF(wtname, ''), worktype) AS worktype,
-              SUM(CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL)) AS output_qty_num,
-              SUM(CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL)) AS output_amount_num,
-              COUNT(DISTINCT CASE WHEN COALESCE(uid, '') <> '' THEN uid END)
-                AS participant_count
-            FROM scoped
-            GROUP BY 1, 2, 3
+          AND ((SELECT COUNT(*) FROM plan_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM plan_codes))
+          AND (NOT (SELECT filter_dept FROM _meta) OR dept IN (SELECT dept_id FROM _dept_scope))
+          AND ((SELECT order_view_kind FROM _meta) = ''
+               OR ((SELECT order_view_kind FROM _meta) = 'unlinked' AND TRIM(COALESCE(jhdh, '')) = '')
+               OR ((SELECT order_view_kind FROM _meta) = 'plan' AND jhdh = (SELECT order_view_plan FROM _meta)))
           )
-          SELECT
-            a.order_code,
-            a.style_code,
-            a.worktype,
-            CAST(a.output_qty_num AS VARCHAR) AS output_qty,
-            CAST(a.participant_count AS VARCHAR) AS participant_count,
-            CAST(a.output_amount_num AS VARCHAR) AS output_amount,
-            CASE WHEN COALESCE(i.issued_qty, 0) > 0
-                 THEN CAST(ROUND(a.output_qty_num / i.issued_qty * 100, 2) AS VARCHAR)
-                 ELSE 'unavailable' END AS output_share
-          FROM agg a
-          LEFT JOIN issued i ON i.order_code = a.order_code
-          ORDER BY a.output_qty_num DESC, a.order_code, a.worktype
+          SELECT COALESCE(plan_code, '未关联计划号') AS order_code,
+            plan_code, plan_code IS NULL AS plan_missing,
+            CAST(COUNT(DISTINCT (style_code, style_name)) FILTER (WHERE style_code IS NOT NULL OR style_name IS NOT NULL) AS VARCHAR) AS style_count,
+            CAST(SUM(output_qty_num) AS VARCHAR) AS output_qty,
+            CAST(COUNT(DISTINCT CASE WHEN TRIM(COALESCE(uid, '')) <> '' THEN uid END) AS VARCHAR) AS participant_count,
+            CAST(SUM(output_amount_num) AS VARCHAR) AS output_amount
+          FROM scoped GROUP BY plan_code
+          ORDER BY SUM(output_qty_num) DESC, plan_code NULLS LAST
     result_columns:
       - name: order_code
-        title: 订单号
+        title: 计划号
         source_step: compute
-      - name: style_code
-        title: 款号
+      - name: plan_code
+        title: 计划号标识
         source_step: compute
-      - name: worktype
-        title: 工序
+      - name: plan_missing
+        title: 未关联计划号
         source_step: compute
+      - name: style_count
+        title: 涉及款式
+        source_step: compute
+        metric: output_style_count
+        aggregation: none
+        column_type: quantity
+        unit: 款
       - name: output_qty
-        title: 报工产量
+        title: 报工工作量
         source_step: compute
         metric: output_reported_qty
         column_type: quantity
-        unit: 件
+        unit: 件·工序
       - name: participant_count
         title: 参与人数
         source_step: compute
         metric: output_participant_count
         column_type: quantity
         unit: 人
+        aggregation: none
       - name: output_amount
         title: 报工金额
         source_step: compute
         metric: output_reported_amount
         column_type: money
         unit: 元
-      - name: output_share
-        title: 工序占比
-        source_step: compute
-        metric: output_worktype_share
-        column_type: percent
-        unit: "%"
     metric_versions:
       output_reported_qty: customer-cl-v2
       output_participant_count: factory-participant-v1
       output_reported_amount: customer-cl-v2
       output_worktype_share: factory-output-share-v2
+      output_style_count: factory-output-style-v1
     degradation: incomplete_marker
     card:
       kind: table
-      metrics: [output_qty, output_amount]
+      metrics:
+        - output_qty
+        - output_amount
       preview_max_rows: 10
       notes:
-        - "「报工产量」是工序口径工作量（同一件衣服做 3 道工序就有 3 条报工），**不是完工件数**；卡片上的合计数同样是件·工序口径，不要当成做了多少件衣服。"
-        - "「参与人数」是该订单×款号×工序下报工的去重人数，同一人在多道工序会分别计入。"
-        - "「工序占比」= 该工序报工产量 ÷ 该订单发卡数量（同一计划号 Σ发卡），用于看哪道工序是瓶颈；它按订单各自的分母计算，不是全厂占比。"
-        - "「订单号」取自计划号（jhdh）；未关联计划号的报工统一归入「未关联计划号」一组展示，不丢弃。"
-        - "裁剪数量与包完工率在「订单/款号进度」里给（同一时间区间），本表不重复输出。"
+        - 报工工作量为件·工序口径，同一件衣服多道工序分别累计，不能解释为衣服完工件数。
+        - 主表按计划号汇总；空计划号统一归入「未关联计划号」，展开后查看款式与工序明细。
+        - 主卡参与人数按整个查询范围独立去重；组内人数按该计划号去重，跨组人数不能相加。
+        - 款式显示使用数据中的业务款名，内部编码单独提供；不从提问文本推断二者对应关系。
+        - 员工筛选只统计该员工的报工；全订单发卡分母无法确认时工序占比不可用。
+        - 工序占比 = 该工序报工工作量 ÷ 同计划号的发卡合计；没有可比发卡数据时显示不可用。
+        - 工资按报工日期、进度按制单创建日期筛选；同一月份的发卡分母未必覆盖全部报工。
+      hidden_columns:
+        - plan_code
+        - plan_missing
+    aux_outputs:
+      - aux_id: participants
+        into: metrics
+        depends_on:
+          - fetch_cl
+        filter_bindings:
+          order_codes: order_codes
+          style_codes: style_codes
+          plan_codes: plan_codes
+        metrics:
+          - name: participant_count
+            title: 参与人数
+            unit: 人
+            total_key: participant_count
+        compute: |
+          WITH order_codes AS (SELECT unnest($order_codes) AS c),
+          style_codes AS (SELECT unnest($style_codes) AS c),
+          plan_codes AS (SELECT unnest($plan_codes) AS c),
+          scoped AS (
+            SELECT CASE WHEN TRIM(COALESCE(jhdh, '')) = '' THEN NULL ELSE jhdh END AS plan_code,
+              NULLIF(huohao, '') AS style_code, NULLIF(bbreed, '') AS style_name,
+              worktype AS worktype_code, COALESCE(NULLIF(wtname, ''), worktype) AS worktype,
+              uid, CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL) AS output_qty_num,
+              CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL) AS output_amount_num
+            FROM fetch_cl
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0 OR COALESCE(huohao, '') IN (SELECT c FROM style_codes)
+                   OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes))
+          AND ((SELECT COUNT(*) FROM plan_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM plan_codes))
+          AND (NOT (SELECT filter_dept FROM _meta) OR dept IN (SELECT dept_id FROM _dept_scope))
+          AND ((SELECT order_view_kind FROM _meta) = ''
+               OR ((SELECT order_view_kind FROM _meta) = 'unlinked' AND TRIM(COALESCE(jhdh, '')) = '')
+               OR ((SELECT order_view_kind FROM _meta) = 'plan' AND jhdh = (SELECT order_view_plan FROM _meta)))
+          )
+          SELECT CAST(COUNT(DISTINCT CASE WHEN TRIM(COALESCE(uid, '')) <> '' THEN uid END) AS VARCHAR) AS participant_count
+          FROM scoped
+      - aux_id: worktype_details
+        into: details
+        title: 工序报工明细
+        group_by: plan_code
+        hidden_columns:
+          - plan_code
+          - plan_missing
+          - style_name
+          - worktype_code
+        depends_on:
+          - fetch_cl
+          - fetch_scjd
+        filter_bindings:
+          order_codes: order_codes
+          style_codes: style_codes
+          plan_codes: plan_codes
+        columns:
+          - name: plan_code
+            title: 计划号标识
+            source_step: fetch_cl
+          - name: plan_missing
+            title: 未关联计划号
+            source_step: fetch_cl
+          - name: style_code
+            title: 款式编码
+            source_step: fetch_cl
+          - name: style_name
+            title: 款号
+            source_step: fetch_cl
+          - name: style_label
+            title: 款式
+            source_step: fetch_cl
+          - name: worktype_code
+            title: 工序编码
+            source_step: fetch_cl
+          - name: worktype
+            title: 工序
+            source_step: fetch_cl
+          - name: output_qty
+            title: 报工工作量
+            source_step: fetch_cl
+            metric: output_reported_qty
+            column_type: quantity
+            unit: 件·工序
+          - name: participant_count
+            title: 参与人数
+            source_step: fetch_cl
+            metric: output_participant_count
+            column_type: quantity
+            unit: 人
+            aggregation: none
+          - name: output_amount
+            title: 报工金额
+            source_step: fetch_cl
+            metric: output_reported_amount
+            column_type: money
+            unit: 元
+          - name: output_share
+            title: 工序占比
+            source_step: compute
+            metric: output_worktype_share
+            column_type: percent
+            unit: '%'
+        compute: |
+          WITH order_codes AS (SELECT unnest($order_codes) AS c),
+          style_codes AS (SELECT unnest($style_codes) AS c),
+          plan_codes AS (SELECT unnest($plan_codes) AS c),
+          scoped AS (
+            SELECT CASE WHEN TRIM(COALESCE(jhdh, '')) = '' THEN NULL ELSE jhdh END AS plan_code,
+              NULLIF(huohao, '') AS style_code, NULLIF(bbreed, '') AS style_name,
+              worktype AS worktype_code, COALESCE(NULLIF(wtname, ''), worktype) AS worktype,
+              uid, CAST(COALESCE(TRY_CAST(sl AS DECIMAL), 0) AS DECIMAL) AS output_qty_num,
+              CAST(COALESCE(TRY_CAST(je AS DECIMAL), 0) AS DECIMAL) AS output_amount_num
+            FROM fetch_cl
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0 OR COALESCE(huohao, '') IN (SELECT c FROM style_codes)
+                   OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes))
+          AND ((SELECT COUNT(*) FROM plan_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM plan_codes))
+          AND (NOT (SELECT filter_dept FROM _meta) OR dept IN (SELECT dept_id FROM _dept_scope))
+          AND ((SELECT order_view_kind FROM _meta) = ''
+               OR ((SELECT order_view_kind FROM _meta) = 'unlinked' AND TRIM(COALESCE(jhdh, '')) = '')
+               OR ((SELECT order_view_kind FROM _meta) = 'plan' AND jhdh = (SELECT order_view_plan FROM _meta)))
+          )
+          , issued AS (
+            SELECT CASE WHEN TRIM(COALESCE(jhdh, '')) = '' THEN NULL ELSE jhdh END AS plan_code,
+              SUM(CAST(COALESCE(TRY_CAST(fhsl AS DECIMAL), 0) AS DECIMAL)) AS issued_qty
+            FROM fetch_scjd
+            WHERE ((SELECT COUNT(*) FROM order_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM order_codes))
+              AND ((SELECT COUNT(*) FROM style_codes) = 0 OR COALESCE(huohao, '') IN (SELECT c FROM style_codes)
+                   OR COALESCE(bbreed, '') IN (SELECT c FROM style_codes))
+          AND ((SELECT COUNT(*) FROM plan_codes) = 0 OR COALESCE(jhdh, '') IN (SELECT c FROM plan_codes))
+          AND (NOT (SELECT filter_dept FROM _meta) OR dept IN (SELECT dept_id FROM _dept_scope))
+          AND ((SELECT order_view_kind FROM _meta) = ''
+               OR ((SELECT order_view_kind FROM _meta) = 'unlinked' AND TRIM(COALESCE(jhdh, '')) = '')
+               OR ((SELECT order_view_kind FROM _meta) = 'plan' AND jhdh = (SELECT order_view_plan FROM _meta)))
+            GROUP BY 1
+          ),
+          agg AS (
+            SELECT plan_code, style_code, style_name, worktype_code, worktype,
+              SUM(output_qty_num) AS output_qty_num,
+              COUNT(DISTINCT CASE WHEN TRIM(COALESCE(uid, '')) <> '' THEN uid END) AS participant_count,
+              SUM(output_amount_num) AS output_amount_num
+            FROM scoped GROUP BY plan_code, style_code, style_name, worktype_code, worktype
+          )
+          SELECT a.plan_code, a.plan_code IS NULL AS plan_missing,
+            a.style_code, a.style_name, COALESCE(a.style_name, a.style_code, '款式待确认') AS style_label,
+            a.worktype_code, a.worktype, CAST(a.output_qty_num AS VARCHAR) AS output_qty,
+            CAST(a.participant_count AS VARCHAR) AS participant_count, CAST(a.output_amount_num AS VARCHAR) AS output_amount,
+            CASE WHEN (SELECT filter_employee FROM _meta) THEN 'unavailable'
+                 WHEN i.issued_qty > 0 THEN CAST(ROUND(a.output_qty_num / i.issued_qty * 100, 2) AS VARCHAR)
+                 ELSE 'unavailable' END AS output_share
+          FROM agg a LEFT JOIN issued i ON i.plan_code IS NOT DISTINCT FROM a.plan_code
+          ORDER BY a.plan_code NULLS LAST, a.style_name NULLS LAST, a.style_code NULLS LAST,
+            a.output_qty_num DESC, a.worktype_code, a.worktype

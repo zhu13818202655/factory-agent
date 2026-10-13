@@ -7,6 +7,7 @@ from factory_agent.data_api.progress_detail import (
     ProgressDerivationError,
     aggregate_progress_rows,
     derive_progress_rows,
+    normalize_progress_date,
 )
 
 M7 = ("dh", "jhdh", "chuanghao", "huohao", "bbreed", "dept", "deptname")
@@ -17,6 +18,7 @@ WORKTYPE = ("userid", "uid", "uname", "dept", "deptname", "worktype", "wtname", 
 def detail(**changes: object) -> dict[str, object]:
     row: dict[str, object] = {
         "dh": "202607010001",
+        "rq": "2026-07-01",
         "jhdh": "PLAN-A",
         "chuanghao": "BED-A",
         "huohao": "STYLE-A",
@@ -45,23 +47,71 @@ def detail(**changes: object) -> dict[str, object]:
     return row
 
 
-def test_default_detail_derives_calendar_date_without_mutating_input() -> None:
-    row = detail(dh="202402290001", dept=None, deptname=None, uid=None, uname=None, wgs="0")
+def test_default_detail_normalizes_explicit_date_without_mutating_input_or_using_sheet_id() -> None:
+    row = detail(
+        dh="NON-DATE-SHEET",
+        rq="2024-02-29T12:30:00+08:00",
+        dept=None,
+        deptname=None,
+        uid=None,
+        uname=None,
+        wgs="0",
+    )
 
     rows = aggregate_progress_rows((row,), ())
 
-    assert rows[0]["dh_date"] == "2024-02-29"
+    assert rows[0]["rq"] == "2024-02-29"
+    assert rows[0]["dh"] == "NON-DATE-SHEET"
     assert rows[0]["dept"] == rows[0]["uid"] == ""
     assert rows[0]["wgs"] == "0"
-    assert "dh_date" not in row
+    assert row["rq"] == "2024-02-29T12:30:00+08:00"
+    assert "dh_date" not in rows[0]
 
 
-@pytest.mark.parametrize("sheet_id", [None, "", "20260230001", "2026-07-01", "２０２６０７０１"])
-def test_invalid_sheet_date_rejects_whole_set_without_exposing_values(sheet_id: object) -> None:
-    with pytest.raises(ProgressDerivationError, match="invalid_sheet_date") as caught:
-        derive_progress_rows((detail(), detail(dh=sheet_id)))
+@pytest.mark.parametrize(
+    "progress_date",
+    [
+        None,
+        "",
+        "2026-02-30",
+        "20260701",
+        "２０２６-０７-０１",
+        "DATE-CANARY",
+        "2026-07-01T99:00:00",
+    ],
+)
+def test_invalid_progress_date_rejects_whole_set_without_sheet_fallback(
+    progress_date: object,
+) -> None:
+    with pytest.raises(ProgressDerivationError, match="invalid_progress_date") as caught:
+        derive_progress_rows((detail(), detail(dh="202607010001", rq=progress_date)))
 
-    assert str(caught.value) == "progress detail derivation failed: invalid_sheet_date"
+    assert str(caught.value) == "progress detail derivation failed: invalid_progress_date"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("2026-07-01", "2026-07-01"),
+        ("2026-07-01T23:30:00+00:00", "2026-07-01"),
+        ("2026-07-01 12:30:00", "2026-07-01"),
+        ("2024-02-29T00:00:00Z", "2024-02-29"),
+    ],
+)
+def test_progress_date_uses_its_business_calendar_day(value: str, expected: str) -> None:
+    assert normalize_progress_date(value) == expected
+
+
+def test_default_detail_discards_legacy_sheet_date_and_never_uses_it_as_fallback() -> None:
+    result = derive_progress_rows(
+        (detail(dh="202601010001", rq="2026-07-08", dh_date="2026-01-01"),)
+    )
+    assert result[0]["rq"] == "2026-07-08"
+    assert "dh_date" not in result[0]
+    row = detail()
+    row.pop("rq")
+    with pytest.raises(ProgressDerivationError, match="invalid_progress_date"):
+        derive_progress_rows((row,))
 
 
 def test_m7_sums_customer_contributions_across_material_worktype_and_employee_rows() -> None:
@@ -77,6 +127,7 @@ def test_m7_sums_customer_contributions_across_material_worktype_and_employee_ro
     assert len(result) == 1
     assert result[0] == {
         "dh": "202607010001",
+        "rq": "2026-07-01",
         "jhdh": "PLAN-A",
         "chuanghao": "BED-A",
         "huohao": "STYLE-A",
@@ -110,6 +161,13 @@ def test_package_grain_keeps_materials_separate_and_recomputes_weighted_ratio() 
     assert by_material["MATERIAL-A"]["wts"] == "4"
     assert by_material["MATERIAL-B"]["wcl"] == "33.33"
     assert all("dh_date" not in row for row in result)
+    assert all(row["rq"] == "2026-07-01" for row in result)
+
+
+def test_same_sheet_cannot_select_a_date_when_source_dates_conflict() -> None:
+    for fields in (M7, PACKAGE):
+        with pytest.raises(ProgressDerivationError, match="inconsistent_progress_date"):
+            aggregate_progress_rows((detail(), detail(rq="2026-07-02")), fields)
 
 
 def test_worktype_grain_retains_scanned_and_unscanned_workers() -> None:

@@ -123,7 +123,7 @@ async def test_run_once_fetches_both_plans_and_writes():
     cache = FakeResultCache()
     rows: dict[str, tuple[dict[str, object], ...]] = {
         "GongziClQuery": ({"inputdate": "2026-07-01 10:00:00"},),
-        "ScjdQuery": ({"dh": "20260701001"},),
+        "ScjdQuery": ({"dh": "20260701001", "rq": "2026-07-01"},),
     }
     calls: list[str] = []
 
@@ -186,7 +186,11 @@ async def test_run_once_isolates_plan_failure_and_alerts():
         if operation_id == "GongziClQuery":
             raise RuntimeError("mes down")
         return ResourceFetchResult(
-            rows=({"dh": "20260701001"},), total=1, pages_fetched=1, complete=True, footer=None
+            rows=({"dh": "SHEET-SYNTHETIC", "rq": "2026-07-08"},),
+            total=1,
+            pages_fetched=1,
+            complete=True,
+            footer=None,
         )
 
     worker = make_worker(
@@ -231,7 +235,11 @@ async def test_run_once_alerts_when_rows_cannot_be_written():
         operation_id: str, window: tuple[str, str], extra_params: Mapping[str, Any]
     ) -> ResourceFetchResult:
         return ResourceFetchResult(
-            rows=({"dh": "20260701001"},), total=1, pages_fetched=1, complete=True, footer=None
+            rows=({"dh": "SHEET-SYNTHETIC", "rq": "2026-07-08"},),
+            total=1,
+            pages_fetched=1,
+            complete=True,
+            footer=None,
         )
 
     worker = make_worker(
@@ -282,7 +290,11 @@ async def test_warmup_runs_once_then_enters_forever(monkeypatch: pytest.MonkeyPa
         operation_id: str, window: tuple[str, str], extra_params: Mapping[str, Any]
     ) -> ResourceFetchResult:
         return ResourceFetchResult(
-            rows=({"dh": "20260701001"},), total=1, pages_fetched=1, complete=True, footer=None
+            rows=({"dh": "SHEET-SYNTHETIC", "rq": "2026-07-08"},),
+            total=1,
+            pages_fetched=1,
+            complete=True,
+            footer=None,
         )
 
     worker = make_worker(
