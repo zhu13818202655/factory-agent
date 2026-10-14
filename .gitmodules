@@ -2,3 +2,7 @@
 	path = frontend
 	url = git@codeup.aliyun.com:junerda/ai-fczs/ai-management-font.git
 	branch = master
+[submodule "frontend-h5"]
+	path = frontend-h5
+	url = git@codeup.aliyun.com:junerda/ai-fczs/ai-assistant-h5.git
+	branch = master

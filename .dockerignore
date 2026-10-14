@@ -9,3 +9,14 @@ data
 docs
 tests
 .env
+
+# 前端子模块：node_modules 与各构建产物在镜像 builder 阶段内重新安装/构建，
+# 既不参与 agent-api 镜像，也不参与 deploy/docker/web.Dockerfile 的 COPY 层。
+frontend/node_modules
+frontend/dist
+frontend/dist-widget
+frontend-h5/node_modules
+frontend-h5/dist
+# H5 子模块发版包/历史 release 产物（体积大，只进不了镜像）
+frontend-h5/deploy/packages
+frontend-h5/deploy/releases

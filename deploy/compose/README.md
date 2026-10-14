@@ -8,6 +8,38 @@ This directory has two development entry points:
   application service.
 - `middleware.yaml` runs PostgreSQL 16, Redis 7, and SeaweedFS for host-based debugging or for the
   application code you start outside Docker.
+- `assistant-web` builds and serves the two frontend submodules (`frontend` Web assistant and
+  `frontend-h5` H5 assistant) as one Caddy site, and comes in two opt-in compose profiles that
+  share the same image (`deploy/docker/web.Dockerfile`, repository root as build context because
+  the Dockerfile copies both submodule trees):
+  - `--profile web-domain` (`assistant-web-domain`): self-managed domain `hz.jundadt.com.cn`.
+    Caddy issues certificates automatically via alidns DNS-01; the Alibaba Cloud RAM credentials
+    (`ALIYUN_ACCESS_KEY_ID` / `ALIYUN_ACCESS_KEY_SECRET`, DNS-edit permission only) come from
+    `.env`, and ports 80/443 are published (`HTTP_PORT` / `HTTPS_PORT`).
+  - `--profile web-srv-network` (`assistant-web-srv`): the container joins the external
+    `docker network create srv-domain` network and serves plain HTTP on port 80 to whatever
+    reverse proxy already lives there (caddy, nginx, or traefik — this project does not care
+    which). No host ports are published; the `default` network is kept so it can still reach
+    `agent-api`.
+  Without a profile, the web services stay stopped and the local dev stack is unaffected.
+
+  The two Caddy configs differ only in the site address/TLS block; routing is identical:
+  `/` serves the Web assistant, `/h5/` serves the H5 assistant, and `/v1/*` is reverse
+  proxied verbatim to the backend — both frontends now share one convention: production
+  `VITE_API_BASE_URL` is empty, so all API calls are same-origin `/v1/...` (never strip
+  that prefix, or the backend 404s). SPA fallbacks rewrite to `index.html`. `BACKEND_URL`
+  selects the backend (defaults to `http://agent-api:8000` inside compose; set an external
+  address in `.env` otherwise). The runtime profile is chosen by the `WEB_PROFILE` env var
+  (`domain` | `srv-network`), which selects between the two baked-in Caddyfiles.
+
+  The real `.env.*` files are git-ignored in both frontend submodules, so the Dockerfile copies
+  `.env.example` to `.env.production` during the build (frontend's tier defaults are also
+  built into `vite.config.ts`, so the copy is belt-and-suspenders; for `frontend-h5` the copy
+  additionally blanks `VITE_API_BASE_URL` so production calls same-origin `/v1/`).
+
+  Build acceleration uses China mirrors throughout: `REGISTRY` (default `gh-proxy.org/docker`)
+  and `NPM_REGISTRY` (default `https://registry.npmmirror.com`) build args, plus
+  `GOPROXY=https://goproxy.cn,direct` for the Caddy `alidns` plugin build.
 
 Use the helper scripts from this directory:
 

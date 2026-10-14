@@ -1,24 +1,61 @@
 name: factory-agent
 
+x-assistant-web-build: &assistant-web-build
+  # context 必须是仓库根目录：Dockerfile 要分别 COPY frontend/ 与 frontend-h5/
+  # 两个子模块。构建加速（国内源）：
+  #   docker compose build assistant-web-domain
+  #   或：docker build -f deploy/docker/web.Dockerfile \
+  #         --build-arg REGISTRY=docker.io \
+  #         --build-arg NPM_REGISTRY=https://registry.npmjs.org .
+  context: ../..
+  dockerfile: deploy/docker/web.Dockerfile
+
 services:
-  assistant-web:
+  # ---- 前端站点 profile 1：web-domain ---------------------------------------
+  # 自管域名 hz.jundadt.com.cn：Caddy 经 alidns DNS-01 自动签发证书，
+  # 对外直接暴露 80/443。需要 .env 提供阿里云 DNS 凭据。
+  assistant-web-domain:
+    profiles: ["web-domain"]
+    build: *assistant-web-build
     image: mes-ai-assistant:latest
-    container_name: mes-ai-assistant
+    container_name: mes-ai-assistant-domain
     restart: unless-stopped
     ports:
-      # 宿主端口可通过 .env 里的 HTTP_PORT 调整，容器内固定 80
+      # 宿主端口可通过 .env 里的 HTTP_PORT / HTTPS_PORT 调整，容器内固定 80/443
       - "${HTTP_PORT:-31080}:80"
+      - "${HTTPS_PORT:-31443}:443"
     environment:
-      # 监听地址：:80 内网 http；改成域名时记得去掉 Caddyfile 中的 auto_https off
-      SITE_ADDR: ":80"
-      # 智能体后端地址（容器内可直连的地址）
-      BACKEND_URL: "${BACKEND_URL:-http://127.0.0.1:31000}"
+      WEB_PROFILE: domain
+      # alidns DNS-01 自动签发 hz.jundadt.com.cn 的证书（Caddyfile tls 块引用）。
+      # 用阿里云 RAM 子账号，仅授权 AliyunDNSFullAccess；留空时 Caddy 签不了证书。
+      ALIYUN_ACCESS_KEY_ID: ${ALIYUN_ACCESS_KEY_ID:-}
+      ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET:-}
+      # 智能体后端地址。compose 内部默认走服务名 http://agent-api:8000；
+      # 后端不在本 compose 时填外部地址（如 http://117.184.148.14:31000）。
+      BACKEND_URL: ${BACKEND_URL:-http://agent-api:8000}
+
+  # ---- 前端站点 profile 2：web-srv-network ----------------------------------
+  # 接入既有反向代理：加入外部 docker 网络 srv-domain，由该网络里的
+  # caddy / nginx / traefik（任选，本项目不感知）终结 TLS 后转发到本容器 :80。
+  # 不发布宿主端口；default 网络保留，用于访问本 compose 的 agent-api。
+  assistant-web-srv:
+    profiles: ["web-srv-network"]
+    build: *assistant-web-build
+    image: mes-ai-assistant:latest
+    container_name: mes-ai-assistant-srv
+    restart: unless-stopped
+    networks:
+      - default
+      - srv-domain
+    environment:
+      WEB_PROFILE: srv-network
+      BACKEND_URL: ${BACKEND_URL:-http://agent-api:8000}
 
   agent-api:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    image: factory-agent:dev
+    # build:
+    #   context: ../..
+    #   dockerfile: Dockerfile
+    image: factory-agent:for-test
     # `.env` is injected wholesale, so tuning a knob (for example
     # FACTORY_AGENT_MES_TIMEOUT_SECONDS) is a one-line edit to that file and
     # needs no change here. Compose also reads the same file for the `${...}`
@@ -183,6 +220,12 @@ services:
     # No depends_on edge from agent-api: a down object store degrades exports
     # (fail-closed) but must never block the assistant from starting.
     restart: unless-stopped
+
+networks:
+  # 既有的反向代理（caddy / nginx / traefik）所在的共享网络；需先在宿主创建：
+  #   docker network create srv-domain
+  srv-domain:
+    external: true
 
 volumes:
   postgres-data:

@@ -59,3 +59,15 @@ Both surfaces expose `GET /health/live` and `GET /health/ready` from the same ap
 For container-based local debugging, start PostgreSQL and Redis with `make middleware-up`, then
 start the complete application stack with `make compose-up`. See
 [deploy/compose/README.md](deploy/compose/README.md) for ports, databases, and cleanup commands.
+
+## Submodules
+
+`frontend/` and `frontend-h5/` are third-party Git submodules owned by other teams. This
+repository only pins a commit pointer for each. After a fresh clone, initialise them with
+`git submodule update --init --recursive`. When an upstream frontend changes, update the pointer:
+
+```bash
+git submodule update --remote frontend      # or: frontend-h5
+git add frontend                            # or: frontend-h5
+git commit -m "chore: bump frontend submodule to latest"
+```
