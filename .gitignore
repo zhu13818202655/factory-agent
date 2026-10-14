@@ -16,6 +16,10 @@ dist/
 # Anchored: only the repository-root runtime output directory, never fixtures
 # such as tests/data/.
 /data/
+# Remote middleware bind mounts, relative to deploy/compose/middleware.remote.yaml.
+/deploy/compose/postgres-data/
+/deploy/compose/redis-data/
+/deploy/compose/seaweedfs-data/
 .cache/
 
 # agent memory
