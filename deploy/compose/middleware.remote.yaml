@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres_dev
     ports:
-      - "0.0.0.0:3432:5432"
+      - "0.0.0.0:32511:5432"
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
       - type: bind
@@ -40,7 +40,7 @@ services:
       - --requirepass
       - factory_agent_dev
     ports:
-      - "0.0.0.0:3379:6379"
+      - "0.0.0.0:32512:6379"
     volumes:
       - ./redis-data:/data
     healthcheck:
@@ -61,7 +61,7 @@ services:
       AWS_SECRET_ACCESS_KEY: factory_agent_dev
       S3_BUCKET: factory-agent-exports,factory-agent-statistics-exports
     ports:
-      - "0.0.0.0:8333:8333"
+      - "0.0.0.0:32513:8333"
     volumes:
       - ./seaweedfs-data:/data
     healthcheck:
