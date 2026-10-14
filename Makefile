@@ -18,11 +18,29 @@ REVISION ?= head
 LOAD_ENV := if [ -f "$(ENV_FILE)" ]; then set -a; . "./$(ENV_FILE)"; set +a; \
 	else echo "warning: $(ENV_FILE) not found, using the ambient environment" >&2; fi
 
+# Role/question batch client. These targets use the configured remote middleware.
+QA_CSV ?= tests/data/qa_questions.csv
+QA_ENV_FILE ?= .env
+QA_HOST ?= 127.0.0.1
+QA_PORT ?= 8080
+QA_BASE_URL ?= http://$(QA_HOST):$(QA_PORT)
+QA_REPEAT ?= 1
+QA_TIMEOUT ?= 360
+QA_LIMIT ?=
+QA_ROLES ?=
+QA_OUTPUT_DIR ?=
+QA_ARGS = --csv "$(QA_CSV)" --env-file "$(QA_ENV_FILE)" \
+	--base-url "$(QA_BASE_URL)" --repeat $(QA_REPEAT) --timeout $(QA_TIMEOUT) \
+	$(if $(QA_LIMIT),--limit $(QA_LIMIT)) \
+	$(if $(QA_ROLES),--roles $(QA_ROLES)) \
+	$(if $(QA_OUTPUT_DIR),--output-dir "$(QA_OUTPUT_DIR)")
+
 .DEFAULT_GOAL := help
 
 .PHONY: help bootstrap lint typecheck test-unit test-integration
 .PHONY: test-e2e security check dev pre-commit compose-config compose-up compose-down compose-reset middleware-up middleware-down middleware-reset
 .PHONY: migrate migrate-status pg-grants build-images test-images
+.PHONY: qa qa-check qa-api qa-migrate
 
 help:
 	@printf '%s\n' \
@@ -40,7 +58,12 @@ help:
 		'make pg-grants         Repair schema grants on a legacy PostgreSQL volume' \
 		'make build-images      Build all application images' \
 		'make test-images       Run image health and non-root checks' \
-		'make dev               Run factory-agent locally'
+		'make dev               Run factory-agent locally' \
+		'make qa-check          Check role/question CSV and credentials offline' \
+		'make qa-migrate        Migrate the configured database, loading .env' \
+		'make qa-api            Start the local API with .env for question testing' \
+		'make qa                Run the role/question CSV against the API' \
+		'make qa QA_REPEAT=2    Run two rounds for cache comparison'
 
 bootstrap:
 	$(UV) sync --group dev
@@ -139,3 +162,15 @@ test-images:
 
 dev:
 	$(RUN) factory-agent
+
+qa-check:
+	$(RUN) python scripts/run_qa_batch.py $(QA_ARGS) --dry-run
+
+qa-migrate:
+	$(RUN) --env-file "$(QA_ENV_FILE)" factory-agent-migrate upgrade head
+
+qa-api:
+	$(RUN) --env-file "$(QA_ENV_FILE)" factory-agent --host "$(QA_HOST)" --port $(QA_PORT)
+
+qa:
+	$(RUN) python scripts/run_qa_batch.py $(QA_ARGS)

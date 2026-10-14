@@ -108,30 +108,31 @@ Stopping with `down` preserves these directories.
 
 | Service | Remote host port | Fixed test credentials |
 |---|---|---|
-| PostgreSQL application database | `3432` | database/user `factory_agent`, password `factory_agent_dev` |
-| PostgreSQL administrator | `3432` | user `postgres`, password `postgres_dev` |
-| Redis | `3379` | password `factory_agent_dev`, database `0` |
-| SeaweedFS S3 | `8333` | access key `factory_agent`, secret key `factory_agent_dev` |
+| PostgreSQL application database | `32511` | database/user `factory_agent`, password `factory_agent_dev` |
+| PostgreSQL administrator | `32511` | user `postgres`, password `postgres_dev` |
+| Redis | `32512` | password `factory_agent_dev`, database `0` |
+| SeaweedFS S3 | `32513` | access key `factory_agent`, secret key `factory_agent_dev` |
 
 These are development credentials. All three ports bind to `0.0.0.0` for remote test clients;
 restrict server firewall access to those clients. From the local application, use these settings,
 replacing `REMOTE_SERVER_IP` with the server address:
 
 ```text
-FACTORY_AGENT_POSTGRES_URL=postgresql://factory_agent:factory_agent_dev@REMOTE_SERVER_IP:3432/factory_agent
-FACTORY_AGENT_REDIS_URL=redis://:factory_agent_dev@REMOTE_SERVER_IP:3379/0
+FACTORY_AGENT_POSTGRES_URL=postgresql://factory_agent:factory_agent_dev@REMOTE_SERVER_IP:32511/factory_agent
+FACTORY_AGENT_REDIS_URL=redis://:factory_agent_dev@REMOTE_SERVER_IP:32512/0
 ```
 
 For remote export storage, set both `FACTORY_AGENT_S3_ENDPOINT_URL` and
-`FACTORY_AGENT_STATISTICS_S3_ENDPOINT_URL` to `http://REMOTE_SERVER_IP:8333`, and set both surfaces'
+`FACTORY_AGENT_STATISTICS_S3_ENDPOINT_URL` to `http://REMOTE_SERVER_IP:32513`, and set both surfaces'
 S3 access/secret keys to the literals above. The business bucket is `factory-agent-exports`;
 the statistics bucket is `factory-agent-statistics-exports`.
 
 PostgreSQL initialization creates only the application database and its owner on an empty data
-directory. Apply the application's migrations separately before host-based question testing:
+directory. From the application repository root, load its `.env` and apply the migrations before
+host-based question testing:
 
 ```bash
-uv run --no-sync factory-agent-migrate upgrade head
+uv run --env-file .env --no-sync factory-agent-migrate upgrade head
 ```
 
 This command uses the configured `FACTORY_AGENT_POSTGRES_URL` and does not start local middleware.
