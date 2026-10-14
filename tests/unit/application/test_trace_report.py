@@ -15,7 +15,11 @@ by eye once, the containment has to hold on every payload forever.
 
 import json
 import re
+import shutil
+import subprocess
 from datetime import datetime, timezone
+
+import pytest
 
 from factory_agent.application.trace_report import render_trace_report
 
@@ -276,3 +280,194 @@ def test_an_empty_trace_still_renders_a_usable_page() -> None:
     assert "无调用记录。" in html
     assert "无数据。" in html
     assert embedded(report) == report
+
+
+def test_local_span_sql_and_parameters_round_trip_without_injecting_markup() -> None:
+    report = document()
+    local = {
+        "span_id": "duckdb:q1",
+        "parent_span_id": "cache:load",
+        "kind": "duckdb",
+        "operation_id": "query",
+        "offset_ms": 18_000,
+        "duration_ms": 500,
+        "status": "ok",
+        "error_category": None,
+        "timing_role": "leaf",
+        "details": {"result_rows": 3, "column_count": 2},
+        "payload": {
+            "available": True,
+            "input": {
+                "sql": "SELECT '</script><script>alert(1)</script>' AS label, $filter AS value",
+                "sql_redacted": True,
+                "parameters": {"filter": {"type": "str"}},
+                "parameter_values": "hidden",
+            },
+            "output": {"details": {"result_rows": 3}},
+            "truncated": False,
+            "original_rows": None,
+            "original_bytes": 230,
+        },
+    }
+    report["spans"].append(local)  # type: ignore[union-attr]
+
+    html = render_trace_report(report)
+
+    assert html.count("</script>") == 2
+    assert embedded(report)["spans"][-1] == local  # type: ignore[index]
+    assert "字面量与注释已隐藏" in html
+    assert "绑定参数元信息（实际值已隐藏）" in html
+    assert "不能作为完整原始 SQL 直接复现" in html
+
+
+def test_report_supports_all_local_categories_and_missing_summary_data() -> None:
+    html = render_trace_report(document())
+
+    assert 'cache: "#b45309"' in html
+    assert 'duckdb: "#1d4ed8"' in html
+    assert "缓存与 DuckDB 处理统计" in html
+    assert "未采集或已过期；不能据此判断没有发生操作。" in html
+    assert "存储层命中" in html
+    assert "快照采用" in html
+    assert "交互内复用" in html
+    assert "跨类别重叠" in html
+    assert "未覆盖时间" in html
+
+
+def test_report_preserves_processing_summary_nulls_and_parent_exclusion() -> None:
+    report = document()
+    report["processing_summary"] = {
+        "state": "partial",
+        "complete": False,
+        "kinds": {
+            "cache": {
+                "state": "partial",
+                "leaf_count": 2,
+                "parent_count": 1,
+                "cumulative_ms": 200,
+                "occupancy_ms": 150,
+                "exclusive_ms": 140,
+            },
+            "duckdb": {"state": "unavailable", "leaf_count": None},
+        },
+        "cache_metrics": {"cache_reads": 2, "storage_hits": 1, "adopted_snapshots": None},
+        "timing": {
+            "state": "partial",
+            "axis_ms": 21_443,
+            "occupancy_ms": 18_000,
+            "overlap_ms": 10,
+            "uncovered_ms": 3_443,
+            "exclusive_ms": {"mes": 15_641, "llm": 2_209, "cache": 140, "duckdb": 0},
+        },
+    }
+
+    assert embedded(report) == report
+    html = render_trace_report(report)
+    assert "父步骤供阅读处理关系，不计入累计耗时" in html
+    assert "上述次数不是问答缓存命中率" in html
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_renderer_runs_for_legacy_and_local_traces_and_opens_safe_sql(local: bool) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("JavaScript runtime unavailable for the renderer smoke check")
+    report = document()
+    if local:
+        report["spans"].append(  # type: ignore[union-attr]
+            {
+                "span_id": "duckdb:sql-smoke",
+                "kind": "duckdb",
+                "operation_id": "duckdb.query",
+                "offset_ms": 18_000,
+                "duration_ms": 100,
+                "status": "ok",
+                "timing_role": "leaf",
+                "details": {"output_rows": 2},
+                "payload": {
+                    "available": True,
+                    "input": {
+                        "sql": "SELECT '</script><script>alert(1)</script>' AS label, $filter",
+                        "sql_redacted": True,
+                        "parameters": {"filter": {"type": "text", "value": "[REDACTED]"}},
+                        "parameter_values": "hidden",
+                    },
+                    "output": {"details": {"output_rows": 2}},
+                    "truncated": False,
+                },
+            }
+        )
+        report["processing_summary"] = {
+            "state": "partial",
+            "kinds": {
+                "duckdb": {
+                    "state": "partial",
+                    "leaf_count": 1,
+                    "parent_count": 0,
+                    "cumulative_ms": 100,
+                    "occupancy_ms": 100,
+                    "exclusive_ms": 100,
+                }
+            },
+            "cache_metrics": {"storage_hits": 1, "adopted_snapshots": None},
+            "duckdb_metrics": {"query_attempts": 1, "queries_completed": 1},
+            "timing": {
+                "state": "partial",
+                "axis_ms": 21_443,
+                "occupancy_ms": 100,
+                "overlap_ms": 0,
+                "uncovered_ms": 21_343,
+                "exclusive_ms": {"duckdb": 100},
+            },
+        }
+    renderer = _RENDERER.search(render_trace_report(report))
+    assert renderer is not None
+    bootstrap = r"""
+const fs = require('fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+class Element {
+  constructor(tag) {
+    this.tagName = tag; this.children = []; this.style = {}; this.textContent = '';
+    this.listeners = {}; this.parentNode = null;
+  }
+  appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
+  removeChild(child) { this.children = this.children.filter(item => item !== child); }
+  addEventListener(name, handler) { this.listeners[name] = handler; }
+}
+const hosts = {};
+const document = {
+  createElement(tag) { return new Element(tag); },
+  getElementById(id) { return hosts[id] || (hosts[id] = new Element('div')); }
+};
+document.getElementById('trace-data').textContent = JSON.stringify(input.trace);
+new Function('document', 'window', input.renderer)(document, {});
+function open(node) {
+  if (node.listeners.toggle) { node.open = true; node.listeners.toggle(); }
+  node.children.forEach(open);
+}
+Object.values(hosts).forEach(open);
+function text(node) { return node.textContent + node.children.map(text).join('\n'); }
+process.stdout.write(JSON.stringify(Object.fromEntries(
+  Object.entries(hosts).map(([name, node]) => [name, text(node)])
+)));
+"""
+    result = subprocess.run(  # nosec B603 - fixed renderer harness, document supplied through JSON
+        [node, "--eval", bootstrap],
+        input=json.dumps({"trace": report, "renderer": renderer.group(1)}),
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    rendered = json.loads(result.stdout)
+    assert "MES" in rendered["spans"]
+    assert "大模型" in rendered["spans"]
+    assert "schema_version=1.0" in rendered["footer"]
+    if local:
+        assert "DuckDB · 业务读查询" in rendered["waterfall"]
+        assert "SELECT '</script><script>alert(1)</script>' AS label, $filter" in rendered["spans"]
+        assert "绑定参数元信息（实际值已隐藏）" in rendered["spans"]
+        assert "实际值已隐藏" in rendered["spans"]
+        assert "查询完成" in rendered["processing"]
+    else:
+        assert "未采集或已过期" in rendered["processing"]

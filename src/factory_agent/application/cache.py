@@ -26,6 +26,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from factory_agent.domain import DataScope, TenantId
+from factory_agent.observability.local_trace import trace_local_operation
 from factory_agent.ports import CacheStore
 from factory_agent.ports.cache import CacheLeaseStore
 
@@ -174,16 +175,29 @@ class AuthAwareCache:
         if domain not in CACHE_DOMAINS:
             raise UnknownCacheDomainError(f"unknown cache domain {domain!r}")
         key = self.build_key(domain, tenant_id, scope_fingerprint, params)
-        try:
-            value = await self._store.get(key)
-        except Exception:  # noqa: BLE001 - Redis is an optimization, never a gate
-            self._stats.record_miss(domain, "store_unavailable")
-            return CacheLookup(None, "store_unavailable")
-        if value is None:
-            self._stats.record_miss(domain, "miss")
-            return CacheLookup(None, "miss")
-        self._stats.record_hit(domain)
-        return CacheLookup(value, "hit")
+        with trace_local_operation(
+            "cache",
+            "cache.lookup",
+            input_payload=lambda: {"domain": domain, "key_digest": _key_digest(key)},
+        ) as trace:
+            try:
+                value = await self._store.get(key)
+            except Exception:  # noqa: BLE001 - Redis is an optimization, never a gate
+                self._stats.record_miss(domain, "store_unavailable")
+                trace.set_status("error", reason="store_unavailable")
+                trace.set_output(outcome="store_unavailable", metric_counts={"cache_reads": 1})
+                return CacheLookup(None, "store_unavailable")
+            if value is None:
+                self._stats.record_miss(domain, "miss")
+                trace.set_output(outcome="miss", value_bytes=0, metric_counts={"cache_reads": 1})
+                return CacheLookup(None, "miss")
+            self._stats.record_hit(domain)
+            trace.set_output(
+                outcome="hit",
+                value_bytes=len(value),
+                metric_counts={"cache_reads": 1, "storage_hits": 1},
+            )
+            return CacheLookup(value, "hit")
 
     async def put(
         self,
@@ -202,19 +216,46 @@ class AuthAwareCache:
         if domain not in CACHE_DOMAINS:
             raise UnknownCacheDomainError(f"unknown cache domain {domain!r}")
         key = self.build_key(domain, tenant_id, scope_fingerprint, params)
-        try:
-            await self._store.put(key, value, ttl_seconds or self.ttl_seconds(domain))
-        except Exception:  # noqa: BLE001
-            self._stats.record_miss(domain, "store_unavailable")
-            return False
-        return True
+        actual_ttl = ttl_seconds or self.ttl_seconds(domain)
+        with trace_local_operation(
+            "cache",
+            "cache.write",
+            input_payload=lambda: {
+                "domain": domain,
+                "key_digest": _key_digest(key),
+                "value_bytes": len(value),
+                "ttl_seconds": actual_ttl,
+            },
+        ) as trace:
+            try:
+                await self._store.put(key, value, actual_ttl)
+            except Exception:  # noqa: BLE001
+                self._stats.record_miss(domain, "store_unavailable")
+                trace.set_status("error", reason="store_unavailable")
+                trace.set_output(
+                    outcome="failed", metric_counts={"writes_attempted": 1, "writes_failed": 1}
+                )
+                return False
+            trace.set_output(
+                outcome="written", metric_counts={"writes_attempted": 1, "writes_succeeded": 1}
+            )
+            return True
 
     async def invalidate_key(self, key: str) -> None:
         """Evict one exact key (影子比对不一致时丢弃该缓存键，§4.6)。"""
-        try:
-            await self._store.delete_prefix(key)
-        except Exception:  # noqa: BLE001
-            self._stats.record_miss("identity_org", "store_unavailable")
+        with trace_local_operation(
+            "cache",
+            "cache.invalidate",
+            input_payload=lambda: {"key_digest": _key_digest(key), "method": "delete_prefix"},
+        ) as trace:
+            try:
+                await self._store.delete_prefix(key)
+            except Exception:  # noqa: BLE001
+                self._stats.record_miss("identity_org", "store_unavailable")
+                trace.set_status("error", reason="store_unavailable")
+                trace.set_output(outcome="failed")
+            else:
+                trace.set_output(outcome="invalidated")
 
     @asynccontextmanager
     async def lease(
@@ -246,10 +287,23 @@ class AuthAwareCache:
             f"{KEY_PREFIX}:{self._contract_version}:{self._metric_version}:"
             f"{self._data_version}:{_tenant_digest(tenant_id)}:{scope_fingerprint}:"
         )
-        try:
-            await self._store.delete_prefix(prefix)
-        except Exception:  # noqa: BLE001
-            self._stats.record_miss("identity_org", "store_unavailable")
+        with trace_local_operation(
+            "cache",
+            "cache.invalidate",
+            input_payload=lambda: {
+                "key_digest": _key_digest(prefix),
+                "method": "delete_prefix",
+                "reason": "scope_invalidation",
+            },
+        ) as trace:
+            try:
+                await self._store.delete_prefix(prefix)
+            except Exception:  # noqa: BLE001
+                self._stats.record_miss("identity_org", "store_unavailable")
+                trace.set_status("error", reason="store_unavailable")
+                trace.set_output(outcome="failed")
+            else:
+                trace.set_output(outcome="invalidated")
 
     async def invalidate_base_data(self, tenant_id: TenantId) -> None:
         """Manual invalidation entry for the shared base-data lines.
@@ -263,10 +317,17 @@ class AuthAwareCache:
 
     async def purge_all(self) -> None:
         """Evict every cache line (contract/metric/sensitive classification change)."""
-        try:
-            await self._store.delete_prefix(f"{KEY_PREFIX}:")
-        except Exception:  # noqa: BLE001
-            self._stats.record_miss("identity_org", "store_unavailable")
+        with trace_local_operation(
+            "cache", "cache.invalidate", input_payload=lambda: {"reason": "all_domains"}
+        ) as trace:
+            try:
+                await self._store.delete_prefix(f"{KEY_PREFIX}:")
+            except Exception:  # noqa: BLE001
+                self._stats.record_miss("identity_org", "store_unavailable")
+                trace.set_status("error", reason="store_unavailable")
+                trace.set_output(outcome="failed")
+            else:
+                trace.set_output(outcome="invalidated")
 
     def _require_domain(self, domain: str) -> None:
         if domain not in CACHE_DOMAINS:
@@ -321,9 +382,29 @@ class CachedDirectorySource:
         params = {"op": op}
         lookup = await self._cache.get("identity_org", tenant_id, SHARED_SCOPE_FINGERPRINT, params)
         if lookup.value is not None:
-            records = _decode_records(lookup.value)
+            with trace_local_operation(
+                "cache",
+                "cache.decode",
+                input_payload=lambda: {"domain": "identity_org", "method": "directory_records"},
+            ) as trace:
+                records = _decode_records(lookup.value)
+                trace.set_output(outcome="valid" if records is not None else "invalid")
+                if records is None:
+                    trace.set_status("skipped", reason="invalid_directory_records")
             if records is not None:
+                with trace_local_operation(
+                    "cache", "cache.adopt", input_payload=lambda: {"domain": "identity_org"}
+                ) as trace:
+                    trace.set_output(
+                        outcome="adopted",
+                        source="directory",
+                        metric_counts={"adopted_snapshots": 1},
+                    )
                 return records, True
+        with trace_local_operation(
+            "cache", "cache.realtime", input_payload=lambda: {"domain": "identity_org"}
+        ) as trace:
+            trace.set_output(outcome="realtime", metric_counts={"realtime_fallbacks": 1})
         records = await fetch()
         await self._cache.put(
             "identity_org", tenant_id, SHARED_SCOPE_FINGERPRINT, params, _encode_records(records)
@@ -377,6 +458,10 @@ def _decode_records(raw: bytes) -> tuple[Any, ...] | None:
 def _canonical_digest(params: Mapping[str, object]) -> str:
     encoded = json.dumps(params, sort_keys=True, separators=(",", ":"), default=_json_default)
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _key_digest(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 def _tenant_digest(tenant_id: TenantId) -> str:

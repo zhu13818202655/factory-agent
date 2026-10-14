@@ -14,6 +14,12 @@ import duckdb
 
 from factory_agent.domain.errors import ForbiddenError, InvalidRequestError
 from factory_agent.execution.sandbox import InteractionSandboxPolicy
+from factory_agent.observability.local_trace import (
+    LocalOperationTrace,
+    safe_sql_payload,
+    trace_local_operation,
+)
+from factory_agent.observability.redaction import redact_text
 from factory_agent.ports.sandbox import SandboxTable
 
 # Statements that must never execute inside the sandbox.
@@ -76,6 +82,15 @@ def _validate_identifier(name: str) -> str:
     return name
 
 
+def _report_columns(columns: Sequence[str]) -> list[str]:
+    return [
+        column
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column) and redact_text(column) == column
+        else "[hidden]"
+        for column in columns
+    ]
+
+
 class InteractionSandbox:
     """One in-memory DuckDB connection bound to a single interaction."""
 
@@ -90,6 +105,7 @@ class InteractionSandbox:
         )
         self._connection: duckdb.DuckDBPyConnection | None = None
         self._registered: set[str] = set()
+        self._registered_row_counts: dict[str, int] = {}
         self._closed = False
 
     def _conn(self) -> duckdb.DuckDBPyConnection:
@@ -105,7 +121,13 @@ class InteractionSandbox:
                 "max_temp_directory_size": "0B",
                 "temp_directory": "",
             }
-            self._connection = duckdb.connect(database=":memory:", config=config)
+            with trace_local_operation(
+                "duckdb",
+                "duckdb.connect",
+                input_payload=lambda: {"database_kind": "interaction_memory"},
+            ) as trace:
+                self._connection = duckdb.connect(database=":memory:", config=config)
+                trace.set_output(connection_created=True)
         return self._connection
 
     def register_table(self, table: SandboxTable) -> None:
@@ -115,12 +137,29 @@ class InteractionSandbox:
             raise ForbiddenError("table name is not in the reviewed whitelist")
         connection = self._conn()
         columns_sql = ", ".join(f'"{column}" {sql_type}' for column, sql_type in table.columns)
-        # Identifiers are validated above; no user-controlled text enters this DDL.
-        connection.execute(f'CREATE TABLE "{name}" ({columns_sql})')  # nosec B608
-        if table.rows:
-            if not self._register_rows_bulk(connection, name, table):
-                self._register_rows_per_row(connection, name, table)
-        self._registered.add(name)
+        create_sql = f'CREATE TABLE "{name}" ({columns_sql})'
+        with trace_local_operation(
+            "duckdb",
+            "duckdb.register",
+            input_payload=lambda: {
+                "table": name,
+                "schema": [
+                    {"column": column, "type": sql_type} for column, sql_type in table.columns
+                ],
+                "input_rows": len(table.rows),
+                "create_sql": create_sql,
+                "statement_role": "trusted_data_load",
+            },
+        ) as trace:
+            trace.set_output(output_rows=0, load_method="empty", bulk_attempted=False)
+            # Identifiers are reviewed; values enter only as bound parameters.
+            connection.execute(create_sql)  # nosec B608
+            if table.rows:
+                if not self._register_rows_bulk(connection, name, table, trace=trace):
+                    self._register_rows_per_row(connection, name, table, trace=trace)
+            self._registered.add(name)
+            self._registered_row_counts[name] = len(table.rows)
+            trace.set_output(output_rows=len(table.rows), table_registered=True)
 
     def replace_table(self, table: SandboxTable) -> None:
         """Replace a trusted registered table for final-result shadow validation."""
@@ -131,12 +170,32 @@ class InteractionSandbox:
             _validate_identifier(column)
             if not _bulk_capable_type(sql_type):
                 raise InvalidRequestError("replacement schema uses an unsupported column type")
-        self._conn().execute(f'DROP TABLE "{name}"')  # nosec B608
-        self._registered.remove(name)
-        self.register_table(table)
+        with trace_local_operation(
+            "duckdb",
+            "duckdb.replace",
+            input_payload=lambda: {
+                "table": name,
+                "input_rows": len(table.rows),
+                "previous_rows": self._registered_row_counts.get(name),
+                "purpose": "final_result_shadow_validation",
+                "drop_sql": f'DROP TABLE "{name}"',
+                "statement_role": "trusted_data_load",
+            },
+            timing_role="parent",
+        ) as trace:
+            self._conn().execute(f'DROP TABLE "{name}"')  # nosec B608
+            self._registered.remove(name)
+            self._registered_row_counts.pop(name, None)
+            self.register_table(table)
+            trace.set_output(output_rows=len(table.rows), table_replaced=True)
 
     def _register_rows_bulk(
-        self, connection: duckdb.DuckDBPyConnection, name: str, table: SandboxTable
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        name: str,
+        table: SandboxTable,
+        *,
+        trace: LocalOperationTrace | None = None,
     ) -> bool:
         """Insert every row in one statement via a JSON STRUCT cast.
 
@@ -158,6 +217,8 @@ class InteractionSandbox:
         if any(not _validate_identifier(column) for column, _ in columns):
             return False
         if any(not _bulk_capable_type(sql_type) for _, sql_type in columns):
+            if trace is not None:
+                trace.set_output(fallback_reason="unsupported_column_type")
             return False
         names = [column for column, _ in columns]
         try:
@@ -168,22 +229,34 @@ class InteractionSandbox:
         except (TypeError, ValueError):
             # A value JSON cannot carry (e.g. a non-finite float): per-row
             # binding handles whatever coercion DuckDB can do natively.
+            if trace is not None:
+                trace.set_output(fallback_reason="json_serialization_failed")
             return False
         struct = (
             "STRUCT(" + ", ".join(f'"{column}" {sql_type}' for column, sql_type in columns) + ")[]"
         )
+        insert_sql = (
+            f'INSERT INTO "{name}" '  # nosec B608 - identifiers reviewed above
+            f"SELECT s.* FROM (SELECT unnest(CAST(? AS {struct})) AS s)"
+        )
+        if trace is not None:
+            trace.update_input(bulk_insert_sql=insert_sql, bound_values="hidden")
+            trace.set_output(bulk_attempted=True, load_method="bulk_json")
         try:
-            connection.execute(
-                f'INSERT INTO "{name}" '  # nosec B608 - identifiers reviewed above
-                f"SELECT s.* FROM (SELECT unnest(CAST(? AS {struct})) AS s)",
-                [payload],
-            )
+            connection.execute(insert_sql, [payload])
         except Exception:  # noqa: BLE001 - any cast failure degrades to per-row
+            if trace is not None:
+                trace.set_output(fallback_reason="bulk_insert_failed")
             return False
         return True
 
     def _register_rows_per_row(
-        self, connection: duckdb.DuckDBPyConnection, name: str, table: SandboxTable
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        name: str,
+        table: SandboxTable,
+        *,
+        trace: LocalOperationTrace | None = None,
     ) -> None:
         """The original one-execute-per-row insert, kept as the fallback."""
         column_names = [column for column, _ in table.columns]
@@ -195,9 +268,18 @@ class InteractionSandbox:
             f"({', '.join(chr(34) + c + chr(34) for c in column_names)}) "
             f"VALUES ({placeholders})"
         )
-        for row in table.rows:
-            params = tuple(row.get(column) for column, _ in table.columns)
-            connection.execute(insert_sql, params)
+        if trace is not None:
+            trace.update_input(insert_sql=insert_sql, bound_values="hidden")
+            trace.set_output(load_method="per_row")
+        completed_rows = 0
+        try:
+            for row in table.rows:
+                params = tuple(row.get(column) for column, _ in table.columns)
+                connection.execute(insert_sql, params)
+                completed_rows += 1
+        finally:
+            if trace is not None:
+                trace.set_output(output_rows=completed_rows)
 
     def execute(
         self,
@@ -225,25 +307,85 @@ class InteractionSandbox:
         reviewed SQL itself, so the runtime column names come from DuckDB —
         never from user input.
         """
-        self._assert_read_only(sql)
+        self._validate_query(sql)
         connection = self._conn()
-        try:
-            if params is None:
-                result = connection.execute(sql)
-            elif isinstance(params, Mapping):
-                result = connection.execute(sql, dict(params))
-            else:
-                result = connection.execute(sql, list(params))
-            rows: list[tuple[Any, ...]] = result.fetchall()
-            columns = tuple(str(item[0]) for item in (result.description or ()))
-        except duckdb.Error as error:
-            raise InvalidRequestError(f"sandbox rejected the statement: {error}") from error
-        return columns, rows
+        with trace_local_operation(
+            "duckdb",
+            "duckdb.query",
+            input_payload=lambda: {
+                **safe_sql_payload(sql, params),
+                "registered_tables": dict(self._registered_row_counts),
+                "duration_basis": "execute_and_fetch",
+                "statement_role": "read_only_query",
+            },
+        ) as trace:
+            try:
+                if params is None:
+                    result = connection.execute(sql)
+                elif isinstance(params, Mapping):
+                    result = connection.execute(sql, dict(params))
+                else:
+                    result = connection.execute(sql, list(params))
+                rows: list[tuple[Any, ...]] = result.fetchall()
+                columns = tuple(str(item[0]) for item in (result.description or ()))
+            except duckdb.Error as error:
+                if isinstance(error, duckdb.InterruptException):
+                    trace.set_status("cancelled", reason="query_interrupted")
+                else:
+                    trace.set_status("error", reason="query_execution_failed")
+                raise InvalidRequestError(f"sandbox rejected the statement: {error}") from error
+            if trace.active:
+                trace.set_output(
+                    result_columns=_report_columns(columns),
+                    output_rows=len(rows),
+                    row_count_state="available",
+                )
+            return columns, rows
 
     def execute_df(self, sql: str) -> duckdb.DuckDBPyConnection:
         """Run a reviewed query and return the connection for result consumption."""
-        self._assert_read_only(sql)
-        return self._conn().execute(sql)
+        self._validate_query(sql)
+        connection = self._conn()
+        with trace_local_operation(
+            "duckdb",
+            "duckdb.query",
+            input_payload=lambda: {
+                **safe_sql_payload(sql, None),
+                "registered_tables": dict(self._registered_row_counts),
+                "duration_basis": "execute_only_cursor_unconsumed",
+                "statement_role": "read_only_query",
+            },
+        ) as trace:
+            try:
+                result = connection.execute(sql)
+            except duckdb.Error as error:
+                if isinstance(error, duckdb.InterruptException):
+                    trace.set_status("cancelled", reason="query_interrupted")
+                else:
+                    trace.set_status("error", reason="query_execution_failed")
+                raise
+            if trace.active:
+                trace.set_output(
+                    result_columns=_report_columns(
+                        tuple(str(item[0]) for item in (result.description or ()))
+                    ),
+                    output_rows=None,
+                    row_count_state="unavailable_cursor_not_consumed",
+                )
+            return result
+
+    def _validate_query(self, sql: str) -> None:
+        try:
+            self._assert_read_only(sql)
+        except ForbiddenError:
+            with trace_local_operation(
+                "duckdb",
+                "duckdb.query",
+                input_payload=lambda: {"statement_role": "read_only_query"},
+            ) as trace:
+                trace.set_status("denied", reason="read_only_policy_rejected")
+                trace.set_output(execution_attempted=False)
+            raise
 
     @staticmethod
     def _assert_read_only(sql: str) -> None:
@@ -261,11 +403,28 @@ class InteractionSandbox:
 
     def close(self) -> None:
         """Destroy the connection; all registered data dies with it."""
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
-        self._registered.clear()
-        self._closed = True
+        if self._closed:
+            return
+        connection_created = self._connection is not None
+        with trace_local_operation(
+            "duckdb",
+            "duckdb.close",
+            input_payload=lambda: {
+                "connection_created": connection_created,
+                "registered_table_count": len(self._registered),
+            },
+        ) as trace:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
+            self._registered.clear()
+            self._registered_row_counts.clear()
+            self._closed = True
+            if not connection_created:
+                trace.set_status("skipped", reason="no_connection_created")
+            trace.set_output(
+                connection_closed=connection_created, sandbox_closed=True, remaining_tables=0
+            )
 
     def interrupt(self) -> None:
         """Interrupt the active bounded computation before joining its worker."""

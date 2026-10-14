@@ -47,6 +47,7 @@ from factory_agent.execution.result_table import (
     ResultTable,
 )
 from factory_agent.execution.sandbox_runtime import InteractionSandbox, SandboxTable
+from factory_agent.observability.local_trace import trace_local_operation
 from factory_agent.observability.logging_adapter import get_logger
 from factory_agent.ports.card import CardChart, CardColumn, build_card, build_chart_payload
 from factory_agent.ports.contracts import (
@@ -575,69 +576,118 @@ class KernelCapabilityRunner:
         }
         if all(fetched.shadow_result is None for fetched in fetches.values()):
             return cached, fetches
-        for step in recipe.steps:
-            if step.kind != "api" or step.step_id not in shadow_fetches:
-                continue
-            fetched = shadow_fetches[step.step_id]
-            sandbox.replace_table(
-                SandboxTable(
-                    name=step.step_id,
-                    rows=tuple(cast(dict[str, Any], row) for row in fetched.rows),
-                    columns=self._table_columns_for(step, fetched.rows, recipe),
+        with trace_local_operation(
+            "cache",
+            "cache.shadow",
+            input_payload=lambda: {"input_rows": len(cached.rows)},
+            timing_role="parent",
+        ) as trace:
+            trace.set_output(outcome="pending", metric_counts={"shadow_checks": 1})
+            try:
+                for step in recipe.steps:
+                    if step.kind != "api" or step.step_id not in shadow_fetches:
+                        continue
+                    fetched = shadow_fetches[step.step_id]
+                    sandbox.replace_table(
+                        SandboxTable(
+                            name=step.step_id,
+                            rows=tuple(cast(dict[str, Any], row) for row in fetched.rows),
+                            columns=self._table_columns_for(step, fetched.rows, recipe),
+                        )
+                    )
+
+                def build_shadow() -> ResultTable:
+                    return self._build_table(
+                        sandbox,
+                        recipe,
+                        shadow_fetches,
+                        filters,
+                        time_range,
+                        order_view,
+                        group_page,
+                        group_page_size,
+                    )
+
+                realtime = (
+                    await run_sandbox_call(sandbox, build_shadow, control)
+                    if control is not None
+                    else build_shadow()
                 )
-            )
-
-        def build_shadow() -> ResultTable:
-            return self._build_table(
-                sandbox,
-                recipe,
-                shadow_fetches,
-                filters,
-                time_range,
-                order_view,
-                group_page,
-                group_page_size,
-            )
-
-        realtime = (
-            await run_sandbox_call(sandbox, build_shadow, control)
-            if control is not None
-            else build_shadow()
-        )
-        consistent = (
-            cached.columns == realtime.columns
-            and cached.rows == realtime.rows
-            and cached.totals == realtime.totals
-            and cached.card == realtime.card
-            and cached.detail_tables == realtime.detail_tables
-            and cached.incomplete == realtime.incomplete
-            and cached.incomplete_reason == realtime.incomplete_reason
-            and cached.warnings == realtime.warnings
-        )
-        if consistent:
-            release = getattr(self._executor, "release_cached_result", None)
-            if release is not None:
-                for fetched in fetches.values():
-                    if fetched.shadow_result is not None:
-                        release(fetched)
-            return cached, fetches
-        _LOGGER.warning(
-            "cache_shadow_mismatch",
-            capability_id=str(recipe.capability_id),
-            cached_rows=len(cached.rows),
-            realtime_rows=len(realtime.rows),
-        )
-        discard = getattr(self._executor, "discard_cached_result", None)
-        if discard is not None:
-            for fetched in fetches.values():
-                if fetched.shadow_result is not None:
-                    await discard(fetched)
-        return realtime, {
-            step_id: replace(
-                fetched, cache_source=None, cache_generated_at=None, shadow_result=None
-            )
-            for step_id, fetched in shadow_fetches.items()
-        }
+                with trace_local_operation(
+                    "cache",
+                    "cache.shadow_compare",
+                    input_payload=lambda: {
+                        "method": "final_result_equality",
+                        "input_rows": len(cached.rows),
+                        "rules": (
+                            "compare columns, rows, totals, card, details, completeness and warnings"
+                        ),
+                    },
+                ) as comparison_trace:
+                    consistent = (
+                        cached.columns == realtime.columns
+                        and cached.rows == realtime.rows
+                        and cached.totals == realtime.totals
+                        and cached.card == realtime.card
+                        and cached.detail_tables == realtime.detail_tables
+                        and cached.incomplete == realtime.incomplete
+                        and cached.incomplete_reason == realtime.incomplete_reason
+                        and cached.warnings == realtime.warnings
+                    )
+                    comparison_trace.set_output(
+                        outcome="match" if consistent else "mismatch",
+                        output_rows=len(realtime.rows),
+                    )
+                if consistent:
+                    release = getattr(self._executor, "release_cached_result", None)
+                    if release is not None:
+                        for fetched in fetches.values():
+                            if fetched.shadow_result is not None:
+                                release(fetched)
+                    trace.set_output(
+                        outcome="match",
+                        source="cache",
+                        complete=not cached.incomplete,
+                        output_rows=len(cached.rows),
+                        metric_counts={
+                            "shadow_checks": 1,
+                            "shadow_matches": 1,
+                            "adopted_snapshots": sum(
+                                fetched.shadow_result is not None for fetched in fetches.values()
+                            ),
+                        },
+                    )
+                    return cached, fetches
+                _LOGGER.warning(
+                    "cache_shadow_mismatch",
+                    capability_id=str(recipe.capability_id),
+                    cached_rows=len(cached.rows),
+                    realtime_rows=len(realtime.rows),
+                )
+                discard = getattr(self._executor, "discard_cached_result", None)
+                if discard is not None:
+                    for fetched in fetches.values():
+                        if fetched.shadow_result is not None:
+                            await discard(fetched)
+                trace.set_output(
+                    outcome="mismatch",
+                    source="realtime",
+                    complete=not realtime.incomplete,
+                    output_rows=len(realtime.rows),
+                    metric_counts={"shadow_checks": 1, "shadow_mismatches": 1},
+                )
+                return realtime, {
+                    step_id: replace(
+                        fetched, cache_source=None, cache_generated_at=None, shadow_result=None
+                    )
+                    for step_id, fetched in shadow_fetches.items()
+                }
+            except Exception:
+                trace.set_output(
+                    outcome="unavailable",
+                    metric_counts={"shadow_checks": 1, "shadow_unavailable": 1},
+                )
+                raise
 
     def _build_table(
         self,

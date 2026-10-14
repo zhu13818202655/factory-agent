@@ -91,6 +91,10 @@ class SqlDebugTraceStore:
                 debug_trace_table.c.truncated,
                 debug_trace_table.c.original_rows,
                 debug_trace_table.c.original_bytes,
+                debug_trace_table.c.kind,
+                debug_trace_table.c.operation_id,
+                debug_trace_table.c.stage,
+                debug_trace_table.c.created_at,
             )
             .where(
                 debug_trace_table.c.tenant_id == tenant_id,
@@ -110,6 +114,10 @@ class SqlDebugTraceStore:
                 truncated=bool(row["truncated"]),
                 original_rows=_optional_int(row["original_rows"]),
                 original_bytes=_optional_int(row["original_bytes"]),
+                kind=_optional_text(row.get("kind")),
+                operation_id=_optional_text(row.get("operation_id")),
+                stage=_optional_text(row.get("stage")),
+                occurred_at=row.get("created_at"),
             )
             for row in rows
         }
@@ -142,6 +150,10 @@ def _optional_int(value: object) -> int | None:
     if isinstance(value, (int, float)):
         return int(value)
     return None
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 __all__ = ["SqlDebugTraceStore"]

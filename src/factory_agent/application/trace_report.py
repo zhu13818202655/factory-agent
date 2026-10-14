@@ -63,7 +63,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
     --bg: #f6f7f9; --panel: #fff; --line: #e3e6ea; --text: #1f2328;
     --muted: #656d76; --accent: #1a56db; --ok: #1a7f37; --err: #b42318;
     --warn-bg: #fff8e5; --warn-line: #e8c76a; --warn-text: #7a5c00;
-    --mes: #0e7490; --llm: #6b21a8; --local: #4b5563;
+    --mes: #0e7490; --llm: #6b21a8; --cache: #b45309; --duckdb: #1d4ed8;
+    --local: #4b5563;
   }
   * { box-sizing: border-box; }
   body {
@@ -105,6 +106,14 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .pill.error { color: var(--err); border-color: #f0c2bd; background: #fdf3f2; }
   .pill.mes { color: var(--mes); border-color: #b6dde6; background: #eff9fb; }
   .pill.llm { color: var(--llm); border-color: #ddd0f0; background: #f8f5fd; }
+  .pill.cache { color: var(--cache); border-color: #f2d29e; background: #fffbeb; }
+  .pill.duckdb { color: var(--duckdb); border-color: #bfd2fa; background: #eff6ff; }
+  .table-scroll { overflow-x: auto; }
+  .sql {
+    padding: 10px; background: #f8f9fb; border: 1px solid var(--line);
+    border-radius: 7px; max-height: 380px; overflow: auto; white-space: pre-wrap;
+    word-break: break-word;
+  }
   .bars { display: flex; flex-direction: column; gap: 7px; }
   .bar-row { display: flex; align-items: center; gap: 10px; }
   .bar-label { width: 150px; flex: none; font-size: 12.5px; }
@@ -175,8 +184,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div class="sub" id="subtitle"></div>
   <div id="compliance"></div>
   <div class="cards" id="summary"></div>
-  <h2>三段耗时</h2>
+  <h2>原有耗时口径</h2>
   <div class="panel bars" id="segments"></div>
+  <h2>缓存与 DuckDB 处理统计</h2>
+  <div class="panel" id="processing"></div>
   <h2>阶段汇总</h2>
   <div class="panel bars" id="phases"></div>
   <h2>调用瀑布图</h2>
@@ -192,7 +203,35 @@ _TEMPLATE = r"""<!DOCTYPE html>
   var raw = document.getElementById("trace-data").textContent || "{}";
   var trace = JSON.parse(raw);
 
-  var KIND_COLOR = { mes: "#0e7490", llm: "#6b21a8", local: "#4b5563" };
+  var KIND_COLOR = {
+    mes: "#0e7490", llm: "#6b21a8", cache: "#b45309", duckdb: "#1d4ed8", local: "#4b5563"
+  };
+  var KIND_LABEL = { mes: "MES", llm: "大模型", cache: "缓存", duckdb: "DuckDB" };
+  var OPERATION_LABEL = {
+    "cache.lookup": "持久缓存读取", "cache.candidate": "候选窗口探测",
+    "cache.decode": "缓存解码", "cache.validate": "快照有效性校验",
+    "cache.fetch": "取数路径选择", "cache.adopt": "采用获准视图",
+    "cache.view": "获准数据视图", "cache.produce": "受控快照生产",
+    "cache.lock_wait": "等待快照生产锁", "cache.shadow_source": "影子实时取数",
+    "cache.realtime": "实时回退", "cache.scope_filter": "范围筛选",
+    "cache.time_filter": "时间截取", "cache.business_filter": "业务条件筛选",
+    "cache.derive": "数据派生", "cache.aggregate": "分组聚合",
+    "cache.footer": "合计重算", "cache.footer_validate": "合计校验",
+    "cache.publish": "快照回填", "cache.encode": "缓存编码", "cache.write": "缓存写入",
+    "cache.write_gate": "回填门禁", "cache.invalidate": "缓存失效",
+    "cache.shadow": "影子校验", "cache.shadow_compare": "最终结果比较",
+    "cache.interaction_exact": "交互内精确复用", "cache.interaction_covering": "交互内覆盖复用",
+    "cache.interaction_filter": "复用数据收窄", "duckdb.connect": "建立内存沙箱",
+    "duckdb.register": "表装载", "duckdb.replace": "表替换",
+    "duckdb.query": "业务读查询", "duckdb.close": "销毁沙箱"
+  };
+
+  function operationLabel(span) {
+    if (span.kind === "llm") return span.stage + " · " + span.model_alias;
+    if (span.kind === "mes") return span.operation_id + " · p" + span.page_count;
+    var operation = span.operation_id || span.stage;
+    return OPERATION_LABEL[operation] || operation || "未知操作";
+  }
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -221,7 +260,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
   }
 
   function statusPill(status) {
-    return pill(status, status === "ok" ? "ok" : status === "error" ? "error" : "");
+    return pill(status, status === "ok" ? "ok" :
+      status === "error" || status === "denied" ? "error" : "");
   }
 
   document.getElementById("subtitle").textContent =
@@ -291,6 +331,95 @@ _TEMPLATE = r"""<!DOCTYPE html>
     { label: "本地/其他", value: ledger.local_ms || 0, color: KIND_COLOR.local }
   ]);
 
+  var processingHost = document.getElementById("processing");
+  var processing = trace.processing_summary;
+  var unavailableText = "未采集或已过期；不能据此判断没有发生操作。";
+  if (!processing) {
+    processingHost.appendChild(el("div", "empty", unavailableText));
+  } else {
+    processingHost.appendChild(el("div", "warn",
+      processing.state === "unavailable"
+        ? (processing.reason === "content_capture_disabled"
+          ? "内容捕获未开启，缓存与 DuckDB 处理记录不可用。" : unavailableText)
+        : "以下为实际保存的处理记录，可能只覆盖部分步骤。未记录的步骤不能视为零；" +
+          "新增耗时属于同一条交互时间轴，不与原有耗时口径重复相加。"));
+    var processingTable = el("table");
+    var processingHead = el("tr");
+    ["处理类别", "叶子步骤", "父步骤", "累计叶子耗时", "时间占用", "独占时间"].forEach(
+      function (t) {
+      processingHead.appendChild(el("th", null, t));
+    });
+    processingTable.appendChild(processingHead);
+    ["cache", "duckdb"].forEach(function (kind) {
+      var summary = (processing.kinds || {})[kind] || {};
+      var available = summary.state === "partial";
+      var row = el("tr");
+      row.appendChild(el("td", null, KIND_LABEL[kind]));
+      row.appendChild(el("td", null, available ? summary.leaf_count : "未采集"));
+      row.appendChild(el("td", null, available ? summary.parent_count : "未采集"));
+      row.appendChild(el("td", null, available ? fmt(summary.cumulative_ms) : "—"));
+      row.appendChild(el("td", null, available ? fmt(summary.occupancy_ms) : "—"));
+      row.appendChild(el("td", null, available ? fmt(summary.exclusive_ms) : "—"));
+      processingTable.appendChild(row);
+    });
+    var processingScroll = el("div", "table-scroll");
+    processingScroll.appendChild(processingTable);
+    processingHost.appendChild(processingScroll);
+    processingHost.appendChild(el("div", "empty",
+      "累计耗时是叶子步骤之和；时间占用合并同类重叠区间；独占时间排除与其他类别同时发生的区间。" +
+      "父步骤供阅读处理关系，不计入累计耗时。"));
+    var cacheMetrics = processing.cache_metrics || {};
+    var metricLabels = {
+      cache_reads: "持久缓存读取", storage_hits: "存储层命中", adopted_snapshots: "快照采用",
+      interaction_reuses: "交互内复用", realtime_fallbacks: "实时回退",
+      writes_attempted: "写入尝试", writes_succeeded: "写入成功",
+      writes_failed: "写入失败", writes_skipped: "写入跳过", candidate_probes: "候选探测",
+      logical_fetches: "逻辑取数", exact_reuses: "精确复用", covering_reuses: "覆盖复用",
+      shadow_checks: "影子校验"
+    };
+    var metricCards = el("div", "cards");
+    Object.keys(metricLabels).forEach(function (name) {
+      var value = cacheMetrics[name];
+      metricCards.appendChild(card(metricLabels[name],
+        typeof value === "number" ? value : "未采集", typeof value === "number" ? "次" : null));
+    });
+    processingHost.appendChild(metricCards);
+    processingHost.appendChild(el("div", "empty",
+      "存储层命中只表示读到值；快照采用需要有效性与授权视图校验。上述次数不是问答缓存命中率。" +
+      "所有次数只统计已保存记录；零值只说明这些记录中没有对应状态，不能证明整个交互没有这类操作。"));
+    var queryLabels = {
+      query_attempts: "DuckDB 查询请求", queries_completed: "查询完成", queries_failed: "查询失败",
+      queries_denied: "查询拒绝", queries_cancelled: "查询取消",
+      table_registrations: "表装载", table_replacements: "表替换"
+    };
+    var queryCards = el("div", "cards");
+    var queryMetrics = processing.duckdb_metrics || {};
+    Object.keys(queryLabels).forEach(function (name) {
+      var value = queryMetrics[name];
+      queryCards.appendChild(card(queryLabels[name],
+        typeof value === "number" ? value : "未采集", typeof value === "number" ? "次" : null));
+    });
+    processingHost.appendChild(queryCards);
+    var timing = processing.timing || {};
+    if (timing.state === "partial") {
+      var timingRows = [];
+      ["mes", "llm", "cache", "duckdb"].forEach(function (kind) {
+        timingRows.push({ label: KIND_LABEL[kind] + " 独占",
+          value: (timing.exclusive_ms || {})[kind] || 0,
+          color: KIND_COLOR[kind] });
+      });
+      timingRows.push({ label: "跨类别重叠", value: timing.overlap_ms || 0, color: "#9f1239" });
+      timingRows.push({ label: "未覆盖时间", value: timing.uncovered_ms || 0,
+        color: KIND_COLOR.local });
+      var timingHost = el("div", "bars");
+      bars(timingHost, timingRows);
+      processingHost.appendChild(timingHost);
+      processingHost.appendChild(el("div", "empty",
+        "上图按整条时间轴（" + fmt(timing.axis_ms) + "）分解；已记录叶子区间的总占用为 " +
+        fmt(timing.occupancy_ms) + "。跨类别重叠只计一次；未覆盖时间包含等待和未采集工作。"));
+    }
+  }
+
   bars(document.getElementById("phases"), trace.phases.map(function (p) {
     return {
       label: (p.label || p.name) + (p.terminal ? "（收尾）" : ""),
@@ -306,9 +435,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
     var axis = Math.max(1, trace.total_ms || 1);
     trace.spans.forEach(function (s) {
       var row = el("div", "wf-row");
-      var label = s.kind === "llm"
-        ? "llm · " + s.stage + " · " + s.model_alias
-        : "mes · " + s.operation_id + " · p" + s.page_count;
+      var label = (KIND_LABEL[s.kind] || s.kind) + " · " + operationLabel(s) +
+        (s.timing_role === "parent" ? "（父步骤）" : "");
       row.appendChild(el("div", "wf-label", label));
       var track = el("div", "wf-track");
       var bar = el("div", "wf-bar");
@@ -465,7 +593,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
     }
     var spanLabel = span.kind === "llm"
       ? span.stage + "-" + span.logical_call_id + "-" + span.attempt
-      : span.operation_id + "-p" + span.page_count;
+      : span.kind === "mes"
+        ? span.operation_id + "-p" + span.page_count
+        : span.kind + "-" + span.operation_id + "-" + span.span_id;
     var fileBase = "trace-" + trace.interaction_id + "-" +
       String(spanLabel).replace(/[^A-Za-z0-9_-]/g, "-");
     // 旧版捕获（envelope 序列化修复前入库）：载荷是一条 str(envelope) repr 字符串，
@@ -506,6 +636,69 @@ _TEMPLATE = r"""<!DOCTYPE html>
     return box;
   }
 
+  function localDetails(span) {
+    var box = el("div");
+    var details = span.details || {};
+    if (span.timing_role === "parent") {
+      box.appendChild(el("div", "empty", "父步骤：包含子步骤，不参与叶子耗时累计。"));
+    }
+    if (span.reason) box.appendChild(el("div", "empty", "原因：" + span.reason));
+    var input = span.payload && span.payload.available ? span.payload.input : null;
+    var fields = {
+      input_rows: "输入行数", output_rows: "输出行数", row_count: "行数", column_count: "列数",
+      byte_count: "字节数", value_bytes: "缓存返回字节数", encoded_bytes: "编码字节数",
+      ttl_seconds: "TTL 秒数", source: "来源", outcome: "结果", method: "处理方式",
+      complete: "数据完整性", generated_at: "生成时间", result_rows: "结果行数",
+      row_count_state: "行数可用状态", result_columns: "结果列", table: "表名",
+      domain: "缓存域", question_window: "问题窗口", candidate_window: "候选窗口",
+      candidate_order: "探测顺序", candidate_count: "候选窗口数", window: "时间窗口",
+      anchor_column: "时间锚字段", input_rows_state: "输入规模可见状态",
+      rules: "实际处理规则", grouped: "是否分组", groupby_fields: "分组字段",
+      filter_categories: "业务过滤类别", filter_fields: "复用过滤字段",
+      load_method: "装载方式", bulk_attempted: "是否尝试批量装载",
+      fallback_reason: "装载回退原因", checked_columns: "已校验合计字段数",
+      skipped_columns: "不适用合计字段数", retained_total_fields: "保留合计字段数",
+      omitted_total_fields: "省略合计字段数", duration_basis: "耗时测量范围"
+    };
+    Object.keys(fields).forEach(function (key) {
+      var values = Object.prototype.hasOwnProperty.call(details, key) ? details : input;
+      if (values && Object.prototype.hasOwnProperty.call(values, key)) {
+        var value = values[key];
+        var text = value === null ? "不可用"
+          : typeof value === "object" ? JSON.stringify(value) : String(value);
+        box.appendChild(el("div", null, fields[key] + "：" + text));
+      }
+    });
+    if (span.kind === "duckdb" && input && typeof input.sql === "string") {
+      var sql = el("details");
+      sql.appendChild(el("summary", null, input.sql_redacted
+        ? "执行 SQL 结构（字面量与注释已隐藏，保留占位符）"
+        : "执行 SQL（保留占位符）"));
+      sql.appendChild(el("pre", "sql", input.sql));
+      box.appendChild(sql);
+      if (input.sql_redacted) {
+        box.appendChild(el("div", "empty",
+          "为保护敏感值，SQL 字面量与注释已处理；该文本不能作为完整原始 SQL 直接复现。"));
+      }
+      var params = input.parameters === undefined ? input.params : input.parameters;
+      if (params !== undefined && params !== null) {
+        var paramsDetail = el("details");
+        paramsDetail.appendChild(el("summary", null, input.parameter_values === "hidden"
+          ? "绑定参数元信息（实际值已隐藏）" : "实际绑定参数（敏感值隐藏）"));
+        var paramsTree = el("div", "j-tree");
+        paramsDetail.appendChild(paramsTree);
+        var paramsBuilt = false;
+        paramsDetail.addEventListener("toggle", function () {
+          if (!paramsDetail.open || paramsBuilt) return;
+          paramsBuilt = true;
+          paramsTree.appendChild(jsonValue(params));
+        });
+        box.appendChild(paramsDetail);
+      }
+    }
+    return box;
+  }
+
   var spanHost = document.getElementById("spans");
   if (!trace.spans.length) {
     spanHost.appendChild(el("div", "empty", "无调用记录。"));
@@ -519,13 +712,16 @@ _TEMPLATE = r"""<!DOCTYPE html>
     trace.spans.forEach(function (s) {
       var tr = document.createElement("tr");
       var kindCell = document.createElement("td");
-      kindCell.appendChild(pill(s.kind, s.kind === "llm" ? "llm" : "mes"));
+      kindCell.appendChild(pill(KIND_LABEL[s.kind] || s.kind, s.kind));
       tr.appendChild(kindCell);
 
       var idCell = document.createElement("td");
       idCell.appendChild(el("code", null, s.kind === "llm"
         ? s.stage + " / " + s.logical_call_id + " #" + s.attempt
-        : s.operation_id + " page=" + s.page_count));
+        : s.kind === "mes" ? s.operation_id + " page=" + s.page_count : s.operation_id));
+      if (s.kind === "cache" || s.kind === "duckdb") {
+        idCell.appendChild(el("div", "empty", operationLabel(s)));
+      }
       if (s.parent_span_id) {
         idCell.appendChild(el("div", "empty", "parent: " + s.parent_span_id));
       }
@@ -548,8 +744,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
         if (s.fallback_reason) {
           extra.appendChild(el("div", "empty", "fallback: " + s.fallback_reason));
         }
-      } else {
+      } else if (s.kind === "mes") {
         extra.appendChild(el("div", null, "行数桶 " + s.row_count_bucket));
+      } else {
+        extra.appendChild(localDetails(s));
       }
       var payload = payloadBlock(s);
       if (payload) extra.appendChild(payload);

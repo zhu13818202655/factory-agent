@@ -99,6 +99,10 @@ class TraceDebugPayload:
     truncated: bool
     original_rows: int | None = None
     original_bytes: int | None = None
+    kind: str | None = None
+    operation_id: str | None = None
+    stage: str | None = None
+    occurred_at: datetime | None = None
 
 
 def _no_payloads() -> dict[str, TraceDebugPayload]:

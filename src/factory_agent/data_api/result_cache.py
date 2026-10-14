@@ -24,8 +24,10 @@ from factory_agent.data_api.progress_detail import (
     derive_progress_rows,
     normalize_progress_date,
 )
+from factory_agent.data_api.schemas import GongziClRow, ScjdV2Row
 from factory_agent.domain import NarrowedFilters, Role, local_calendar_dates
 from factory_agent.domain.errors import InvalidRequestError
+from factory_agent.observability.local_trace import trace_local_operation
 from factory_agent.ports.contracts import ResourceFetchResult
 
 _LOGGER = logging.getLogger("factory_agent.data_api.result_cache")
@@ -221,51 +223,56 @@ def encode_result_set(
 
 
 def decode_result_set(raw: bytes) -> dict[str, Any] | None:
+    """Decode a validated snapshot, rejecting malformed rows and versions."""
+    return _decode_result_set(raw)[0]
+
+
+def _decode_result_set(raw: bytes) -> tuple[dict[str, Any] | None, str | None]:
     """任何结构问题返回 None → 调用方回退实时（键不匹配 / 行损坏同法）。"""
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception:  # noqa: BLE001
-        return None
+        return None, "invalid_json"
     if not isinstance(payload, dict):
-        return None
+        return None, "invalid_structure"
     payload = cast("dict[str, Any]", payload)
     if payload.get("v") != RESULT_SET_VERSION:
-        return None
+        return None, "version_mismatch"
     api = payload.get("api")
     columns = payload.get("columns")
     rows = payload.get("rows")
     if not isinstance(api, str) or not isinstance(columns, list) or not isinstance(rows, list):
-        return None
+        return None, "invalid_structure"
     if not all(isinstance(column, str) for column in cast("list[Any]", columns)):
-        return None
+        return None, "invalid_columns"
     columns = cast("list[str]", columns)
     if len(set(columns)) != len(columns) or _has_credential_fields(columns):
-        return None
+        return None, "invalid_columns_or_forbidden_fields"
     footer = payload.get("footer")
     derived = payload.get("derived")
     if not isinstance(footer, dict) or not isinstance(derived, list):
-        return None
+        return None, "invalid_structure"
     footer_values = cast("dict[Any, Any]", footer)
     if any(
         not isinstance(key, str) or not isinstance(value, str)
         for key, value in footer_values.items()
     ):
-        return None
+        return None, "invalid_footer"
     if _has_credential_fields(footer_values):
-        return None
+        return None, "forbidden_fields"
     if not all(isinstance(column, str) for column in cast("list[Any]", derived)):
-        return None
+        return None, "invalid_derived_columns"
     decoded: list[dict[str, str]] = []
     for raw_row in cast("list[Any]", rows):
         if not isinstance(raw_row, list):
-            return None
+            return None, "invalid_row"
         row = cast("list[Any]", raw_row)
         if len(row) != len(columns):
-            return None
+            return None, "row_width_mismatch"
         if any(
             value is not None and not isinstance(value, (str, int, float, bool)) for value in row
         ):
-            return None
+            return None, "invalid_scalar"
         decoded.append(
             {
                 column: (EMPTY if value is None else str(value))
@@ -273,7 +280,7 @@ def decode_result_set(raw: bytes) -> dict[str, Any] | None:
             }
         )
     payload["decoded_rows"] = decoded
-    return payload
+    return payload, None
 
 
 # ---------------------------------------------------------------------------
@@ -305,65 +312,114 @@ def footer_reconciles(
 
     剩下的键仍然严格判定：整数列零容差、浮点列相对容差。
     """
-    if not footer:
-        return True
-    wanted = {key[: -len("_total")] for key in footer if key.endswith("_total")}
-    present: set[str] = set()
-    for row in rows:
-        present.update(str(key) for key in row)
-        if wanted.issubset(present):
-            break
-    for key, expected in footer.items():
-        if not key.endswith("_total"):
-            continue
-        column = key[: -len("_total")]
-        if not rows:
-            try:
-                if Decimal(str(expected)) != 0:
-                    return False
-            except InvalidOperation:
-                return False
-            continue
-        if column in NON_ADDITIVE_FOOTER_COLUMNS:
-            if not {"sssl", "fhsl"} <= present:
-                continue
-            ratio = recomputed_footer(rows, {key: expected})
-            if ratio is None:
-                return False
-            try:
-                if Decimal(ratio[key]) != Decimal(str(expected)).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                ):
-                    return False
-            except InvalidOperation:
-                return False
-            continue
-        if column not in present:
-            continue
-        total = Decimal("0")
+    with trace_local_operation(
+        "cache",
+        "cache.footer_validate",
+        input_payload=lambda: {
+            "method": "footer_reconciles",
+            "input_rows_state": "hidden",
+            "footer_present": bool(footer),
+            "float_relative_tolerance": tolerance,
+            "rules": (
+                "additive integer totals: exact; decimals: relative tolerance; "
+                "wcl: received / issued * 100, HALF_UP 2 decimals; "
+                "unavailable columns: skipped"
+            ),
+        },
+    ) as trace:
+        if not footer:
+            trace.set_output(outcome="not_applicable", reason="footer_missing", checked_columns=0)
+            return True
+        checked_columns = 0
+        skipped_columns = 0
+        wanted = {key[: -len("_total")] for key in footer if key.endswith("_total")}
+        present: set[str] = set()
         for row in rows:
-            value = row.get(column)
-            if value is None or value == EMPTY:
+            present.update(str(key) for key in row)
+            if wanted.issubset(present):
+                break
+        for key, expected in footer.items():
+            if not key.endswith("_total"):
+                skipped_columns += 1
                 continue
+            column = key[: -len("_total")]
+            if not rows:
+                checked_columns += 1
+                try:
+                    if Decimal(str(expected)) != 0:
+                        trace.set_status("skipped", reason="footer_mismatch")
+                        trace.set_output(outcome="rejected")
+                        return False
+                except InvalidOperation:
+                    trace.set_status("skipped", reason="footer_mismatch")
+                    trace.set_output(outcome="rejected")
+                    return False
+                continue
+            if column in NON_ADDITIVE_FOOTER_COLUMNS:
+                if not {"sssl", "fhsl"} <= present:
+                    skipped_columns += 1
+                    continue
+                checked_columns += 1
+                ratio = recomputed_footer(rows, {key: expected})
+                if ratio is None:
+                    trace.set_status("skipped", reason="footer_mismatch")
+                    trace.set_output(outcome="rejected")
+                    return False
+                try:
+                    if Decimal(ratio[key]) != Decimal(str(expected)).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    ):
+                        trace.set_status("skipped", reason="footer_mismatch")
+                        trace.set_output(outcome="rejected")
+                        return False
+                except InvalidOperation:
+                    trace.set_status("skipped", reason="footer_mismatch")
+                    trace.set_output(outcome="rejected")
+                    return False
+                continue
+            if column not in present:
+                skipped_columns += 1
+                continue
+            checked_columns += 1
+            total = Decimal("0")
+            for row in rows:
+                value = row.get(column)
+                if value is None or value == EMPTY:
+                    continue
+                try:
+                    total += Decimal(str(value))
+                except InvalidOperation:
+                    trace.set_status("skipped", reason="footer_mismatch")
+                    trace.set_output(outcome="rejected")
+                    return False
             try:
-                total += Decimal(str(value))
+                expected_decimal = Decimal(str(expected))
             except InvalidOperation:
+                trace.set_status("skipped", reason="footer_mismatch")
+                trace.set_output(outcome="rejected")
                 return False
-        try:
-            expected_decimal = Decimal(str(expected))
-        except InvalidOperation:
-            return False
-        if not expected_decimal.is_finite() or not total.is_finite():
-            return False
-        if column != "je" and expected_decimal == expected_decimal.to_integral_value():
-            # 整数列严格相等（容差为零）。
-            if total != expected_decimal:
+            if not expected_decimal.is_finite() or not total.is_finite():
+                trace.set_status("skipped", reason="footer_mismatch")
+                trace.set_output(outcome="rejected")
                 return False
-        else:
-            scale = max(abs(float(expected_decimal)), 1.0)
-            if abs(float(total) - float(expected_decimal)) > tolerance * scale:
-                return False
-    return True
+            if column != "je" and expected_decimal == expected_decimal.to_integral_value():
+                # 整数列严格相等（容差为零）。
+                if total != expected_decimal:
+                    trace.set_status("skipped", reason="footer_mismatch")
+                    trace.set_output(outcome="rejected")
+                    return False
+            else:
+                scale = max(abs(float(expected_decimal)), 1.0)
+                if abs(float(total) - float(expected_decimal)) > tolerance * scale:
+                    trace.set_status("skipped", reason="footer_mismatch")
+                    trace.set_output(outcome="rejected")
+                    return False
+        trace.set_output(
+            outcome="accepted" if checked_columns else "not_applicable",
+            checked_columns=checked_columns,
+            skipped_columns=skipped_columns,
+        )
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,6 +586,71 @@ def _validate_time_anchors(
             raise InvalidRequestError("detail time anchor is invalid")
 
 
+def _observed_scope_rows(
+    rows: tuple[Mapping[str, Any], ...],
+    operation_id: str,
+    filters: NarrowedFilters,
+    role: Role | None,
+    *,
+    source_form: str = "detail",
+) -> tuple[Mapping[str, Any], ...]:
+    with trace_local_operation(
+        "cache",
+        "cache.scope_filter",
+        input_payload=lambda: {
+            "method": "python",
+            "source_form": source_form,
+            "rules": "scope_filtered_rows: effective employee and department membership",
+            "input_rows": len(rows) if role is Role.OWNER else None,
+            "input_rows_state": "available" if role is Role.OWNER else "hidden",
+            "employee_filter": filters.employee_ids is not None,
+            "department_filter": (
+                filters.requested_dept_ids
+                if role in (Role.OWNER, Role.EMPLOYEE)
+                else filters.dept_ids
+            )
+            is not None,
+        },
+    ) as trace:
+        scoped = scope_filtered_rows(rows, operation_id, filters, role)
+        trace.set_output(output_rows=len(scoped), outcome="scoped")
+        return scoped
+
+
+def _observed_business_rows(
+    rows: tuple[Mapping[str, Any], ...],
+    operation_id: str,
+    filters: NarrowedFilters,
+    extra_params: Mapping[str, Any],
+    *,
+    source_form: str = "detail",
+) -> tuple[Mapping[str, Any], ...]:
+    with trace_local_operation(
+        "cache",
+        "cache.business_filter",
+        input_payload=lambda: {
+            "method": "python",
+            "source_form": source_form,
+            "rules": "_business_filtered_rows: narrowed business dimension membership",
+            "input_rows": len(rows),
+            "filter_categories": [
+                name
+                for name, value in (
+                    ("order", filters.order_codes),
+                    ("style", filters.style_codes),
+                    ("plan", filters.plan_codes),
+                    ("material", filters.material_ids),
+                    ("bed", filters.bed_codes),
+                )
+                if value is not None
+            ],
+        },
+    ) as trace:
+        result = _business_filtered_rows(rows, operation_id, filters, extra_params)
+        trace.set_output(output_rows=len(result), outcome="filtered")
+        return result
+
+
 def local_view_rows(
     rows: tuple[Mapping[str, Any], ...],
     operation_id: str,
@@ -543,9 +664,21 @@ def local_view_rows(
     Grouping follows this projection so no outside-scope contribution enters a
     returned aggregate. Native MES shadow input runs through the same final recipe.
     """
-    scoped = scope_filtered_rows(rows, operation_id, filters, role)
-    sliced = time_sliced_rows(scoped, time_anchor_column(operation_id, extra_params), window)
-    return _business_filtered_rows(sliced, operation_id, filters, extra_params)
+    scoped = _observed_scope_rows(rows, operation_id, filters, role)
+    with trace_local_operation(
+        "cache",
+        "cache.time_filter",
+        input_payload=lambda: {
+            "method": "python",
+            "rules": "time_sliced_rows: ISO date prefix inside inclusive calendar window",
+            "anchor_column": time_anchor_column(operation_id, extra_params),
+            "window": window,
+            "input_rows": len(scoped),
+        },
+    ) as trace:
+        sliced = time_sliced_rows(scoped, time_anchor_column(operation_id, extra_params), window)
+        trace.set_output(output_rows=len(sliced), outcome="filtered")
+    return _observed_business_rows(sliced, operation_id, filters, extra_params)
 
 
 def _business_filtered_rows(
@@ -595,6 +728,31 @@ class _CacheHit:
     #: 打在问题窗口上等于空转——那个键根本没被读过。
     window: tuple[str, str] = ("", "")
     source_call_count: int = 0
+
+
+def _snapshot_rejection_reason(
+    payload: dict[str, Any] | None,
+    operation_id: str,
+    params: Mapping[str, object],
+    window: tuple[str, str],
+) -> str | None:
+    if payload is None:
+        return "invalid_structure_or_version"
+    if payload.get("api") != operation_id:
+        return "operation_mismatch"
+    if payload.get("filters") != params:
+        return "parameters_mismatch"
+    if payload.get("groupby"):
+        return "detail_grain_required"
+    if payload.get("window") != {"dates": window[0], "datee": window[1]}:
+        return "window_mismatch"
+    if (
+        operation_id == PROGRESS_OPERATION
+        and payload.get("decoded_rows")
+        and PROGRESS_DATE_COLUMN not in payload.get("columns", ())
+    ):
+        return "missing_time_anchor"
+    return None
 
 
 class V2ResultCache:
@@ -693,47 +851,100 @@ class V2ResultCache:
         if question_window not in windows:
             windows.append(question_window)
         probed: list[str] = []
-        for window in windows:
+        for candidate_order, window in enumerate(windows, start=1):
             params = self._key_params(operation_id, extra_params, window)
             probed.append(self._describe_key(tenant_id, params))
-            try:
-                lookup = await self._cache.get(
-                    RESULT_CACHE_DOMAIN, tenant_id, V2_RESULT_SCOPE_FINGERPRINT, params
-                )
-            except Exception:  # noqa: BLE001 - Redis 是优化，不是闸门
-                _LOGGER.warning("v2_result.store_unavailable", extra={"operation": operation_id})
-                return None
-            if lookup.value is None:
-                continue
-            payload = decode_result_set(lookup.value)
-            if (
-                payload is None
-                or payload.get("api") != operation_id
-                or payload.get("filters") != params
-                or payload.get("groupby")
-                or payload.get("window") != {"dates": window[0], "datee": window[1]}
-                or (
-                    operation_id == PROGRESS_OPERATION
-                    and payload.get("decoded_rows")
-                    and PROGRESS_DATE_COLUMN not in payload.get("columns", ())
-                )
-            ):
-                continue
-            rows = cast("tuple[Mapping[str, Any], ...]", tuple(payload.get("decoded_rows") or ()))
-            if operation_id == PROGRESS_OPERATION:
+            with trace_local_operation(
+                "cache",
+                "cache.candidate",
+                input_payload=lambda: {
+                    "domain": RESULT_CACHE_DOMAIN,
+                    "candidate_order": candidate_order,
+                    "candidate_count": len(windows),
+                    "question_window": question_window,
+                    "candidate_window": window,
+                    "key_digest": probed[-1],
+                },
+                timing_role="parent",
+            ) as trace:
+                trace.set_output(metric_counts={"candidate_probes": 1})
                 try:
+                    lookup = await self._cache.get(
+                        RESULT_CACHE_DOMAIN, tenant_id, V2_RESULT_SCOPE_FINGERPRINT, params
+                    )
+                except Exception:  # noqa: BLE001 - Redis 是优化，不是闸门
+                    trace.set_status("error", reason="store_unavailable")
+                    trace.set_output(outcome="store_unavailable")
+                    _LOGGER.warning(
+                        "v2_result.store_unavailable", extra={"operation": operation_id}
+                    )
+                    return None
+                if lookup.value is None:
+                    trace.set_output(
+                        outcome="miss" if lookup.reason == "miss" else "store_unavailable"
+                    )
+                    if lookup.reason == "store_unavailable":
+                        trace.set_status("error", reason="store_unavailable")
+                    continue
+                with trace_local_operation(
+                    "cache",
+                    "cache.decode",
+                    input_payload=lambda: {
+                        "method": "decode_result_set",
+                        "expected_version": RESULT_SET_VERSION,
+                        "value_bytes": len(lookup.value or b""),
+                    },
+                ) as decode_trace:
+                    payload, decode_reason = _decode_result_set(lookup.value)
+                    decode_trace.set_output(outcome="valid" if payload is not None else "invalid")
+                    if payload is None:
+                        decode_trace.set_status(
+                            "skipped", reason=decode_reason or "invalid_structure"
+                        )
+                reason = decode_reason or _snapshot_rejection_reason(
+                    payload, operation_id, params, window
+                )
+                if payload is None or reason is not None:
+                    trace.set_status("skipped", reason=reason or "invalid_structure")
+                    trace.set_output(outcome="rejected")
+                    continue
+                with trace_local_operation(
+                    "cache",
+                    "cache.validate",
+                    input_payload=lambda: {
+                        "method": "snapshot_rows",
+                        "input_rows_state": "hidden",
+                    },
+                ) as validation_trace:
+                    rows = cast(
+                        "tuple[Mapping[str, Any], ...]", tuple(payload.get("decoded_rows") or ())
+                    )
+                    if operation_id == PROGRESS_OPERATION:
+                        try:
+                            invalid_dates = any(
+                                normalize_progress_date(row.get(PROGRESS_DATE_COLUMN))
+                                != row.get(PROGRESS_DATE_COLUMN)
+                                for row in rows
+                            )
+                        except ProgressDerivationError:
+                            invalid_dates = True
+                        if invalid_dates:
+                            validation_trace.set_status("skipped", reason="invalid_time_anchor")
+                            validation_trace.set_output(outcome="rejected")
+                            trace.set_status("skipped", reason="invalid_time_anchor")
+                            trace.set_output(outcome="rejected")
+                            continue
                     if any(
-                        normalize_progress_date(row.get(PROGRESS_DATE_COLUMN))
-                        != row.get(PROGRESS_DATE_COLUMN)
+                        _FORBIDDEN_ROW_FIELDS.intersection(str(key).lower() for key in row)
                         for row in rows
                     ):
+                        validation_trace.set_status("skipped", reason="forbidden_fields")
+                        validation_trace.set_output(outcome="rejected")
+                        trace.set_status("skipped", reason="forbidden_fields")
+                        trace.set_output(outcome="rejected")
                         continue
-                except ProgressDerivationError:
-                    continue
-            if any(
-                _FORBIDDEN_ROW_FIELDS.intersection(str(key).lower() for key in row) for row in rows
-            ):
-                continue
+                    validation_trace.set_output(outcome="valid")
+                trace.set_output(outcome="eligible")
             source = str(payload.get("source") or EMPTY)
             # 命中/未命中必须各留一行：否则 shadow 的「读 + 比对」在日志里
             # 与「纯实时」完全同形，运维无法判断缓存到底有没有生效。
@@ -792,77 +1003,125 @@ class V2ResultCache:
 
         返回是否落盘；门禁不过 / 派生失败 / 存储故障都只记日志，绝不影响调用方。
         """
-        if extra_params.get("groupbyFields"):
-            return False
-        if (
-            any(_has_credential_fields(row) for row in rows)
-            or _has_credential_fields(footer or {})
-            or _has_credential_fields(extra_params)
-            or _FORBIDDEN_REQUEST_PARAMS.intersection(str(key).lower() for key in extra_params)
-        ):
-            _LOGGER.warning("v2_result.row_fields_rejected", extra={"operation": operation_id})
-            return False
-        # 回写门禁：footer 与本地聚合对账，坏数据不入缓存。
-        if not footer_reconciles(rows, footer, tolerance=self._policy.float_tolerance):
-            _LOGGER.warning(
-                "v2_result.write_gate_rejected",
-                extra={"operation": operation_id, "rows": len(rows)},
-            )
-            return False
-        derived: tuple[str, ...] = ()
-        stored_rows: tuple[Mapping[str, Any], ...] = rows
-        if operation_id == PROGRESS_OPERATION:
-            try:
-                stored_rows = derive_progress_rows(rows)
-            except ProgressDerivationError:
+        with trace_local_operation(
+            "cache",
+            "cache.publish",
+            input_payload=lambda: {
+                "domain": RESULT_CACHE_DOMAIN,
+                "window": window,
+                "source": source if source in {"query", "precompute"} else "unknown",
+                "input_rows_state": "hidden",
+            },
+            timing_role="parent",
+        ) as trace:
+            if extra_params.get("groupbyFields"):
+                trace.set_status("skipped", reason="grouped_input")
+                trace.set_output(outcome="skipped", metric_counts={"writes_skipped": 1})
+                return False
+            if (
+                any(_has_credential_fields(row) for row in rows)
+                or _has_credential_fields(footer or {})
+                or _has_credential_fields(extra_params)
+                or _FORBIDDEN_REQUEST_PARAMS.intersection(str(key).lower() for key in extra_params)
+            ):
+                trace.set_status("skipped", reason="forbidden_fields")
+                trace.set_output(outcome="skipped", metric_counts={"writes_skipped": 1})
+                _LOGGER.warning("v2_result.row_fields_rejected", extra={"operation": operation_id})
+                return False
+            # 回写门禁：footer 与本地聚合对账，坏数据不入缓存。
+            reconciles = footer_reconciles(rows, footer, tolerance=self._policy.float_tolerance)
+            if not reconciles:
+                trace.set_status("skipped", reason="footer_mismatch")
+                trace.set_output(outcome="skipped", metric_counts={"writes_skipped": 1})
                 _LOGGER.warning(
-                    "v2_result.progress_date_invalid",
+                    "v2_result.write_gate_rejected",
                     extra={"operation": operation_id, "rows": len(rows)},
                 )
                 return False
-        try:
-            _validate_time_anchors(stored_rows, operation_id, extra_params)
-        except InvalidRequestError:
-            _LOGGER.warning("v2_result.time_anchor_invalid", extra={"operation": operation_id})
-            return False
-        window_kind = window_category(
-            window[0], window[1], self._today(), self._policy.backtrack_days
-        )
-        ttl = (
-            self._policy.unsettled_ttl_seconds
-            if window_kind == "unsettled"
-            else self._policy.settled_ttl_seconds
-        )
-        params = self._key_params(operation_id, extra_params, window)
-        try:
-            payload = encode_result_set(
-                operation_id=operation_id,
-                rows=stored_rows,
-                footer=footer,
-                window=window,
-                filters=params,
-                derived=derived,
-                generated_at=self._now().isoformat(),
-                source=source,
+            derived: tuple[str, ...] = ()
+            stored_rows: tuple[Mapping[str, Any], ...] = rows
+            if operation_id == PROGRESS_OPERATION:
+                try:
+                    with trace_local_operation(
+                        "cache",
+                        "cache.derive",
+                        input_payload=lambda: {
+                            "method": "derive_progress_rows",
+                            "input_rows_state": "hidden",
+                        },
+                    ) as derive_trace:
+                        stored_rows = derive_progress_rows(rows)
+                        derive_trace.set_output(outcome="normalized")
+                except ProgressDerivationError:
+                    trace.set_status("skipped", reason="invalid_progress_date")
+                    trace.set_output(outcome="skipped", metric_counts={"writes_skipped": 1})
+                    _LOGGER.warning(
+                        "v2_result.progress_date_invalid",
+                        extra={"operation": operation_id, "rows": len(rows)},
+                    )
+                    return False
+            try:
+                _validate_time_anchors(stored_rows, operation_id, extra_params)
+            except InvalidRequestError:
+                trace.set_status("skipped", reason="invalid_time_anchor")
+                trace.set_output(outcome="skipped", metric_counts={"writes_skipped": 1})
+                _LOGGER.warning("v2_result.time_anchor_invalid", extra={"operation": operation_id})
+                return False
+            window_kind = window_category(
+                window[0], window[1], self._today(), self._policy.backtrack_days
             )
-            if deadline is not None:
-                publication_time = self._monotonic_clock or asyncio.get_running_loop().time
-                if publication_time() >= deadline:
-                    raise TimeoutError("cache publication deadline exceeded")
-            written = await self._cache.put(
-                RESULT_CACHE_DOMAIN,
-                tenant_id,
-                V2_RESULT_SCOPE_FINGERPRINT,
-                params,
-                payload,
-                ttl_seconds=ttl,
+            ttl = (
+                self._policy.unsettled_ttl_seconds
+                if window_kind == "unsettled"
+                else self._policy.settled_ttl_seconds
             )
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
-            _LOGGER.warning("v2_result.store_unavailable", extra={"operation": operation_id})
-            return False
-        return written is True
+            params = self._key_params(operation_id, extra_params, window)
+            trace.update_input(window_category=window_kind, ttl_seconds=ttl)
+            try:
+                with trace_local_operation(
+                    "cache",
+                    "cache.encode",
+                    input_payload=lambda: {
+                        "method": "encode_result_set",
+                        "input_rows_state": "hidden",
+                    },
+                ) as encode_trace:
+                    payload = encode_result_set(
+                        operation_id=operation_id,
+                        rows=stored_rows,
+                        footer=footer,
+                        window=window,
+                        filters=params,
+                        derived=derived,
+                        generated_at=self._now().isoformat(),
+                        source=source,
+                    )
+                    encode_trace.set_output(outcome="encoded", value_bytes=len(payload))
+                if deadline is not None:
+                    publication_time = self._monotonic_clock or asyncio.get_running_loop().time
+                    if publication_time() >= deadline:
+                        raise TimeoutError("cache publication deadline exceeded")
+                written = await self._cache.put(
+                    RESULT_CACHE_DOMAIN,
+                    tenant_id,
+                    V2_RESULT_SCOPE_FINGERPRINT,
+                    params,
+                    payload,
+                    ttl_seconds=ttl,
+                )
+            except TimeoutError:
+                trace.set_status("error", reason="publication_deadline")
+                trace.set_output(outcome="failed")
+                raise
+            except Exception:  # noqa: BLE001
+                trace.set_status("error", reason="publication_failed")
+                trace.set_output(outcome="failed")
+                _LOGGER.warning("v2_result.store_unavailable", extra={"operation": operation_id})
+                return False
+            trace.set_output(outcome="written" if written is True else "failed")
+            if written is not True:
+                trace.set_status("error", reason="store_unavailable")
+            return written is True
 
     async def evict(
         self,
@@ -958,66 +1217,124 @@ class ResultCacheExecutor:
         params = dict(extra_params or {})
         if _FORBIDDEN_REQUEST_PARAMS.intersection(key.lower() for key in params):
             raise InvalidRequestError("scope and credential parameters cannot be supplied")
-        operation_id = request.operation_id
-        window_start = cast("datetime | None", request.time_range[0])
-        if (
-            not self._cache.mode.reads
-            or not cacheable_grain(operation_id, params)
-            or window_start is None
-        ):
-            return await self._fetch_realtime(filters, request, active_scope, params)
-        window = local_calendar_dates(window_start, request.time_range[1], self._cache.timezone)
-        snapshot_calls = 0
-        hit = await self._cache.read(filters.tenant_id, operation_id, params, window)
-        if (
-            hit is None
-            and self._snapshot_provider is not None
-            and getattr(request, "allow_owner_snapshot", True)
-        ):
-            lock_key = hashlib.sha256(
-                json.dumps(
-                    [
-                        str(filters.tenant_id),
-                        operation_id,
-                        normalize_params(operation_id, params, window[0], window[1]),
-                    ],
-                    sort_keys=True,
-                ).encode()
-            ).hexdigest()
-            lock = self._snapshot_locks.setdefault(lock_key, asyncio.Lock())
-            async with lock:
-                hit = await self._cache.read(filters.tenant_id, operation_id, params, window)
-                if hit is None:
-                    hit, snapshot_calls = await self._fetch_snapshot(
-                        filters, request, params, window
+        with trace_local_operation(
+            "cache",
+            "cache.fetch",
+            input_payload=lambda: {"mode": self._cache.mode.value},
+            timing_role="parent",
+        ) as decision_trace:
+            decision_trace.set_output(metric_counts={"logical_fetches": 1})
+            operation_id = request.operation_id
+            window_start = cast("datetime | None", request.time_range[0])
+            if (
+                not self._cache.mode.reads
+                or not cacheable_grain(operation_id, params)
+                or window_start is None
+            ):
+                reason = (
+                    "mode_disabled"
+                    if not self._cache.mode.reads
+                    else "unsupported_grain"
+                    if not cacheable_grain(operation_id, params)
+                    else "window_unavailable"
+                )
+                _record_cache_decision(
+                    "cache.realtime", "realtime", reason, {"realtime_fallbacks": 1}
+                )
+                decision_trace.set_output(outcome="realtime", reason=reason)
+                return await self._fetch_realtime(filters, request, active_scope, params)
+            window = local_calendar_dates(window_start, request.time_range[1], self._cache.timezone)
+            snapshot_calls = 0
+            hit = await self._cache.read(filters.tenant_id, operation_id, params, window)
+            if (
+                hit is None
+                and self._snapshot_provider is not None
+                and getattr(request, "allow_owner_snapshot", True)
+            ):
+                lock_key = hashlib.sha256(
+                    json.dumps(
+                        [
+                            str(filters.tenant_id),
+                            operation_id,
+                            normalize_params(operation_id, params, window[0], window[1]),
+                        ],
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest()
+                lock = self._snapshot_locks.setdefault(lock_key, asyncio.Lock())
+                with trace_local_operation(
+                    "cache", "cache.lock_wait", timing_role="parent"
+                ) as lock_trace:
+                    await lock.acquire()
+                    lock_trace.set_output(outcome="acquired", reason="snapshot_producer")
+                try:
+                    hit = await self._cache.read(filters.tenant_id, operation_id, params, window)
+                    if hit is None:
+                        hit, snapshot_calls = await self._fetch_snapshot(
+                            filters, request, params, window
+                        )
+                finally:
+                    lock.release()
+            if hit is not None:
+                try:
+                    served = self._serve_from_cache(hit, filters, request, params, window)
+                    validator = getattr(request, "result_validator", None)
+                    if validator is not None and not validator(served):
+                        raise InvalidRequestError("required analysis columns are unavailable")
+                except (ProgressDerivationError, InvalidRequestError, InvalidOperation):
+                    _record_cache_decision("cache.view", "rejected", "view_invalid")
+                    await self._cache.evict(filters.tenant_id, operation_id, params, hit.window)
+                    _LOGGER.warning("v2_result.view_invalid", extra={"operation": operation_id})
+                else:
+                    if self._cache.mode.verifies:
+                        _record_cache_decision("cache.shadow_source", "realtime", "shadow_baseline")
+                        realtime = await self._fetch_realtime(
+                            filters, request, active_scope, params
+                        )
+                        served = replace(
+                            served,
+                            shadow_result=realtime,
+                            source_call_count=(served.source_call_count or 0)
+                            + _source_call_count(realtime),
+                        )
+                        self._remember_hit(served, filters, request, params, hit)
+                    with trace_local_operation(
+                        "cache",
+                        "cache.adopt",
+                        input_payload=lambda: {
+                            "source": hit.source
+                            if hit.source in {"query", "precompute"}
+                            else "unknown",
+                            "window": hit.window,
+                        },
+                    ) as trace:
+                        trace.set_output(
+                            outcome="pending_shadow" if self._cache.mode.verifies else "adopted",
+                            output_rows=len(served.rows),
+                            complete=served.complete,
+                            metric_counts={}
+                            if self._cache.mode.verifies
+                            else {"adopted_snapshots": 1},
+                        )
+                        if trace.active:
+                            trace.set_output(generated_at=_safe_timestamp(hit.generated_at))
+                    decision_trace.set_output(
+                        outcome="pending_shadow" if self._cache.mode.verifies else "cache",
+                        output_rows=len(served.rows),
+                        complete=served.complete,
                     )
-        if hit is not None:
-            try:
-                served = self._serve_from_cache(hit, filters, request, params, window)
-                validator = getattr(request, "result_validator", None)
-                if validator is not None and not validator(served):
-                    raise InvalidRequestError("required analysis columns are unavailable")
-            except (ProgressDerivationError, InvalidRequestError, InvalidOperation):
-                await self._cache.evict(filters.tenant_id, operation_id, params, hit.window)
-                _LOGGER.warning("v2_result.view_invalid", extra={"operation": operation_id})
-            else:
-                if self._cache.mode.verifies:
-                    realtime = await self._fetch_realtime(filters, request, active_scope, params)
-                    served = replace(
-                        served,
-                        shadow_result=realtime,
-                        source_call_count=(served.source_call_count or 0)
-                        + _source_call_count(realtime),
-                    )
-                    self._remember_hit(served, filters, request, params, hit)
-                return served
-        realtime = await self._fetch_realtime(filters, request, active_scope, params)
-        await self._maybe_write(realtime, filters, request, params, window)
-        if snapshot_calls:
-            return replace(
-                realtime, source_call_count=snapshot_calls + _source_call_count(realtime)
+                    return served
+            _record_cache_decision(
+                "cache.realtime", "realtime", "no_usable_snapshot", {"realtime_fallbacks": 1}
             )
-        return realtime
+            decision_trace.set_output(outcome="realtime", reason="no_usable_snapshot")
+            realtime = await self._fetch_realtime(filters, request, active_scope, params)
+            await self._maybe_write(realtime, filters, request, params, window)
+            if snapshot_calls:
+                return replace(
+                    realtime, source_call_count=snapshot_calls + _source_call_count(realtime)
+                )
+            return realtime
 
     async def _fetch_realtime(
         self,
@@ -1079,15 +1396,26 @@ class ResultCacheExecutor:
         if native_progress:
             # Preserve the customer's grouped calculation as an independent
             # baseline. Filter retained dimensions without recomputing its sums.
-            rows = scope_filtered_rows(fetched.rows, request.operation_id, filters, request.role)
-            rows = _business_filtered_rows(rows, request.operation_id, filters, params)
+            source_form = (
+                "native_mes_grouped" if params.get("groupbyFields") else "native_mes_detail"
+            )
+            rows = _observed_scope_rows(
+                fetched.rows,
+                request.operation_id,
+                filters,
+                request.role,
+                source_form=source_form,
+            )
+            rows = _observed_business_rows(
+                rows, request.operation_id, filters, params, source_form=source_form
+            )
             if rows == fetched.rows:
                 return fetched
             return replace(
                 fetched,
                 rows=tuple(dict(row) for row in rows),
                 total=len(rows),
-                footer=recomputed_footer(rows, fetched.footer),
+                footer=_observed_footer(rows, fetched.footer),
             )
         window = local_calendar_dates(window_start, request.time_range[1], self._cache.timezone)
         try:
@@ -1103,7 +1431,7 @@ class ResultCacheExecutor:
             fetched,
             rows=tuple(dict(row) for row in rows),
             total=len(rows),
-            footer=recomputed_footer(rows, fetched.footer),
+            footer=_observed_footer(rows, fetched.footer),
         )
         # Validate the original source totals before a local projection changes
         # their grain; otherwise a bad source footer could become a valid cache.
@@ -1160,54 +1488,71 @@ class ResultCacheExecutor:
         provider = self._snapshot_provider
         if provider is None:
             return None, 0
-        base_params = detail_params(params)
-        source_calls = 0
-        try:
-            fetched = await provider(filters.tenant_id, request.operation_id, window, base_params)
-            source_calls = _source_call_count(fetched)
-            if not fetched.complete:
-                return None, source_calls
-            if self._cache.mode.writes:
-                written = await self._cache.write(
-                    filters.tenant_id,
-                    request.operation_id,
-                    fetched.rows,
-                    fetched.footer,
-                    base_params,
-                    window,
-                    source="query",
+        with trace_local_operation(
+            "cache",
+            "cache.produce",
+            input_payload=lambda: {"window": window, "input_rows_state": "hidden"},
+            timing_role="parent",
+        ) as trace:
+            base_params = detail_params(params)
+            source_calls = 0
+            try:
+                fetched = await provider(
+                    filters.tenant_id, request.operation_id, window, base_params
                 )
-                if not written:
-                    self._alert(
-                        "cache_write_failed",
-                        {
-                            "operation": request.operation_id,
-                            "rows": len(fetched.rows),
-                            "window": f"{window[0]}..{window[1]}",
-                            "source": "owner_snapshot",
-                        },
-                    )
+                source_calls = _source_call_count(fetched)
+                if not fetched.complete:
+                    trace.set_status("skipped", reason="incomplete_snapshot")
+                    trace.set_output(outcome="unavailable", complete=False)
                     return None, source_calls
-            elif not footer_reconciles(fetched.rows, fetched.footer):
+                if self._cache.mode.writes:
+                    written = await self._cache.write(
+                        filters.tenant_id,
+                        request.operation_id,
+                        fetched.rows,
+                        fetched.footer,
+                        base_params,
+                        window,
+                        source="query",
+                    )
+                    if not written:
+                        self._alert(
+                            "cache_write_failed",
+                            {
+                                "operation": request.operation_id,
+                                "rows": len(fetched.rows),
+                                "window": f"{window[0]}..{window[1]}",
+                                "source": "owner_snapshot",
+                            },
+                        )
+                        trace.set_status("error", reason="snapshot_publication_failed")
+                        trace.set_output(outcome="unavailable")
+                        return None, source_calls
+                elif not footer_reconciles(fetched.rows, fetched.footer):
+                    trace.set_status("skipped", reason="footer_mismatch")
+                    trace.set_output(outcome="unavailable")
+                    return None, source_calls
+                rows = (
+                    derive_progress_rows(fetched.rows)
+                    if request.operation_id == PROGRESS_OPERATION
+                    else fetched.rows
+                )
+            except Exception:  # noqa: BLE001 - snapshot availability cannot block caller MES
+                trace.set_status("error", reason="snapshot_unavailable")
+                trace.set_output(outcome="unavailable")
+                _LOGGER.warning(
+                    "v2_result.snapshot_unavailable", extra={"operation": request.operation_id}
+                )
                 return None, source_calls
-            rows = (
-                derive_progress_rows(fetched.rows)
-                if request.operation_id == PROGRESS_OPERATION
-                else fetched.rows
-            )
-        except Exception:  # noqa: BLE001 - snapshot availability cannot block caller MES
-            _LOGGER.warning(
-                "v2_result.snapshot_unavailable", extra={"operation": request.operation_id}
-            )
-            return None, source_calls
-        return _CacheHit(
-            rows=rows,
-            footer=fetched.footer,
-            generated_at=self._cache.current_timestamp,
-            source="query",
-            window=window,
-            source_call_count=source_calls,
-        ), source_calls
+            trace.set_output(outcome="eligible", complete=True, source="query")
+            return _CacheHit(
+                rows=rows,
+                footer=fetched.footer,
+                generated_at=self._cache.current_timestamp,
+                source="query",
+                window=window,
+                source_call_count=source_calls,
+            ), source_calls
 
     def _serve_from_cache(
         self,
@@ -1223,7 +1568,7 @@ class ResultCacheExecutor:
             total=len(rows),
             pages_fetched=0,
             complete=True,
-            footer=recomputed_footer(rows, hit.footer),
+            footer=_observed_footer(rows, hit.footer),
             cache_source=hit.source,
             cache_generated_at=hit.generated_at,
             source_call_count=hit.source_call_count,
@@ -1238,10 +1583,23 @@ class ResultCacheExecutor:
         window: tuple[str, str],
     ) -> tuple[Mapping[str, Any], ...]:
         operation_id = request.operation_id
-        detail = (
-            derive_progress_rows(source_rows) if operation_id == PROGRESS_OPERATION else source_rows
-        )
-        _validate_time_anchors(detail, operation_id, params)
+        with trace_local_operation(
+            "cache",
+            "cache.derive",
+            input_payload=lambda: {
+                "method": "derive_progress_rows"
+                if operation_id == PROGRESS_OPERATION
+                else "validated_payroll_detail",
+                "input_rows_state": "hidden",
+            },
+        ) as trace:
+            detail = (
+                derive_progress_rows(source_rows)
+                if operation_id == PROGRESS_OPERATION
+                else source_rows
+            )
+            _validate_time_anchors(detail, operation_id, params)
+            trace.set_output(outcome="valid")
         rows = local_view_rows(detail, operation_id, filters, params, window, request.role)
         raw_groupby = params.get("groupbyFields") or ()
         if not isinstance(raw_groupby, (list, tuple)):
@@ -1250,10 +1608,47 @@ class ResultCacheExecutor:
         if not all(isinstance(field, str) for field in groupby_values):
             raise InvalidRequestError("groupbyFields must contain field names")
         groupby = cast("tuple[str, ...]", tuple(groupby_values))
-        if operation_id == PROGRESS_OPERATION:
-            rows = aggregate_progress_rows(rows, groupby)
-        elif groupby:
-            rows = _aggregate_payroll_rows(rows, groupby)
+        with trace_local_operation(
+            "cache",
+            "cache.aggregate",
+            input_payload=lambda: {
+                "method": "aggregate_progress_rows"
+                if operation_id == PROGRESS_OPERATION
+                else "_aggregate_payroll_rows"
+                if groupby
+                else "detail_passthrough",
+                "input_rows": len(rows),
+                "grouped": bool(groupby),
+                "rules": (
+                    "add supplied progress contributions; wcl = sssl / fhsl * 100; "
+                    "zero denominator => 0; HALF_UP 2 decimals; sort dimension groups"
+                )
+                if operation_id == PROGRESS_OPERATION and groupby
+                else "normalize progress date; preserve detail contributions without grouping"
+                if operation_id == PROGRESS_OPERATION
+                else (
+                    "sum available je/sl/sssl/zpsl/bs/wgs/wts/fhsl using Decimal; "
+                    "sort dimension groups"
+                )
+                if groupby
+                else "preserve payroll detail without grouping",
+            },
+        ) as trace:
+            if operation_id == PROGRESS_OPERATION:
+                rows = aggregate_progress_rows(rows, groupby)
+            elif groupby:
+                rows = _aggregate_payroll_rows(rows, groupby)
+            trace.set_output(output_rows=len(rows), outcome="grouped" if groupby else "detail")
+            if trace.active:
+                reviewed_fields = (
+                    ScjdV2Row.model_fields
+                    if operation_id == PROGRESS_OPERATION
+                    else GongziClRow.model_fields
+                )
+                trace.set_output(
+                    groupby_fields=tuple(field for field in groupby if field in reviewed_fields),
+                    hidden_groupby_fields=sum(field not in reviewed_fields for field in groupby),
+                )
         return rows
 
     def _remember_hit(
@@ -1296,11 +1691,18 @@ class ResultCacheExecutor:
         params: dict[str, Any],
         window: tuple[str, str],
     ) -> None:
-        if not self._cache.mode.writes or not realtime.complete or request.role is not Role.OWNER:
-            return
-        if params.get("groupbyFields") or params.get("uid") or params.get("Uid"):
-            return
-        if any(
+        reason = (
+            "mode_readonly"
+            if not self._cache.mode.writes
+            else "incomplete_result"
+            if not realtime.complete
+            else "owner_required"
+            if request.role is not Role.OWNER
+            else "filtered_or_grouped_request"
+            if params.get("groupbyFields") or params.get("uid") or params.get("Uid")
+            else None
+        )
+        if reason is None and any(
             value is not None
             for value in (
                 filters.employee_ids,
@@ -1312,7 +1714,17 @@ class ResultCacheExecutor:
                 filters.bed_codes,
             )
         ):
-            return
+            reason = "narrowed_view"
+        with trace_local_operation(
+            "cache",
+            "cache.write_gate",
+            input_payload=lambda: {"mode": self._cache.mode.value, "complete": realtime.complete},
+        ) as trace:
+            trace.set_output(outcome="eligible" if reason is None else "skipped")
+            if reason is not None:
+                trace.set_status("skipped", reason=reason)
+                trace.set_output(metric_counts={"writes_skipped": 1})
+                return
         written = await self._cache.write(
             filters.tenant_id,
             request.operation_id,
@@ -1341,6 +1753,51 @@ def _source_call_count(result: ResourceFetchResult) -> int:
     if result.source_call_count is not None:
         return result.source_call_count
     return 1
+
+
+def _record_cache_decision(
+    operation: str,
+    outcome: str,
+    reason: str,
+    metric_counts: dict[str, int] | None = None,
+) -> None:
+    with trace_local_operation("cache", operation) as trace:
+        trace.set_output(outcome=outcome, reason=reason, metric_counts=metric_counts or {})
+        if outcome in {"rejected", "skipped"}:
+            trace.set_status("skipped", reason=reason)
+
+
+def _safe_timestamp(value: str) -> str | None:
+    try:
+        return datetime.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
+def _observed_footer(
+    rows: tuple[Mapping[str, Any], ...], footer: Mapping[str, str] | None
+) -> dict[str, str] | None:
+    with trace_local_operation(
+        "cache",
+        "cache.footer",
+        input_payload=lambda: {
+            "method": "recomputed_footer",
+            "input_rows": len(rows),
+            "footer_present": bool(footer),
+            "rules": (
+                "sum available additive columns; wcl = sssl / fhsl * 100, "
+                "HALF_UP 2 decimals; unavailable or unparseable totals omitted"
+            ),
+        },
+    ) as trace:
+        result = recomputed_footer(rows, footer)
+        trace.set_output(
+            outcome="recomputed" if result else "unavailable",
+            output_rows=len(rows),
+            retained_total_fields=len(result or {}),
+            omitted_total_fields=max(0, len(footer or {}) - len(result or {})),
+        )
+        return result
 
 
 def _aggregate_payroll_rows(

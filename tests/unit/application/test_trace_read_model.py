@@ -11,6 +11,7 @@ inspection:
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Mapping
 
 import pytest
 
@@ -450,3 +451,284 @@ async def test_the_service_scopes_the_fact_read_to_the_owner_pair() -> None:
     # Facts carry only tenant_id, so the ownership decision must have been made
     # on the interaction row first — and the pair travels with the read.
     assert facts.seen == [{"tenant_id": "tenant-a", "user_id": "user-a", "interaction_id": "int-1"}]
+
+
+def local_payload(
+    key: str = "cache:c1",
+    *,
+    kind: str = "cache",
+    operation: str = "lookup",
+    offset_ms: int = 100,
+    duration_ms: int = 20,
+    role: str = "leaf",
+    status: str = "ok",
+    details: Mapping[str, object] | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> TraceDebugPayload:
+    timing: dict[str, object] = {
+        "started_at": (NOW + timedelta(milliseconds=offset_ms)).isoformat(),
+        "duration_ms": duration_ms,
+        "status": status,
+        "reason": None,
+        "error_category": None,
+        "timing_role": role,
+        "parent_span_id": None,
+    }
+    timing.update(metadata or {})
+    return TraceDebugPayload(
+        span_key=key,
+        input={"sql": "SELECT count(*) FROM authorized_data"} if kind == "duckdb" else {},
+        output={"_trace": timing, "details": dict(details or {})},
+        truncated=False,
+        kind=kind,
+        operation_id=operation,
+        stage=operation,
+        occurred_at=NOW + timedelta(milliseconds=offset_ms + duration_ms),
+    )
+
+
+def test_local_spans_join_the_timeline_and_preserve_the_legacy_ledger() -> None:
+    cache = local_payload(details={"input_rows": 30, "output_rows": 7})
+    query = local_payload("duckdb:q1", kind="duckdb", operation="query", offset_ms=150)
+    facts = TraceFacts(
+        mes_spans=(mes_span(started_ms=200),),
+        llm_spans=(llm_span(started_ms=0, duration_ms=40),),
+        debug_payloads={query.span_key: query, cache.span_key: cache},
+        interaction_fact=InteractionFactRecord("completed", 4_008, 12, 40, 3_956),
+    )
+
+    document = assemble_trace(record(), facts, capability=FULL)
+
+    assert [span["kind"] for span in document["spans"]] == ["llm", "cache", "duckdb", "mes"]
+    cached = document["spans"][1]
+    assert cached["duration_ms"] == 20
+    assert cached["offset_ms"] == 100
+    assert cached["operation_id"] == "lookup"
+    assert cached["details"] == {"input_rows": 30, "output_rows": 7}
+    assert cached["payload"]["available"] is True
+    assert document["ledger"] == duration_breakdown(facts)
+    assert document["processing_summary"]["complete"] is False
+
+
+def test_local_spans_are_hidden_when_capture_is_not_permitted() -> None:
+    cached = local_payload()
+
+    document = assemble_trace(
+        record(), TraceFacts(debug_payloads={cached.span_key: cached}), capability=NONE
+    )
+
+    assert document["spans"] == []
+    summary = document["processing_summary"]
+    assert summary["state"] == "unavailable"
+    assert summary["reason"] == "content_capture_disabled"
+    assert summary["kinds"]["cache"]["span_count"] is None
+    assert all(value is None for value in summary["cache_metrics"].values())
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"duration_ms": -1},
+        {"duration_ms": True},
+        {"duration_ms": "20"},
+        {"duration_ms": 1.2},
+        {"started_at": "not-an-instant"},
+        {"started_at": "2026-09-22T00:20:31"},
+        {"status": "unknown"},
+        {"timing_role": "unknown"},
+        {"parent_span_id": {"bad": "shape"}},
+    ],
+)
+def test_invalid_local_metadata_does_not_become_a_timed_span(
+    metadata: Mapping[str, object],
+) -> None:
+    cached = local_payload(metadata=metadata)
+
+    document = assemble_trace(
+        record(), TraceFacts(debug_payloads={cached.span_key: cached}), capability=FULL
+    )
+
+    assert document["spans"] == []
+    assert document["processing_summary"]["reason"] == "not_captured_or_expired"
+
+
+def test_old_payload_rows_and_unknown_kinds_do_not_invent_local_spans() -> None:
+    old = TraceDebugPayload("cache:old", {"a": 1}, {"b": 2}, False)
+    unknown = local_payload("other:x", kind="unknown")
+
+    document = assemble_trace(
+        record(),
+        TraceFacts(debug_payloads={old.span_key: old, unknown.span_key: unknown}),
+        capability=FULL,
+    )
+
+    assert document["spans"] == []
+    assert document["processing_summary"]["kinds"]["duckdb"]["cumulative_ms"] is None
+
+
+def test_a_local_span_can_extend_the_axis_without_rewriting_the_ledger() -> None:
+    query = local_payload("duckdb:q1", kind="duckdb", offset_ms=3_900, duration_ms=600)
+    document = assemble_trace(
+        record(),
+        TraceFacts(
+            debug_payloads={query.span_key: query},
+            interaction_fact=InteractionFactRecord("completed", 4_008, 0, 0, 4_008),
+        ),
+        capability=FULL,
+    )
+
+    assert document["total_ms"] == 4_500
+    assert document["ledger"]["total_ms"] == 4_008
+    assert document["processing_summary"]["timing"]["axis_ms"] == 4_500
+
+
+def test_processing_occupancy_excludes_parents_and_accounts_for_concurrent_categories() -> None:
+    entries = (
+        local_payload("cache:parent", offset_ms=0, duration_ms=1_000, role="parent"),
+        local_payload("cache:first", offset_ms=100, duration_ms=300),
+        local_payload("cache:second", offset_ms=200, duration_ms=300),
+        local_payload("duckdb:q1", kind="duckdb", offset_ms=300, duration_ms=300),
+    )
+    document = assemble_trace(
+        record(),
+        TraceFacts(
+            mes_spans=(mes_span(started_ms=0, duration_ms=250),),
+            debug_payloads={item.span_key: item for item in entries},
+        ),
+        capability=FULL,
+    )
+    summary = document["processing_summary"]
+    cache = summary["kinds"]["cache"]
+    timing = summary["timing"]
+
+    assert cache["span_count"] == 3
+    assert cache["leaf_count"] == 2
+    assert cache["parent_count"] == 1
+    assert cache["cumulative_ms"] == 600
+    assert cache["occupancy_ms"] == 400
+    assert cache["exclusive_ms"] == 50
+    assert timing["occupancy_ms"] == 600
+    assert timing["overlap_ms"] == 350
+    assert timing["exclusive_ms"] == {"mes": 100, "llm": 0, "cache": 50, "duckdb": 100}
+    assert timing["uncovered_ms"] == 3_408
+    assert (
+        sum(timing["exclusive_ms"].values()) + timing["overlap_ms"] + timing["uncovered_ms"]
+        == timing["axis_ms"]
+    )
+
+
+def test_processing_cache_metrics_distinguish_storage_hit_adoption_and_reuse() -> None:
+    entries = (
+        local_payload(
+            "cache:lookup", details={"metric_counts": {"cache_reads": 1, "storage_hits": 1}}
+        ),
+        local_payload("cache:invalid", status="skipped", details={"outcome": "invalid"}),
+        local_payload(
+            "cache:reuse",
+            operation="interaction_reuse",
+            details={"metric_counts": {"interaction_reuses": 1}},
+        ),
+    )
+    document = assemble_trace(
+        record(),
+        TraceFacts(debug_payloads={item.span_key: item for item in entries}),
+        capability=FULL,
+    )
+    metrics = document["processing_summary"]["cache_metrics"]
+
+    assert metrics["cache_reads"] == 1
+    assert metrics["storage_hits"] == 1
+    assert metrics["interaction_reuses"] == 1
+    assert metrics["adopted_snapshots"] is None
+    assert metrics["realtime_fallbacks"] is None
+
+
+def test_processing_treats_observed_zero_duration_differently_from_missing_work() -> None:
+    query = local_payload("duckdb:empty", kind="duckdb", duration_ms=0, details={"result_rows": 0})
+    document = assemble_trace(
+        record(), TraceFacts(debug_payloads={query.span_key: query}), capability=FULL
+    )
+    summary = document["processing_summary"]
+
+    assert summary["kinds"]["duckdb"]["cumulative_ms"] == 0
+    assert summary["kinds"]["duckdb"]["leaf_count"] == 1
+    assert summary["kinds"]["cache"]["cumulative_ms"] is None
+    assert summary["timing"]["occupancy_ms"] == 0
+    assert summary["timing"]["uncovered_ms"] == 4_008
+
+
+def test_local_payload_truncation_is_preserved() -> None:
+    query = local_payload("duckdb:q1", kind="duckdb")
+    truncated = TraceDebugPayload(
+        span_key=query.span_key,
+        input={"sql": "SELECT 1 /* truncated */"},
+        output=query.output,
+        truncated=True,
+        original_bytes=999_999,
+        kind=query.kind,
+        operation_id=query.operation_id,
+    )
+
+    document = assemble_trace(
+        record(), TraceFacts(debug_payloads={truncated.span_key: truncated}), capability=FULL
+    )
+
+    span = document["spans"][0]
+    assert span["payload"]["truncated"] is True
+    assert span["payload"]["original_bytes"] == 999_999
+    assert document["processing_summary"]["state"] == "partial"
+
+
+def test_query_and_load_counters_use_actual_operation_and_status_records() -> None:
+    entries = (
+        local_payload("duckdb:q-ok", kind="duckdb", operation="duckdb.query"),
+        local_payload("duckdb:q-denied", kind="duckdb", operation="duckdb.query", status="denied"),
+        local_payload("duckdb:q-error", kind="duckdb", operation="duckdb.query", status="error"),
+        local_payload(
+            "duckdb:q-cancel", kind="duckdb", operation="duckdb.query", status="cancelled"
+        ),
+        local_payload("duckdb:load", kind="duckdb", operation="duckdb.register", role="parent"),
+        local_payload("duckdb:replace", kind="duckdb", operation="duckdb.replace", role="parent"),
+        local_payload(
+            "cache:shadow",
+            operation="cache.shadow_compare",
+            details={"metric_counts": {"shadow_checks": 1}},
+        ),
+    )
+
+    summary = assemble_trace(
+        record(),
+        TraceFacts(debug_payloads={item.span_key: item for item in entries}),
+        capability=FULL,
+    )["processing_summary"]
+
+    assert summary["duckdb_metrics"] == {
+        "query_attempts": 4,
+        "queries_completed": 1,
+        "queries_failed": 1,
+        "queries_denied": 1,
+        "queries_cancelled": 1,
+        "table_registrations": 1,
+        "table_replacements": 1,
+    }
+    assert summary["cache_metrics"]["shadow_checks"] == 1
+
+
+def test_invalid_metric_counts_cannot_become_observed_cache_statistics() -> None:
+    cached = local_payload(
+        details={
+            "metric_counts": {
+                "cache_reads": "3",
+                "storage_hits": True,
+                "adopted_snapshots": -1,
+            }
+        }
+    )
+
+    summary = assemble_trace(
+        record(), TraceFacts(debug_payloads={cached.span_key: cached}), capability=FULL
+    )["processing_summary"]
+
+    assert summary["cache_metrics"]["cache_reads"] is None
+    assert summary["cache_metrics"]["storage_hits"] is None
+    assert summary["cache_metrics"]["adopted_snapshots"] is None

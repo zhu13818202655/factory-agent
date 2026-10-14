@@ -23,6 +23,7 @@ from sageql_core import (
 from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.permission_matrix import Capability, authorize_capability
 from factory_agent.domain import NarrowedFilters, Role, TimeRange, local_calendar_dates
+from factory_agent.observability.local_trace import trace_local_operation
 from factory_agent.ports.analysis import AnalysisRequest
 from factory_agent.ports.analysis_catalogue import (
     BOOLEAN_FIELDS,
@@ -215,15 +216,33 @@ class HostDatasetProvider:
         async with lock:
             existing = self.host.ensured.get(fingerprint)
             if existing is not None:
-                if not existing.dataset_refs:
-                    return existing
-                return self.host.observation(
-                    **{
-                        **existing.model_dump(),
-                        "state": "interaction_reuse",
-                        "source": "interaction",
-                    }
-                )
+                with trace_local_operation(
+                    "cache",
+                    "cache.interaction_exact",
+                    input_payload=lambda: {
+                        "dataset": query.dataset_id,
+                        "request_digest": fingerprint,
+                        "dataset_refs": existing.dataset_refs,
+                    },
+                ) as trace:
+                    trace.set_output(
+                        outcome="reuse" if existing.complete else "unavailable",
+                        source="interaction",
+                        output_rows=existing.row_count,
+                        complete=existing.complete,
+                        metric_counts={"interaction_reuses": 1, "exact_reuses": 1}
+                        if existing.complete
+                        else {},
+                    )
+                    if not existing.dataset_refs:
+                        return existing
+                    return self.host.observation(
+                        **{
+                            **existing.model_dump(),
+                            "state": "interaction_reuse",
+                            "source": "interaction",
+                        }
+                    )
             covering = next(
                 (loaded for loaded in self.host.datasets.values() if self._covers(loaded, query)),
                 None,
@@ -291,69 +310,115 @@ class HostDatasetProvider:
     def _reuse(
         self, loaded: LoadedDataset, query: Query, control: RunControl
     ) -> ApprovedObservation:
-        rows = tuple(row for row in loaded.rows if self._matches(row, query))
-        if query.dataset_id in FACT_DATASETS and (
-            loaded.query.window_start,
-            loaded.query.window_end,
-        ) != (query.window_start, query.window_end):
-            window = self._window(query)
-            dates, datee = local_calendar_dates(
-                window.start, window.end, ZoneInfo(self.host.request.factory_timezone)
+        with trace_local_operation(
+            "cache",
+            "cache.interaction_covering",
+            input_payload=lambda: {
+                "dataset": query.dataset_id,
+                "dataset_ref": loaded.reference,
+                "input_rows": len(loaded.rows),
+            },
+            timing_role="parent",
+        ) as trace:
+            with trace_local_operation(
+                "cache",
+                "cache.interaction_filter",
+                input_payload=lambda: {
+                    "method": "python",
+                    "input_rows": len(loaded.rows),
+                    "rules": (
+                        "_matches: requested dimension membership; "
+                        "business_date inside inclusive calendar window"
+                    ),
+                    "filter_fields": tuple(condition.field for condition in query.filters),
+                    "window_narrowed": (loaded.query.window_start, loaded.query.window_end)
+                    != (query.window_start, query.window_end),
+                },
+            ) as filter_trace:
+                rows = tuple(row for row in loaded.rows if self._matches(row, query))
+                if query.dataset_id in FACT_DATASETS and (
+                    loaded.query.window_start,
+                    loaded.query.window_end,
+                ) != (query.window_start, query.window_end):
+                    window = self._window(query)
+                    dates, datee = local_calendar_dates(
+                        window.start, window.end, ZoneInfo(self.host.request.factory_timezone)
+                    )
+                    rows = tuple(
+                        row for row in rows if dates <= str(row.get("business_date")) <= datee
+                    )
+                filter_trace.set_output(outcome="filtered", output_rows=len(rows))
+            if len(rows) > query.limit:
+                trace.set_status("skipped", reason="row_limit")
+                trace.set_output(outcome="unavailable", output_rows=len(rows), complete=False)
+                return self.host.observation(
+                    state="incomplete", complete=False, reason_code="incomplete"
+                )
+            if rows == loaded.rows:
+                trace.set_output(
+                    outcome="reuse",
+                    output_rows=len(rows),
+                    complete=True,
+                    source="interaction",
+                    dataset_refs=(loaded.reference,),
+                    metric_counts={"interaction_reuses": 1, "covering_reuses": 1},
+                )
+                return self.host.observation(
+                    state="interaction_reuse",
+                    dataset_refs=(loaded.reference,),
+                    descriptors=(loaded.descriptor,),
+                    row_count=len(rows),
+                    complete=True,
+                    source="interaction",
+                )
+            control.consume("processed_rows", len(rows))
+            reference = "dataset:" + self.host.new_id()
+            if reference in self.host.datasets:
+                raise ActionRejected("execution_failed")
+            table_name = "analysis_data_" + str(len(self.host.datasets))
+            self.host.sandbox.register_table(
+                SandboxTable(
+                    table_name,
+                    tuple(dict(row) for row in rows),
+                    tuple(
+                        (
+                            field,
+                            "DECIMAL(28,8)"
+                            if field in NUMERIC_FIELDS
+                            else "DATE"
+                            if field == "business_date"
+                            else "BOOLEAN"
+                            if field in BOOLEAN_FIELDS
+                            else "BIGINT"
+                            if field in INTEGER_FIELDS
+                            else "VARCHAR",
+                        )
+                        for field in loaded.columns
+                    ),
+                )
             )
-            rows = tuple(row for row in rows if dates <= str(row.get("business_date")) <= datee)
-        if len(rows) > query.limit:
-            return self.host.observation(
-                state="incomplete", complete=False, reason_code="incomplete"
+            view_descriptor = loaded.descriptor.model_copy(
+                update={"window_start": query.window_start, "window_end": query.window_end}
             )
-        if rows == loaded.rows:
+            self.host.datasets[reference] = LoadedDataset(
+                reference, query, table_name, rows, loaded.columns, view_descriptor
+            )
+            trace.set_output(
+                outcome="reuse",
+                output_rows=len(rows),
+                complete=True,
+                source="interaction",
+                dataset_refs=(reference,),
+                metric_counts={"interaction_reuses": 1, "covering_reuses": 1},
+            )
             return self.host.observation(
                 state="interaction_reuse",
-                dataset_refs=(loaded.reference,),
-                descriptors=(loaded.descriptor,),
+                dataset_refs=(reference,),
+                descriptors=(view_descriptor,),
                 row_count=len(rows),
                 complete=True,
                 source="interaction",
             )
-        control.consume("processed_rows", len(rows))
-        reference = "dataset:" + self.host.new_id()
-        if reference in self.host.datasets:
-            raise ActionRejected("execution_failed")
-        table_name = "analysis_data_" + str(len(self.host.datasets))
-        self.host.sandbox.register_table(
-            SandboxTable(
-                table_name,
-                tuple(dict(row) for row in rows),
-                tuple(
-                    (
-                        field,
-                        "DECIMAL(28,8)"
-                        if field in NUMERIC_FIELDS
-                        else "DATE"
-                        if field == "business_date"
-                        else "BOOLEAN"
-                        if field in BOOLEAN_FIELDS
-                        else "BIGINT"
-                        if field in INTEGER_FIELDS
-                        else "VARCHAR",
-                    )
-                    for field in loaded.columns
-                ),
-            )
-        )
-        view_descriptor = loaded.descriptor.model_copy(
-            update={"window_start": query.window_start, "window_end": query.window_end}
-        )
-        self.host.datasets[reference] = LoadedDataset(
-            reference, query, table_name, rows, loaded.columns, view_descriptor
-        )
-        return self.host.observation(
-            state="interaction_reuse",
-            dataset_refs=(reference,),
-            descriptors=(view_descriptor,),
-            row_count=len(rows),
-            complete=True,
-            source="interaction",
-        )
 
     def _validate_query(self, query: Query) -> None:
         spec = DATASETS[query.dataset_id]

@@ -39,7 +39,7 @@ from factory_agent.observability.redaction import REDACTED, redact_text
 
 _LOGGER = get_logger("factory_agent.observability.debug_trace")
 
-CaptureKind = Literal["llm", "mes"]
+CaptureKind = Literal["llm", "mes", "cache", "duckdb"]
 
 #: Credential-shaped key fragments withheld from a captured payload. Narrower
 #: than ``redaction.SENSITIVE_KEY_PATTERNS`` on purpose (see the module
@@ -258,7 +258,7 @@ def record_debug_capture(
     """
     scope = _scope_var.get()
     buffer = _buffer_var.get()
-    if scope is None or buffer is None or not _config.enabled:
+    if scope is None or buffer is None or not debug_capture_enabled():
         return
     try:
         payload = summarise_payload(
