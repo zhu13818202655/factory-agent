@@ -1,0 +1,77 @@
+# ---------------------------------------------------------------------------
+# srv-network 形态：容器接入外部 docker 网络 srv-domain，由该网络里既有的反向代理
+#（caddy / nginx / traefik 皆可）终结 TLS 后把 hz.jundadt.com.cn 转发到本容器 :80。
+# 本项目只对外提供一个干净的 HTTP 站点，不感知、也不依赖具体是哪一种反向代理。
+#
+# 路由与 Caddyfile.domain 完全一致：
+#   /           Web 助手（frontend 产物）
+#   /h5/        H5 助手（frontend-h5 产物）
+#   /v1/        后端反代（两个前端生产构建 apiBase 均为空，同源 /v1/... 原样透传，不剥前缀）
+# 运行期变量：BACKEND_URL（后端地址）。
+# ---------------------------------------------------------------------------
+
+:80 {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	# ---- H5 助手（/h5/）----------------------------------------------------
+	# handle 是互斥路由：/h5 精确命中重定向，/h5/* 才进静态站点
+	handle /h5 {
+		redir /h5/ 308
+	}
+	handle_path /h5/* {
+		root * /srv/h5
+
+		@h5Immutable path /assets/*
+		header @h5Immutable Cache-Control "public, max-age=31536000, immutable"
+
+		@h5Entry path /index.html
+		header @h5Entry Cache-Control "no-cache, must-revalidate"
+
+		try_files {path} /index.html
+		file_server
+	}
+
+	# ---- 后端反代（Web / H5 共用同一约定：apiBase 置空，同源 /v1/...）----------
+	# 原样透传到上游，绝不能剥前缀（剥了上游会 404）。
+	handle /v1/* {
+		reverse_proxy {$BACKEND_URL} {
+			# SSE 流式关键：立即刷写，不攒缓冲
+			flush_interval -1
+
+			transport http {
+				dial_timeout 10s
+				# 问答推理可能持续数十秒，超时必须放宽
+				read_timeout 600s
+				write_timeout 600s
+			}
+
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# ---- Web 助手 SPA（/）---------------------------------------------------
+	handle {
+		root * /srv
+
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+		@entry path /index.html
+		header @entry Cache-Control "no-cache, must-revalidate"
+
+		try_files {path} /index.html
+		file_server
+	}
+
+	handle_errors {
+		rewrite * /index.html
+		file_server
+	}
+}
