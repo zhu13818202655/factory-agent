@@ -160,6 +160,24 @@ class AuthorizationService:
             data_scope=data_scope,
         )
 
+    async def is_current(
+        self, authorization: ResolvedAuthorization, credential: TrustedCredential, as_of: datetime
+    ) -> bool:
+        """Verify the bound permission snapshot without issuing another scope token."""
+        membership = await self._resolve_membership(credential, as_of)
+        departments = frozenset(await self._current_depts(membership))
+        context = authorization.tenant_context
+        scope = authorization.data_scope
+        return (
+            membership.tenant_id == context.tenant_id
+            and membership.user_id == context.user_id
+            and membership.employee_id == context.employee_id
+            and membership.role is context.role
+            and scope.employee_ids == frozenset({membership.employee_id})
+            and scope.dept_ids == departments
+            and scope.mes_filtered == (membership.role is Role.OWNER)
+        )
+
     async def _resolve_membership(
         self, credential: TrustedCredential, as_of: datetime
     ) -> TenantMembership:

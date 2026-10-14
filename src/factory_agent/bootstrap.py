@@ -6,6 +6,8 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from sageql_core import RunLimits
+
 from factory_agent.api.tenant_lifecycle import TenantLifecycle
 from factory_agent.application.authorization import (
     AuthorizationService,
@@ -19,6 +21,7 @@ from factory_agent.application.chitchat import ChatResponder
 from factory_agent.application.consistency import ConsistencyValidator
 from factory_agent.application.filters import FilterNarrower
 from factory_agent.application.intent import CapabilityCatalog, CapabilityIntentParser
+from factory_agent.application.l2.service import SageAnalysisRunner
 from factory_agent.application.personal import PersonalizationService
 from factory_agent.application.preferences import PreferencesService
 from factory_agent.application.prefetch import V2PrefetchGroup, V2PrefetchWorker
@@ -31,16 +34,19 @@ from factory_agent.application.summary import ResultSummarizer
 from factory_agent.application.trace import TraceCapability, TraceService
 from factory_agent.application.usage import ContextVarMesCallRecorder
 from factory_agent.config import FactoryAgentSettings
+from factory_agent.data_api.analysis_source import CachedFactSource
 from factory_agent.data_api.catalog import load_catalog
 from factory_agent.data_api.credentials import MesCredentialBundle
 from factory_agent.data_api.directory import CachedEmployeeRosterFetcher, MesDirectorySource
 from factory_agent.data_api.hongzhao import AdapterSettings, HongzhaoMesAdapter
+from factory_agent.data_api.knowledge_directory import MesDictionarySource
 from factory_agent.data_api.owner_snapshots import (
     OwnerSnapshotConfigurationError,
     OwnerSnapshotPool,
 )
 from factory_agent.data_api.pagination import PagerBudget
 from factory_agent.data_api.result_cache import (
+    RESULT_SET_VERSION,
     ResultCacheExecutor,
     ResultCacheMode,
     ResultCachePolicy,
@@ -61,10 +67,12 @@ from factory_agent.domain import (
     TenantId,
     UserId,
 )
+from factory_agent.execution.analysis import HostAnalysisExecutor
 from factory_agent.execution.executor import ScopedExecutor
 from factory_agent.execution.kernel import KernelCapabilityRunner, KernelSettings
 from factory_agent.execution.recipes import load_recipes
 from factory_agent.execution.result_table import default_metric_registry
+from factory_agent.execution.sandbox_runtime import InteractionSandbox
 from factory_agent.export.local_store import LocalArtifactStore
 from factory_agent.export.s3_store import S3ArtifactStore
 from factory_agent.export_service import ExportService
@@ -103,6 +111,7 @@ from factory_agent.ports import (
     SessionRepository,
     TrustedCredential,
 )
+from factory_agent.ports.analysis import AnalysisRunner
 from factory_agent.ports.artifacts import ArtifactExporter, ExportStore
 from factory_agent.ports.not_configured import (
     DependencyNotConfiguredError,
@@ -144,6 +153,7 @@ class DependencyOverrides:
     audit: AuditSink | None = None
     interactions: InteractionStore | None = None
     capability_runner: CapabilityRunner | None = None
+    analysis_runner: AnalysisRunner | None = None
     artifact_exporter: ArtifactExporter | None = None
     capability_catalog: CapabilityCatalog | None = None
     personalization: PersonalizationService | None = None
@@ -380,6 +390,33 @@ def build_container(
     capability_runner = _build_capability_runner(
         supplied, mes, settings, cache, clock, statistics, directory, owner_snapshots
     )
+    analysis_runner = supplied.analysis_runner
+    if (
+        analysis_runner is None
+        and isinstance(capability_runner, KernelCapabilityRunner)
+        and isinstance(mes, HongzhaoMesAdapter)
+    ):
+        analysis_runner = SageAnalysisRunner(
+            CachedFactSource(
+                capability_runner.step_executor,
+                clock,
+                page_size=settings.mes_page_size,
+                factory_timezone=settings.factory_timezone,
+            ),
+            MesDictionarySource(mes, cache, clock),
+            model,
+            clock,
+            model_alias=settings.llm_fast_alias,
+            sandbox_factory=InteractionSandbox,
+            executor_factory=HostAnalysisExecutor,
+            factory_timezone=settings.factory_timezone,
+            limits=RunLimits(
+                max_processed_rows=settings.mes_max_rows,
+                max_mes_pages=settings.mes_max_pages,
+                call_timeout=max(settings.llm_timeout_seconds, settings.mes_timeout_seconds),
+            ),
+            new_id=supplied.new_id,
+        )
     business_filters = BusinessFilterResolver(directory) if directory is not None else None
     personalization = _build_personalization(supplied, settings, clock)
     preferences_service = _build_preferences_service(supplied, settings, clock)
@@ -446,6 +483,8 @@ def build_container(
             personalization,
             credential_exchange,
             audit,
+            analysis_runner,
+            tenant_registry,
         ),
         readiness=readiness,
     )
@@ -593,7 +632,7 @@ def _build_cache(settings: FactoryAgentSettings) -> AuthAwareCache | None:
         store,
         contract_version="mes-contract-v2",
         metric_version="metric-registry-v1",
-        data_version="mes-detail-v3",
+        data_version=f"mes-detail-v{RESULT_SET_VERSION}",
     )
 
 
@@ -823,6 +862,8 @@ def _build_session_service(
     personalization: PersonalizationService | None = None,
     credential_exchange: TokenCredentialExchange | None = None,
     audit: AuditSink | None = None,
+    analysis_runner: AnalysisRunner | None = None,
+    tenant_registry: TenantRegistryReader | None = None,
 ) -> SessionService | None:
     """Only compose the session pipeline when its dependencies exist."""
     if interactions is None or capability_runner is None:
@@ -880,6 +921,14 @@ def _build_session_service(
         summarizer=summarizer,
         scope_guard=scope_guard,
         validation_mode=settings.validation_mode,
+        analysis_runner=analysis_runner,
+        tenant_registry=tenant_registry,
+        execution_limits=RunLimits(
+            max_processed_rows=settings.mes_max_rows,
+            max_mes_pages=KernelSettings().max_api_calls,
+            max_mes_requests=KernelSettings().max_api_calls,
+            call_timeout=max(settings.llm_timeout_seconds, settings.mes_timeout_seconds),
+        ),
     )
 
 

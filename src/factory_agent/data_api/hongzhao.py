@@ -61,6 +61,7 @@ from factory_agent.observability.debug_trace import (
 from factory_agent.observability.logging_adapter import get_logger
 from factory_agent.ports import MesCallRecord, MesCallRecorder
 from factory_agent.ports.contracts import ResourceFetchResult
+from factory_agent.ports.run_budget import consume_upstream_attempt
 from factory_agent.ports.tenant_registry import TenantRegistryReader
 
 _LOGGER = get_logger("factory_agent.data_api.hongzhao")
@@ -343,7 +344,11 @@ class HongzhaoMesAdapter:
             if item_model is None:
                 raise UnsupportedOperationError("operation resource has no response model")
         paged = await self._pager.fetch_all(
-            operation_id, params, item_model, list_key=operation.list_key
+            operation_id,
+            params,
+            item_model,
+            list_key=operation.list_key,
+            total_key=operation.total_key,
         )
         return ResourceFetchResult(
             rows=tuple(row_to_plain_dict(row) for row in paged.items),
@@ -407,6 +412,11 @@ class HongzhaoMesAdapter:
             dept_ids = filters.requested_dept_ids if role_code in {"00", "99"} else filters.dept_ids
             if dept_ids is not None and len(dept_ids) == 1:
                 params["dept"] = str(next(iter(dept_ids)))
+        if operation_id in {"GongziClQuery", "ScjdQuery"}:
+            if filters.bed_codes is not None and len(filters.bed_codes) == 1:
+                # The customer performs fuzzy matching; the authorized view
+                # must still enforce exact string equality before analysis.
+                params["chuanghao"] = next(iter(filters.bed_codes))
         if operation_id == "HuohaoWtCLQuery":
             # Server-side filter pushdown (接口文档 §7.2 实测：huohao 取值是
             # 款号 bbreed，与 NarrowedFilters.style_codes 同口径). The customer
@@ -465,6 +475,7 @@ class HongzhaoMesAdapter:
         last_error: Exception | None = None
         while attempts_left > 0:
             attempts_left -= 1
+            consume_upstream_attempt()
             started = self._now()
             try:
                 response = await (await self._ensure_client()).post(

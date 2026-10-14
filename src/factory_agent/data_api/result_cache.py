@@ -38,8 +38,8 @@ PAYROLL_OPERATION = "GongziClQuery"
 PROGRESS_OPERATION = "ScjdQuery"
 
 #: 缓存值结构版本（附录 F.1 ``v``）；派生逻辑或值结构变更时 bump。
-RESULT_SET_VERSION = 3
-DETAIL_GRAIN = "default-detail-v3"
+RESULT_SET_VERSION = 4
+DETAIL_GRAIN = "default-detail-v4"
 _FORBIDDEN_ROW_FIELDS = frozenset({"app_key", "accesstoken", "sign", "movepassword"})
 _FORBIDDEN_REQUEST_PARAMS = _FORBIDDEN_ROW_FIELDS | frozenset(
     {"timestamp", "uid", "dept", "tenant_id", "employee_ids", "dept_ids"}
@@ -556,12 +556,15 @@ def _business_filtered_rows(
 ) -> tuple[Mapping[str, Any], ...]:
     groupby = extra_params.get("groupbyFields") or ()
     order_column = "dh" if operation_id == PROGRESS_OPERATION and "baohao" in groupby else "jhdh"
+    if filters.bed_codes is not None and any("chuanghao" not in row for row in rows):
+        raise InvalidRequestError("detail does not contain the requested bed dimension")
 
     def matches(row: Mapping[str, Any]) -> bool:
         checks = (
             (filters.order_codes, order_column),
             (filters.plan_codes, "jhdh"),
             (filters.material_ids, "userid"),
+            (filters.bed_codes, "chuanghao"),
         )
         if filters.style_codes is not None:
             style_fields = (
@@ -966,7 +969,11 @@ class ResultCacheExecutor:
         window = local_calendar_dates(window_start, request.time_range[1], self._cache.timezone)
         snapshot_calls = 0
         hit = await self._cache.read(filters.tenant_id, operation_id, params, window)
-        if hit is None and self._snapshot_provider is not None:
+        if (
+            hit is None
+            and self._snapshot_provider is not None
+            and getattr(request, "allow_owner_snapshot", True)
+        ):
             lock_key = hashlib.sha256(
                 json.dumps(
                     [
@@ -987,6 +994,9 @@ class ResultCacheExecutor:
         if hit is not None:
             try:
                 served = self._serve_from_cache(hit, filters, request, params, window)
+                validator = getattr(request, "result_validator", None)
+                if validator is not None and not validator(served):
+                    raise InvalidRequestError("required analysis columns are unavailable")
             except (ProgressDerivationError, InvalidRequestError, InvalidOperation):
                 await self._cache.evict(filters.tenant_id, operation_id, params, hit.window)
                 _LOGGER.warning("v2_result.view_invalid", extra={"operation": operation_id})
@@ -1047,10 +1057,15 @@ class ResultCacheExecutor:
             active_scope=active_scope,
             extra_params=fetch_params or None,
         )
-        if (
-            native_progress
-            and "dh" in (params.get("groupbyFields") or ())
-            and any(not row.get(PROGRESS_DATE_COLUMN) for row in fetched.rows)
+        if native_progress and (
+            (
+                "dh" in (params.get("groupbyFields") or ())
+                and any(not row.get(PROGRESS_DATE_COLUMN) for row in fetched.rows)
+            )
+            or (
+                filters.bed_codes is not None
+                and any("chuanghao" not in row for row in fetched.rows)
+            )
         ):
             # A grouped response can omit the date even though default detail
             # supplies it. Fetch detail once rather than infer a date from IDs.
@@ -1131,6 +1146,8 @@ class ResultCacheExecutor:
             needed.add("jhdh")
         if filters.material_ids is not None:
             needed.add("userid")
+        if filters.bed_codes is not None:
+            needed.add("chuanghao")
         return needed <= set(fields)
 
     async def _fetch_snapshot(
@@ -1292,6 +1309,7 @@ class ResultCacheExecutor:
                 filters.style_codes,
                 filters.plan_codes,
                 filters.material_ids,
+                filters.bed_codes,
             )
         ):
             return

@@ -150,6 +150,27 @@ def test_rejected_slot_names_cover_scope_and_execution_escapes() -> None:
     assert {"employee_ids", "dept_ids", "sql", "url", "tenant_id"} <= REJECTED_SLOT_NAMES
 
 
+@pytest.mark.parametrize("beds", [["1555", "01555"], ["01555", "01555"]])
+def test_bed_slots_preserve_exact_string_identity(beds: list[str]) -> None:
+    outcome = parser(ScriptedModelGateway()).interpret(
+        {"capability_id": "FR-001", "confidence": 0.9, "slots": {"bed_codes": beds}}, now=NOW
+    )
+    assert outcome.intent.slots.bed_codes == tuple(dict.fromkeys(beds))
+    assert "bed_codes" in outcome.intent.slots.filled_names()
+    assert outcome.intent.slots.order_codes == ()
+
+
+@pytest.mark.parametrize("beds", [[1555], "1555", ["x" * 65], ["1555"] * 21])
+def test_invalid_bed_slot_requires_clarification_instead_of_discarding_condition(
+    beds: object,
+) -> None:
+    outcome = parser(ScriptedModelGateway()).interpret(
+        {"capability_id": "FR-001", "confidence": 0.9, "slots": {"bed_codes": beds}}, now=NOW
+    )
+    assert "bed_codes" in outcome.intent.ambiguous
+    assert outcome.intent.needs_clarification
+
+
 @pytest.mark.asyncio
 async def test_unparseable_time_phrase_becomes_ambiguity_not_a_guess() -> None:
     gateway = ScriptedModelGateway(contents=[payload(slots={"time_expression": "很久以前"})])

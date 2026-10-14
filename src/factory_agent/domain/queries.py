@@ -24,7 +24,7 @@ class NarrowedFilters:
     with the active ``DataScope``; downstream executors must never accept these
     values from any other source.
 
-    ``order_codes`` / ``style_codes`` / ``plan_codes`` / ``material_ids`` are
+    ``order_codes`` / ``style_codes`` / ``plan_codes`` / ``bed_codes`` / ``material_ids`` are
     business filters that only narrow the requested range and are enforced by
     MES-side row-level filtering plus the "returned range smaller than
     requested" judgement. They can never broaden the active scope.
@@ -43,6 +43,8 @@ class NarrowedFilters:
     #: restrict to a department; the visible range is then the MES-filtered
     #: range. When set it only narrows within the scope.
     requested_dept_ids: frozenset[DeptId] | None = None
+    #: Exact string bed identifiers; leading zeros are part of the identifier.
+    bed_codes: frozenset[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,7 @@ class ResourceQuery:
     operation_ids: frozenset[str] | None = None
     plan_ids: frozenset[str] | None = None
     settlement_ids: frozenset[str] | None = None
+    bed_codes: frozenset[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)

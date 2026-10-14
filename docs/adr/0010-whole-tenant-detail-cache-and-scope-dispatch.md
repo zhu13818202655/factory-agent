@@ -113,8 +113,8 @@ Redis 写失败返回失败状态并告警，不报告落盘成功。契约、�
 
 命名空间为 `fa:{contract}:{metric}:{data}:{tenant_sha256}:{scope_sig}:{domain}:{params_digest}`。
 `tenant_sha256` 使用租户标识的 SHA-256，不在键或诊断日志直接展示 AppKey。
-业务缓存域为 `v2_result`，`scope_sig=owner-99`；当前外层数据版本 `mes-detail-v3`，值版本 `v=3`，
-底料粒度标识 `default-detail-v3`，日期标准化后的原 `rq` 随行集保存，`derived=[]`。内层值版本和
+业务缓存域为 `v2_result`，`scope_sig=owner-99`；当前外层数据版本 `mes-detail-v4`，值版本 `v=4`，
+底料粒度标识 `default-detail-v4`，日期标准化后的原 `rq` 随行集保存，`derived=[]`。内层值版本和
 粒度隔离不符合当前日期契约的旧底料。预取租约、完成标记和底料处于同一数据版本命名空间，
 完成标记只证明该版本两族底料已写入；启动预取不能被其它版本的标记跳过。operation、窗口及语义参数进入
 参数摘要，分组、排序、角色和

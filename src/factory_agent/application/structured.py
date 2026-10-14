@@ -17,6 +17,11 @@ from factory_agent.ports import (
     ModelResponse,
     ModelStage,
 )
+from factory_agent.ports.run_budget import (
+    consume_model_attempt,
+    consume_model_tokens,
+    consume_semantic_repair,
+)
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
@@ -78,7 +83,9 @@ async def request_structured_object(
 ) -> StructuredResult:
     """Run one logical call, repairing an unusable payload at most once."""
     attempt = 0
+    consume_model_attempt()
     response = await gateway.complete(request)
+    consume_model_tokens(response.usage.prompt_tokens + response.usage.completion_tokens)
     attempt += 1
     payload = extract_json_object(response.content)
     if payload is not None:
@@ -89,6 +96,7 @@ async def request_structured_object(
     if max_repair_attempts < 1:
         raise StructuredOutputError("model output is not a JSON object", attempts=attempt)
 
+    consume_semantic_repair()
     repair_request = replace(
         request,
         stage=ModelStage.REPAIR,
@@ -99,7 +107,11 @@ async def request_structured_object(
             ModelMessage(role="user", content=REPAIR_INSTRUCTION),
         ),
     )
+    consume_model_attempt()
     repaired_response = await gateway.complete(repair_request)
+    consume_model_tokens(
+        repaired_response.usage.prompt_tokens + repaired_response.usage.completion_tokens
+    )
     attempt += 1
     payload = extract_json_object(repaired_response.content)
     if payload is None:

@@ -146,3 +146,11 @@ def test_manager_dept_filter_outside_bound_set_is_still_rejected() -> None:
 
     with pytest.raises(FilterRejectionError):
         FilterNarrower().narrow(scope, dept_ids=depts("g99"))
+
+
+def test_bed_filter_preserves_scope_and_string_identity() -> None:
+    scope = scoped_scope()
+    narrowed = FilterNarrower().narrow(scope, bed_codes=frozenset({"1555", "01555"}))
+    assert narrowed.bed_codes == frozenset({"1555", "01555"})
+    assert narrowed.employee_ids == scope.employee_ids
+    assert narrowed.dept_ids == scope.dept_ids

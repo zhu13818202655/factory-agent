@@ -184,6 +184,9 @@ class TokenCredentialExchange:
         return self._client
 
     async def _exchange(self, encrypted_credential: str) -> MesCredentialBundle:
+        from factory_agent.ports.run_budget import consume_upstream_attempt
+
+        consume_upstream_attempt(business_page=False)
         try:
             response = await self._ensure_client().post(
                 TOKEN_PATH, json={"app_key": encrypted_credential}

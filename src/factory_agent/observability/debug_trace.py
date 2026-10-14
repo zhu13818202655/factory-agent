@@ -27,7 +27,8 @@ the ownership pair, and the identity is attached at drain time.
 """
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -159,6 +160,7 @@ class DebugTraceConfig:
 #: Closed by default: a process that forgets to configure captures nothing, so
 #: there is no "capture by omission" state.
 _config = DebugTraceConfig()
+_suppressed: ContextVar[bool] = ContextVar("debug_capture_suppressed", default=False)
 
 _scope_var: ContextVar["CaptureScope | None"] = ContextVar(
     "factory_agent_debug_scope", default=None
@@ -186,6 +188,15 @@ def configure_debug_trace(
     )
 
 
+@contextmanager
+def suspend_debug_capture() -> Generator[None, None, None]:
+    token = _suppressed.set(True)
+    try:
+        yield
+    finally:
+        _suppressed.reset(token)
+
+
 def debug_capture_enabled() -> bool:
     """Whether this process may build payloads at all.
 
@@ -193,7 +204,7 @@ def debug_capture_enabled() -> bool:
     closed the payload is never constructed, so no code path can merely forget
     to drop it (§2.5 P1 — the capability is absent, not disabled).
     """
-    return _config.enabled
+    return _config.enabled and not _suppressed.get()
 
 
 def open_capture_scope(scope: CaptureScope) -> None:
@@ -409,5 +420,6 @@ __all__ = [
     "open_capture_scope",
     "record_debug_capture",
     "summarise_payload",
+    "suspend_debug_capture",
     "utc_isoformat",
 ]

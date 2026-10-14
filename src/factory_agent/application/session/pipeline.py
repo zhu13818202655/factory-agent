@@ -1,6 +1,7 @@
 """Session run pipeline: parse, authorize, execute, compose, persist."""
 
 import asyncio
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import nullcontext
@@ -8,6 +9,8 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import cast
 from zoneinfo import ZoneInfo
+
+from sageql_core import RunStopped
 
 from factory_agent.application.authorization import ResolvedAuthorization
 from factory_agent.application.business_filters import DirectoryError, ResolvedBusinessFilters
@@ -19,7 +22,7 @@ from factory_agent.application.capability_map import (
 from factory_agent.application.consistency import ConsistencyVerdict, ValidationAction
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.filters import FilterRejectionError, NarrowedFilters
-from factory_agent.application.intent import IntentParseOutcome
+from factory_agent.application.intent import L2_CAPABILITY_ID, IntentParseOutcome
 from factory_agent.application.permission_matrix import (
     ROLE_DATA_RANGE,
     Capability,
@@ -31,6 +34,8 @@ from factory_agent.application.scope_guard import (
 )
 from factory_agent.application.session.definitions import (
     EMPTY_BUSINESS_FILTERS,
+    STOP_CANCELLED,
+    STOP_RUN_TIMEOUT,
     TERMINAL_STATUSES,
     DrillPayload,
     RunState,
@@ -94,6 +99,8 @@ from factory_agent.ports import (
     TrustedCredential,
     UsageEvent,
 )
+from factory_agent.ports.analysis import AnalysisRequest
+from factory_agent.ports.run_budget import bind_run_budget
 
 
 def time_range_from_intent(intent: CapabilityIntent) -> TimeRange | None:
@@ -300,7 +307,10 @@ class SessionPipelineMixin(SessionNarrationMixin):
         binder = self._credential_binder
         binding = binder.bind_for(credential) if binder is not None else nullcontext()
         try:
-            with binding:
+            budget_binding = (
+                bind_run_budget(control.run_control) if control is not None else nullcontext()
+            )
+            with binding, budget_binding:
                 # Cooperative stop point before any work: a cancel persisted
                 # between the claim and this point must not be resurrected by
                 # the ``started`` commit below.
@@ -346,6 +356,17 @@ class SessionPipelineMixin(SessionNarrationMixin):
                     # startup sweep (or a follower's stale check) marks it
                     # ``executor_lost``.
                     raise
+                except RunStopped as stopped:
+                    if stopped.code in {"cancelled", "deadline_exceeded"}:
+                        async for event in self._stop_here(
+                            state,
+                            usage_events,
+                            STOP_CANCELLED if stopped.code == "cancelled" else STOP_RUN_TIMEOUT,
+                        ):
+                            yield event
+                    else:
+                        async for event in self._fail(state, stopped.code, usage_events):
+                            yield event
                 except Exception:
                     # Last-resort net for a crash outside the pipeline's own
                     # error handling (e.g. a store failure): durably fail the
@@ -498,6 +519,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
                     style_ids=resolved.style_codes,
                     plan_ids=resolved.plan_codes,
                     material_ids=resolved.material_ids,
+                    bed_codes=resolved.bed_codes,
                     tenant_resolved_employee_ids=resolved.employee_ids,
                 )
             elif is_personal:
@@ -509,6 +531,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
                     style_ids=resolved.style_codes,
                     plan_ids=resolved.plan_codes,
                     material_ids=resolved.material_ids,
+                    bed_codes=resolved.bed_codes,
                 )
             else:
                 filters = self._narrower.narrow(
@@ -519,6 +542,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
                     style_ids=resolved.style_codes,
                     plan_ids=resolved.plan_codes,
                     material_ids=resolved.material_ids,
+                    bed_codes=resolved.bed_codes,
                     restrict_to_scope_employees=False,
                 )
         except FilterRejectionError as exc:
@@ -731,6 +755,8 @@ class SessionPipelineMixin(SessionNarrationMixin):
                 return
 
         intent = parsed.intent
+        if drill is None and intent.slots.bed_codes and intent.capability_id is not None:
+            intent = replace(intent, capability_id=CapabilityId(L2_CAPABILITY_ID), missing=())
         state.last_intent = intent
         # Every path converges here with its routing verdict already final —
         # the model parse, the deterministic drill round, and the chit-chat
@@ -785,6 +811,13 @@ class SessionPipelineMixin(SessionNarrationMixin):
         capability_id = intent.capability_id
         if capability_id is None:
             async for event in self._fail(state, "capability_unresolved", usage_events):
+                yield event
+            return
+
+        if str(capability_id) == L2_CAPABILITY_ID:
+            async for event in self._run_analysis(
+                owner, authorization, state, intent, parsed, usage_events, control
+            ):
                 yield event
             return
 
@@ -873,6 +906,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
                         group_page=drill.group_page if drill is not None else 1,
                         group_page_size=drill.group_page_size if drill is not None else 50,
                         data_snapshot_id=drill.data_snapshot_id if drill is not None else None,
+                        run_control=control.run_control if control is not None else None,
                     )
                 ),
                 run_slot,
@@ -962,6 +996,227 @@ class SessionPipelineMixin(SessionNarrationMixin):
         ):
             yield event
 
+    async def _run_analysis(
+        self,
+        owner: InteractionOwner,
+        authorization: ResolvedAuthorization,
+        state: RunState,
+        intent: CapabilityIntent,
+        parsed: IntentParseOutcome,
+        usage_events: list[UsageEvent],
+        control: InteractionRunExecutor | None,
+    ) -> AsyncIterator[SessionEvent]:
+        runner = self._analysis_runner
+        if runner is None:
+            async for event in self._fail(state, "analysis_not_configured", usage_events):
+                yield event
+            return
+        window = time_range_from_intent(intent)
+        if (
+            window is not None
+            and time_range_violation(
+                window.start,
+                window.end,
+                max_days=self._time_range_max_days,
+                now=self._clock.now(),
+                tz_name=self._factory_timezone_name,
+            )
+            is not None
+        ):
+            async for event in self._reject_message(
+                state,
+                "time_range_exceeds_limit",
+                "请查询最近一年以内的有效时间范围。",
+                usage_events,
+            ):
+                yield event
+            return
+        resolved = EMPTY_BUSINESS_FILTERS
+        if self._business_filters is not None and (
+            intent.slots.dept_names or intent.slots.employee_names
+        ):
+            try:
+                resolved = await self._business_filters.resolve(
+                    authorization.data_scope, intent.slots
+                )
+            except DirectoryError as exc:
+                async for event in self._clarify_message(state, exc.message, usage_events):
+                    yield event
+                return
+        scope = authorization.data_scope
+        context = authorization.tenant_context
+        personal_capabilities = {
+            Capability.OWN_OUTPUT.value,
+            Capability.OWN_PAYROLL_SUMMARY.value,
+            Capability.OWN_PAYROLL_DETAIL.value,
+        }
+        question = parsed.rewrite_query or state.record.input_text
+        self_only = (
+            context.role is Role.EMPLOYEE
+            or parsed.self_only
+            or (
+                parsed.intent.capability_id is not None
+                and fr_id_for(str(parsed.intent.capability_id)) in personal_capabilities
+            )
+            or bool(re.search(r"本人|自己|我(?!们|厂|的工厂)", question))
+        )
+        if resolved.employee_ids is not None:
+            if context.role is Role.EMPLOYEE and not resolved.employee_ids <= scope.employee_ids:
+                async for event in self._reject(state, "analysis_scope_forbidden", usage_events):
+                    yield event
+                return
+            if context.role in {Role.GROUP_LEADER, Role.MANAGER}:
+                if self._business_filters is None:
+                    async for event in self._reject(state, "analysis_scope_unproven", usage_events):
+                        yield event
+                    return
+                for employee_id in resolved.employee_ids:
+                    employee = await self._business_filters.find_employee_by_id(
+                        scope, str(employee_id)
+                    )
+                    if employee is None or employee.dept not in scope.dept_ids:
+                        async for event in self._reject(
+                            state, "analysis_scope_forbidden", usage_events
+                        ):
+                            yield event
+                        return
+        try:
+            filters = self._narrower.narrow(
+                scope,
+                employee_ids=scope.employee_ids if self_only else None,
+                tenant_resolved_employee_ids=resolved.employee_ids,
+                dept_ids=resolved.dept_ids,
+                order_ids=frozenset(intent.slots.order_codes) or None,
+                style_ids=frozenset(intent.slots.style_codes) or None,
+                plan_ids=frozenset(intent.slots.plan_codes) or None,
+                material_ids=frozenset(intent.slots.material_ids) or None,
+                bed_codes=frozenset(intent.slots.bed_codes) or None,
+                restrict_to_scope_employees=self_only,
+            )
+        except FilterRejectionError:
+            async for event in self._reject(state, "analysis_scope_forbidden", usage_events):
+                yield event
+            return
+
+        async def validate_active() -> bool:
+            if await self._stop_reason(owner, state.record.interaction_id, control) is not None:
+                return False
+            if self._tenant_registry is not None:
+                tenant = await self._tenant_registry.get(str(context.tenant_id))
+                if tenant is not None and tenant.status == "suspended":
+                    return False
+            return await self._authorization.is_current(
+                authorization,
+                TrustedCredential(context.tenant_id, context.user_id),
+                self._clock.now(),
+            )
+
+        checked: dict[str, bool] = {}
+
+        async def validate_fact_scope(dataset_id: str) -> bool:
+            if dataset_id in checked:
+                return checked[dataset_id]
+            capability = (
+                Capability.ORDER_PROGRESS
+                if dataset_id == "production_progress"
+                else (
+                    Capability.OWN_OUTPUT
+                    if context.role is Role.EMPLOYEE
+                    else Capability.ORDER_OUTPUT
+                )
+            )
+            if not authorize_capability(capability, context, scope).allowed:
+                checked[dataset_id] = False
+                return False
+            if parsed.scope_verdict is not None:
+                denial = self._merged_scope_denial(state, parsed.scope_verdict, context.role)
+            elif self._scope_guard is not None:
+                denial = await self._run_scope_guard(
+                    state,
+                    self._scope_guard,
+                    parsed.rewrite_query or state.record.input_text,
+                    capability,
+                    context.role,
+                    usage_events,
+                )
+            else:
+                denial = None
+            checked[dataset_id] = denial is None
+            return denial is None
+
+        yield await self._progress(state, "analysis_started")
+        async for event in self._fact(state, "正在核对可用数据，并在已有缓存上逐步分析。"):
+            yield event
+        for event in await self._phases(
+            state,
+            (SessionState.AUTHORIZING, "analysis_request"),
+            (SessionState.EXECUTING, "analysis_authorized"),
+        ):
+            yield event
+
+        async def emit_analysis_phase(phase: str) -> None:
+            if phase not in {"plan", "tool", "repair"} or not await validate_active():
+                return
+            await self._progress(state, "analysis_" + phase)
+
+        request = AnalysisRequest(
+            interaction_id=str(state.record.interaction_id),
+            question=parsed.rewrite_query or state.record.input_text,
+            context=context,
+            scope=scope,
+            slots=intent.slots,
+            time_range=window,
+            deadline=control.deadline
+            if control is not None
+            else state.started_monotonic + self._limits.run_timeout_seconds,
+            cancelled=(lambda: control.cancelled) if control is not None else (lambda: False),
+            validate_active=validate_active,
+            filters=filters,
+            validate_fact_scope=validate_fact_scope,
+            run_control=control.run_control if control is not None else None,
+            self_only=self_only,
+            factory_timezone=self._factory_timezone_name,
+            emit_phase=emit_analysis_phase,
+        )
+        outcome = await runner.analyze(request)
+        usage_events.extend(outcome.usage_events)
+        stop = await self._stop_reason(owner, state.record.interaction_id, control)
+        if stop is not None:
+            async for event in self._stop_here(state, usage_events, stop):
+                yield event
+            return
+        if outcome.status == "clarify":
+            async for event in self._clarify_message(
+                state, outcome.answer or "请补充要统计的范围、时间或配置口径。", usage_events
+            ):
+                yield event
+        elif outcome.status == "denied":
+            async for event in self._reject(state, "analysis_scope_forbidden", usage_events):
+                yield event
+        elif outcome.status in {"completed", "knowledge"}:
+            result = outcome.result or CapabilityRunResult(CapabilityId(L2_CAPABILITY_ID), (), ())
+            async for event in self._complete_result(
+                owner,
+                state,
+                result,
+                CapabilityId(L2_CAPABILITY_ID),
+                context.role,
+                window,
+                None,
+                usage_events,
+                answer_override=outcome.answer,
+            ):
+                yield event
+        else:
+            async for event in self._terminate(
+                state,
+                InteractionStatus.FAILED,
+                "analysis_" + (outcome.reason or "unavailable"),
+                usage_events,
+                "当前数据、完整性或已确认口径不足，无法提交可靠结果。",
+            ):
+                yield event
+
     def _fetch_facts(
         self, capability_id: CapabilityId, time_range: TimeRange, role: Role
     ) -> ThinkingFacts:
@@ -1008,9 +1263,10 @@ class SessionPipelineMixin(SessionNarrationMixin):
         result: CapabilityRunResult,
         capability_id: CapabilityId,
         role: Role,
-        time_range: TimeRange,
+        time_range: TimeRange | None,
         verdict: ConsistencyVerdict | None,
         usage_events: list[UsageEvent],
+        answer_override: str | None = None,
     ) -> AsyncIterator[SessionEvent]:
         """Compose the answer, export the artifact, persist the completed turn.
 
@@ -1021,9 +1277,14 @@ class SessionPipelineMixin(SessionNarrationMixin):
         async for event in self._fact(state, "正在汇总本次结果并生成答复。"):
             yield event
 
-        answer_text = await self._compose_result_answer(
-            state, result, capability_id, time_range, usage_events
-        )
+        if answer_override is not None:
+            answer_text = answer_override
+        elif time_range is not None:
+            answer_text = await self._compose_result_answer(
+                state, result, capability_id, time_range, usage_events
+            )
+        else:
+            answer_text = "已返回本租户完整配置范围内的结果。"
 
         # Closed here, after the answer is composed and before the result event
         # claims its sequence: the contract requires every thinking frame to
@@ -1034,7 +1295,7 @@ class SessionPipelineMixin(SessionNarrationMixin):
             yield event
 
         artifact_id = None
-        if self._exporter is not None:
+        if self._exporter is not None and result.column_names:
             try:
                 outcome = await self._exporter.export(
                     owner=owner,
@@ -1042,7 +1303,9 @@ class SessionPipelineMixin(SessionNarrationMixin):
                     capability_id=capability_id,
                     role=role.value,
                     function=str(capability_id),
-                    time_range_label=time_range_label(time_range, self._factory_zone),
+                    time_range_label=time_range_label(time_range, self._factory_zone)
+                    if time_range is not None
+                    else "基础配置",
                     result=result,
                 )
                 artifact_id = outcome.artifact_id
@@ -1067,7 +1330,11 @@ class SessionPipelineMixin(SessionNarrationMixin):
         # card (so ``buildDrill`` can read it off the card it was clicked on) and
         # on the payload itself (so continuity survives a turn that emitted no
         # card, e.g. an empty window).
-        echo = time_range_echo(time_range, self._factory_zone, intent_time_expression(state))
+        echo = (
+            time_range_echo(time_range, self._factory_zone, intent_time_expression(state))
+            if time_range is not None
+            else None
+        )
         # The card payload (recipe-declared, built by the kernel) is placed on
         # the SSE event and the persisted result_table message as the SAME
         # dict, so live, replay and history streams render identically.

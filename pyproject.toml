@@ -18,6 +18,7 @@ dependencies = [
     "pydantic>=2.11.0,<3.0.0",
     "pydantic-settings>=2.10.0,<3.0.0",
     "redis>=5.0.0,<7.0.0",
+    "sageql-core",
     "sqlalchemy>=2.0.0,<3.0.0",
     "uvicorn[standard]>=0.35.0,<1.0.0",
     "xlsxwriter>=3.2,<4.0",
@@ -46,6 +47,9 @@ factory-agent-rollup = "factory_agent.cli:rollup_main"
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
+
+[tool.uv.sources]
+sageql-core = { path = "vendor/wheels/sageql_core-0.1.0-py3-none-any.whl" }
 
 [build-system]
 requires = ["hatchling"]

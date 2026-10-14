@@ -50,6 +50,7 @@ class CatalogOperation(BaseModel):
     parameter_sources: dict[str, ParameterSource]
     pagination: PaginationKind
     list_key: str = "list"
+    total_key: str = "total"
     boolean_params: tuple[str, ...] = ()
     usage_category: UsageCategory | None = None
     supports_footer: bool = False

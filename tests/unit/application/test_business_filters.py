@@ -92,6 +92,17 @@ async def test_empty_slots_resolve_to_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bed_codes_resolve_without_directory_lookup_or_identity_substitution() -> None:
+    resolved = await BusinessFilterResolver(FakeDirectory()).resolve(
+        _scope(), IntentSlots(bed_codes=("1555", "01555"))
+    )
+    assert resolved.bed_codes == frozenset({"1555", "01555"})
+    assert resolved.employee_ids is None
+    assert resolved.dept_ids is None
+    assert resolved.is_empty() is False
+
+
+@pytest.mark.asyncio
 async def test_unknown_dept_raises_not_found() -> None:
     resolver = BusinessFilterResolver(FakeDirectory(depts=()))
     with pytest.raises(DirectoryError) as error:

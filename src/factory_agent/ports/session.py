@@ -11,6 +11,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal, Protocol
 
+from sageql_core import RunControl
+
 from factory_agent.domain import (
     CapabilityId,
     ConversationRecord,
@@ -336,6 +338,7 @@ class CapabilityRunRequest:
     group_page: int = 1
     group_page_size: int = 50
     data_snapshot_id: str | None = None
+    run_control: RunControl | None = None
 
 
 @dataclass(frozen=True, slots=True)

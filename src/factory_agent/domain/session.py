@@ -61,7 +61,12 @@ ALLOWED_TRANSITIONS: dict[SessionState, frozenset[SessionState]] = {
         {SessionState.EXECUTING, SessionState.CANCELLED, SessionState.FAILED}
     ),
     SessionState.EXECUTING: frozenset(
-        {SessionState.COMPOSING, SessionState.CANCELLED, SessionState.FAILED}
+        {
+            SessionState.COMPOSING,
+            SessionState.CLARIFYING,
+            SessionState.CANCELLED,
+            SessionState.FAILED,
+        }
     ),
     SessionState.COMPOSING: frozenset(
         {SessionState.ANSWERED, SessionState.CANCELLED, SessionState.FAILED}
@@ -293,6 +298,7 @@ class IntentSlots:
     order_codes: tuple[str, ...] = ()
     plan_codes: tuple[str, ...] = ()
     style_codes: tuple[str, ...] = ()
+    bed_codes: tuple[str, ...] = ()
     #: Package material numbers (``Sclzd.id``), the key that opens the
     #: package-to-worktype drill-down. A business filter value like the codes
     #: above: it narrows only and never carries scope identifiers.
@@ -308,6 +314,7 @@ class IntentSlots:
             "order_codes",
             "plan_codes",
             "style_codes",
+            "bed_codes",
             "material_ids",
             "dept_names",
             "employee_names",

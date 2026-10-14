@@ -19,6 +19,7 @@ from factory_agent.ports import (
     ModelRequest,
     ModelStage,
 )
+from factory_agent.ports.run_budget import consume_model_attempt, consume_model_tokens
 
 #: Persona for the result-answer stage. Zero rows are a normal outcome and
 #: must be stated as "no records found", never dressed up as incompleteness
@@ -100,6 +101,7 @@ class ResultSummarizer:
             f"合计统计：{aggregate_text}\n"
             f"结果是否完整：{'是' if not incomplete else f'否（原因：{incomplete_reason}）'}"
         )
+        consume_model_attempt()
         response = await self._gateway.complete(
             ModelRequest(
                 model_alias=self.model_alias,
@@ -114,6 +116,7 @@ class ResultSummarizer:
                 max_output_tokens=self._max_output_tokens,
             )
         )
+        consume_model_tokens(response.usage.prompt_tokens + response.usage.completion_tokens)
         text = response.content.strip()
         if not text:
             raise StructuredOutputError("model output is empty", attempts=response.attempt)

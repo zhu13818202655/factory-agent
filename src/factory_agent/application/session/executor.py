@@ -4,6 +4,8 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from sageql_core import RunControl
+
 from factory_agent.application.authorization import ResolvedAuthorization
 from factory_agent.application.context import ConversationTurn
 from factory_agent.application.session.definitions import (
@@ -61,11 +63,24 @@ class InteractionRunExecutor:
         # Deliberate friend-class access: the executor and the service share
         # one module on purpose (same lifecycle, same invariants).
         self._deadline = time.monotonic() + service._limits.run_timeout_seconds  # pyright: ignore[reportPrivateUsage]
+        self.run_control = RunControl(
+            self._deadline,
+            service._execution_limits,  # pyright: ignore[reportPrivateUsage]
+            self._cancel_event.is_set,
+        )
         self.task: asyncio.Task[None] | None = None
 
     @property
     def interaction_id(self) -> InteractionId:
         return self._record.interaction_id
+
+    @property
+    def deadline(self) -> float:
+        return self._deadline
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel_event.is_set()
 
     def start(self) -> None:
         self.task = asyncio.create_task(

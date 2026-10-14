@@ -681,6 +681,8 @@ class _V2CustomerRow(BaseModel):
         is_str_field = field is not None and field.annotation is str
         if not is_str_field:
             return value
+        if name == "chuanghao" and value is not None and not isinstance(value, str):
+            raise ValueError("bed identifiers must be strings")
         if value is None:
             return ""
         if isinstance(value, bool):
@@ -861,7 +863,10 @@ BASE_DATA_RESOURCES: frozenset[str] = frozenset(
 
 def row_to_plain_dict(row: BaseModel) -> dict[str, Any]:
     """Convert a validated row into a plain dict for the sandbox."""
-    return {key: _plain(value) for key, value in row.model_dump().items()}
+    # Dynamic V2 groups omit fields legitimately. An absent column must remain
+    # absent so consumers can validate the fields required by their calculation.
+    values = row.model_dump(exclude_unset=isinstance(row, _V2CustomerRow))
+    return {key: _plain(value) for key, value in values.items()}
 
 
 def _plain(value: Any) -> Any:

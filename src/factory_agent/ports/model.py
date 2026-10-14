@@ -18,6 +18,7 @@ class ModelStage(StrEnum):
 
     CLASSIFY = "classify"
     EXTRACT = "extract"
+    PLAN = "plan"
     CLARIFY = "clarify"
     SUMMARIZE = "summarize"
     CHAT = "chat"

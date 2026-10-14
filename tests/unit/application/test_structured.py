@@ -1,4 +1,7 @@
+import time
+
 import pytest
+from sageql_core import RunControl, RunLimits, RunStopped
 
 from factory_agent.application.structured import (
     REPAIR_INSTRUCTION,
@@ -11,8 +14,11 @@ from factory_agent.ports import (
     ModelGatewayError,
     ModelMessage,
     ModelRequest,
+    ModelResponse,
     ModelStage,
+    ModelUsage,
 )
+from factory_agent.ports.run_budget import bind_run_budget
 from tests.support.session import ScriptedModelGateway
 
 
@@ -98,3 +104,42 @@ async def test_gateway_failures_are_not_converted_into_semantic_failures() -> No
         await request_structured_object(gateway, request())
 
     assert failure.value.category is ModelErrorCategory.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_model_usage_and_repairs_remain_cumulative_across_application_stages() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+
+        async def complete(self, request: ModelRequest) -> ModelResponse:
+            self.requests.append(request)
+            return ModelResponse(
+                "invalid" if len(self.requests) == 1 else '{"ok": true}',
+                "synthetic-model",
+                ModelUsage(prompt_tokens=10, completion_tokens=5),
+            )
+
+    gateway = Gateway()
+    control = RunControl(time.monotonic() + 60, RunLimits(max_model_rounds=3))
+    with bind_run_budget(control):
+        parsed = await request_structured_object(gateway, request())
+        assert parsed.repaired
+        assert control.used("semantic_repairs") == 1
+        await request_structured_object(gateway, request())
+        with pytest.raises(RunStopped, match="budget_exhausted"):
+            await request_structured_object(gateway, request())
+    assert len(gateway.requests) == 3
+    assert control.used("model_rounds") == 3
+    assert control.used("model_tokens") == 45
+
+
+@pytest.mark.asyncio
+async def test_application_cannot_repair_again_after_shared_repair_was_used() -> None:
+    gateway = ScriptedModelGateway(contents=["invalid", '{"ok":true}'])
+    control = RunControl(time.monotonic() + 60)
+    control.consume("semantic_repairs")
+    with bind_run_budget(control), pytest.raises(RunStopped, match="budget_exhausted"):
+        await request_structured_object(gateway, request())
+    assert len(gateway.requests) == 1
+    assert control.used("semantic_repairs") == 1

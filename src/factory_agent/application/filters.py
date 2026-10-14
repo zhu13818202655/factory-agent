@@ -3,6 +3,8 @@
 Every rejection path here must happen before any MES business call.
 """
 
+from typing import cast
+
 from factory_agent.domain import DataScope, DeptId, EmployeeId, NarrowedFilters
 
 __all__ = [
@@ -34,7 +36,7 @@ class FilterNarrower:
     conditions for MES-side row filtering to answer.
 
     Business filters (``order_codes`` / ``style_codes`` /
-    ``plan_codes`` / ``material_ids`` and a user-requested department) are
+    ``plan_codes`` / ``bed_codes`` / ``material_ids`` and a user-requested department) are
     narrow-only: they are
     passed to MES which enforces row-level filtering, and a too-small
     return is surfaced via the MES judgement. They are never treated as scope
@@ -59,7 +61,12 @@ class FilterNarrower:
         tenant_resolved_employee_ids: frozenset[EmployeeId] | None = None,
         *,
         restrict_to_scope_employees: bool = True,
+        bed_codes: frozenset[str] | None = None,
     ) -> NarrowedFilters:
+        if bed_codes is not None and any(
+            not isinstance(cast(object, code), str) or not code for code in bed_codes
+        ):
+            raise FilterRejectionError("invalid_filter", "bed identifiers must be nonempty strings")
         narrowed_employees: frozenset[EmployeeId] | None
         if employee_ids is not None:
             narrowed_scope = scope.narrow_to_employees(employee_ids)
@@ -113,6 +120,7 @@ class FilterNarrower:
             plan_codes=_as_set(plan_ids),
             material_ids=_as_set(material_ids),
             requested_dept_ids=requested_depts,
+            bed_codes=_as_set(bed_codes),
         )
 
 

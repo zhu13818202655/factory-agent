@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir uv==0.9.15
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+COPY vendor/wheels ./vendor/wheels
 
 RUN uv sync --frozen --no-dev --no-editable
 

@@ -119,6 +119,7 @@ class DrillPayload:
     order_codes: tuple[str, ...] = ()
     style_codes: tuple[str, ...] = ()
     plan_codes: tuple[str, ...] = ()
+    bed_codes: tuple[str, ...] = ()
     material_ids: tuple[str, ...] = ()
     order_view: OrderViewSelection | None = None
     group_page: int = 1
@@ -184,6 +185,9 @@ STAGE_LABELS: dict[SessionState, str] = {
 #: is still in flight, and every announced window runs while the state machine
 #: is still ``PARSING``, so no state exists to label it from.
 PROGRESS_LABELS: dict[str, str] = {
+    "analysis_plan": "规划分析",
+    "analysis_tool": "核对与计算",
+    "analysis_repair": "核对分析条件",
     "parse_started": "解析中",
     "authorize_started": "权限检查中",
     "scope_resolution_started": "核对数据范围",

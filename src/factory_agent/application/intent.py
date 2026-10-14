@@ -52,6 +52,7 @@ ALLOWED_SLOT_NAMES: frozenset[str] = frozenset(
         "order_codes",
         "plan_codes",
         "style_codes",
+        "bed_codes",
         "material_ids",
         "dept_names",
         "employee_names",
@@ -71,6 +72,7 @@ _SLOT_LABELS_CN: dict[str, str] = {
     "order_codes": "订单号",
     "plan_codes": "计划单号",
     "style_codes": "款号",
+    "bed_codes": "床号",
     "material_ids": "物料编号",
     "dept_names": "车间或组别",
     "employee_names": "员工姓名",
@@ -81,6 +83,7 @@ _CLARIFICATION_PROMPTS: dict[str, str] = {
     "order_codes": "请提供具体的订单号。",
     "plan_codes": "请提供具体的计划单号。",
     "style_codes": "请提供具体的款号。",
+    "bed_codes": "请提供具体的床号。",
     "material_ids": "请提供具体的物料编号（缝制生产进度详情里的物料编号）。",
     "dept_names": "请说明要看哪个车间或组别。",
     "employee_names": "请说明要看哪位员工。",
@@ -89,6 +92,7 @@ _CLARIFICATION_PROMPTS: dict[str, str] = {
 _CAPABILITY_CLARIFICATION = "没有识别出可执行的查询，请说明您想查看的业务内容。"
 _MAX_LIST_ITEMS = 20
 _MAX_CODE_CHARS = 64
+L2_CAPABILITY_ID = "l2_analysis"
 
 
 class ClarificationLimitError(Exception):
@@ -177,6 +181,7 @@ SYSTEM_PROMPT = (
     "不要臆造默认时间（如“本月”“今天”），由系统追问补全。\n"
     "6. 无法判断应归属哪个能力时，capability_id 设为 null。\n"
     "不得发明新的能力，不得输出 SQL、URL、员工编号或部门编号。\n"
+    "床号必须原样填入 bed_codes 字符串数组，保留前导零；床号不能放入订单号或款号槽位。\n"
     "时间解析（slots 的时间字段）：\n"
     "7. 已知具体日期时，把区间换算成 ISO 8601 填入 time_range_start / time_range_end，"
     "按半开区间 [start, end) 表示，end 取区间结束日的次日零点；同时把用户原话填进"
@@ -192,8 +197,18 @@ SYSTEM_PROMPT = (
     '"capability_id": "<列表中的 id 或 null>", "confidence": 0.0-1.0, '
     '"slots": {"time_expression": "...", "time_range_start": null, '
     '"time_range_end": null, "order_codes": [], "plan_codes": [], "style_codes": [], '
-    '"material_ids": [], "dept_names": [], "employee_names": []}, "ambiguous": []}\n'
+    '"bed_codes": [], "material_ids": [], "dept_names": [], "employee_names": []}, '
+    '"ambiguous": []}\n'
     "不要输出解释或代码块。"
+)
+
+L2_ROUTING_PROMPT = (
+    "长尾业务入口：若固定能力不能完整表达筛选、分组、趋势、多源配置或字段知识问题，"
+    "type 填 l2，capability_id 填 l2_analysis。基础字典、款号工序/尺码配置和字段知识"
+    "可查询且不要求事实时间窗口。床号、工序等有效条件必须保留，不得丢条件硬套 L1。"
+    "禁止把现有权限拒绝、接口失败、缺少来源或超限改成 L2 重试；事实权限由宿主校验。"
+    "对现有 L1 可以完整表达的问题继续选择原能力。"
+    "L2 问题若明确查询本人数据，新增 subject=self；查询当前获准可见范围时 subject=visible。"
 )
 
 
@@ -319,7 +334,7 @@ def build_intent_messages(
     progress capabilities it may select. The scope section judges only the
     requested data range and never changes that selection.
     """
-    system_content = f"{SYSTEM_PROMPT}\n\n可用能力:\n{catalog.describe(role)}"
+    system_content = f"{SYSTEM_PROMPT}\n{L2_ROUTING_PROMPT}\n\n可用能力:\n{catalog.describe(role)}"
     for block in (
         workshop_output_routing_block(catalog, role),
         progress_flow_routing_block(catalog, role),
@@ -352,6 +367,7 @@ class ParsedIntent:
     content: str | None = None
     rewrite_query: str | None = None
     scope_verdict: ScopeClassification | None = None
+    self_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +384,7 @@ class IntentParseOutcome:
     #: metering event can say so even when the model omitted the key.
     includes_scope: bool = False
     scope_verdict: ScopeClassification | None = None
+    self_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,6 +486,7 @@ class CapabilityIntentParser:
             rewrite_query=parsed.rewrite_query,
             includes_scope=includes_scope,
             scope_verdict=parsed.scope_verdict,
+            self_only=parsed.self_only,
         )
 
     def interpret(
@@ -503,6 +521,26 @@ class CapabilityIntentParser:
         )
         rewrite_query = _trimmed_text(payload.get("rewrite_query"))
         is_chitchat = _is_chitchat(payload.get("type"), payload.get("capability_id"))
+
+        if payload.get("type") == "l2" and payload.get("capability_id") == L2_CAPABILITY_ID:
+            slots, slot_ambiguity = self._build_slots(slots_mapping, now=now)
+            ambiguous.extend(slot_ambiguity)
+            if confidence < self._min_confidence:
+                ambiguous.append("capability")
+            if rejected:
+                ambiguous.append("capability")
+            return ParsedIntent(
+                intent=CapabilityIntent(
+                    capability_id=CapabilityId(L2_CAPABILITY_ID),
+                    confidence=confidence,
+                    slots=slots,
+                    ambiguous=tuple(dict.fromkeys(ambiguous)),
+                ),
+                rejected_slots=rejected,
+                scope_verdict=scope_verdict,
+                rewrite_query=rewrite_query,
+                self_only=payload.get("subject") == "self",
+            )
 
         if is_chitchat:
             spec = self._catalog.get("chitchat")
@@ -584,6 +622,20 @@ class CapabilityIntentParser:
     ) -> tuple[IntentSlots, tuple[str, ...]]:
         ambiguous: list[str] = []
         expression = raw.get("time_expression")
+        raw_beds = raw.get("bed_codes")
+        bed_codes: tuple[str, ...] = ()
+        if raw_beds is not None:
+            if (
+                not isinstance(raw_beds, list)
+                or len(cast("list[object]", raw_beds)) > _MAX_LIST_ITEMS
+                or any(
+                    not isinstance(item, str) or not item.strip() or len(item) > _MAX_CODE_CHARS
+                    for item in cast("list[object]", raw_beds)
+                )
+            ):
+                ambiguous.append("bed_codes")
+            else:
+                bed_codes = _code_list(cast("list[object]", raw_beds))
 
         # The reviewed rule layer runs first: it is the fallback whenever the
         # model's ISO range is absent or fails a redline, and its resolution is
@@ -625,6 +677,7 @@ class CapabilityIntentParser:
                 order_codes=_code_list(raw.get("order_codes")),
                 plan_codes=_code_list(raw.get("plan_codes")),
                 style_codes=_code_list(raw.get("style_codes")),
+                bed_codes=bed_codes,
                 material_ids=_code_list(raw.get("material_ids")),
                 dept_names=_code_list(raw.get("dept_names")),
                 employee_names=_code_list(raw.get("employee_names")),

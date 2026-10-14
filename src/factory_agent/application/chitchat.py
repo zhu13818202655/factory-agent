@@ -17,6 +17,7 @@ from factory_agent.ports import (
     ModelRequest,
     ModelStage,
 )
+from factory_agent.ports.run_budget import consume_model_attempt, consume_model_tokens
 
 #: Persona used only when the intent parser selects the reserved ``chitchat``
 #: capability. It never grants access to business data and tells the model to
@@ -77,6 +78,7 @@ class ChatResponder:
         """Generate one reply; raises gateway/``StructuredOutputError`` upward."""
         if not user_text.strip():
             raise StructuredOutputError("user text is empty", attempts=0)
+        consume_model_attempt()
         response = await self._gateway.complete(
             ModelRequest(
                 model_alias=self.model_alias,
@@ -88,6 +90,7 @@ class ChatResponder:
                 max_output_tokens=self._max_output_tokens,
             )
         )
+        consume_model_tokens(response.usage.prompt_tokens + response.usage.completion_tokens)
         text = response.content.strip()
         if not text:
             raise StructuredOutputError("model output is empty", attempts=response.attempt)

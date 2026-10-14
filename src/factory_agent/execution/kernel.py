@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Protocol, cast
 
+from sageql_core import RunControl, RunLimits
+
 from factory_agent.domain import CapabilityId, NarrowedFilters, Role, TimeRange
 from factory_agent.domain.errors import (
     InvalidRequestError,
@@ -30,6 +32,7 @@ from factory_agent.domain.errors import (
     UpstreamInvalidError,
     UpstreamUnavailableError,
 )
+from factory_agent.execution.bounded import run_sandbox_call
 from factory_agent.execution.executor import ExecutionRequest
 from factory_agent.execution.recipes import (
     BUSINESS_FILTER_KEYS,
@@ -53,6 +56,7 @@ from factory_agent.ports.contracts import (
     ResourceFetchResult,
 )
 from factory_agent.ports.order_views import OrderDetailData, OrderViewSelection, build_order_groups
+from factory_agent.ports.run_budget import bind_run_budget
 from factory_agent.ports.session import CapabilityRunRequest, CapabilityRunResult
 
 _METADATA_TABLE = "_meta"
@@ -122,7 +126,7 @@ class StepExecutor(Protocol):
         filters: Any,
         request: ExecutionRequest,
         active_scope: Any | None = None,
-        extra_params: dict[str, str] | None = None,
+        extra_params: dict[str, Any] | None = None,
     ) -> ResourceFetchResult: ...
 
 
@@ -193,6 +197,10 @@ class KernelCapabilityRunner:
     def recipes(self) -> RecipeRegistry:
         return self._recipes
 
+    @property
+    def step_executor(self) -> StepExecutor:
+        return self._executor
+
     async def run(self, request: CapabilityRunRequest) -> CapabilityRunResult:
         started = time.monotonic()
         recipe = self._recipes.get(str(request.capability_id))
@@ -201,20 +209,37 @@ class KernelCapabilityRunner:
         _validate_order_view(recipe, request.order_view)
         _validate_group_page(recipe, request)
 
-        with InteractionSandbox(allowed_tables=tuple(self._allowed_tables(recipe))) as sandbox:
+        control = request.run_control or RunControl(
+            time.monotonic() + 300,
+            RunLimits(
+                max_mes_requests=self._settings.max_api_calls,
+                max_mes_pages=self._settings.max_api_calls,
+                max_processed_rows=250000,
+            ),
+        )
+        with (
+            bind_run_budget(control),
+            InteractionSandbox(allowed_tables=tuple(self._allowed_tables(recipe))) as sandbox,
+        ):
             self._register_meta(sandbox, time_range, filters, request)
-            fetches, call_count = await self._fetch_api_steps(
-                sandbox, recipe, filters, time_range, request.role
+            fetches, call_count = await control.with_call(
+                lambda: self._fetch_api_steps(
+                    sandbox, recipe, filters, time_range, request.role, control
+                )
             )
-            render_table = self._build_table(
+            render_table = await run_sandbox_call(
                 sandbox,
-                recipe,
-                fetches,
-                filters,
-                time_range,
-                request.order_view,
-                request.group_page,
-                request.group_page_size,
+                lambda: self._build_table(
+                    sandbox,
+                    recipe,
+                    fetches,
+                    filters,
+                    time_range,
+                    request.order_view,
+                    request.group_page,
+                    request.group_page_size,
+                ),
+                control,
             )
             render_table, fetches = await self._verify_final_shadow(
                 sandbox,
@@ -226,6 +251,7 @@ class KernelCapabilityRunner:
                 request.order_view,
                 request.group_page,
                 request.group_page_size,
+                control,
             )
             observed = _observe_ownership(recipe, fetches, self._base_data_operations)
         result = self._to_run_result(
@@ -325,6 +351,7 @@ class KernelCapabilityRunner:
         filters: Any,
         time_range: TimeRange,
         role: Any | None = None,
+        control: RunControl | None = None,
     ) -> tuple[dict[str, ResourceFetchResult], int]:
         """Execute every API step in recipe order and return fetches + call count.
 
@@ -378,6 +405,8 @@ class KernelCapabilityRunner:
                     footer=None,
                 )
             columns = self._table_columns_for(step, fetched.rows, recipe)
+            if control is not None:
+                control.consume("processed_rows", len(fetched.rows))
             sandbox.register_table(
                 SandboxTable(
                     name=step.step_id,
@@ -538,6 +567,7 @@ class KernelCapabilityRunner:
         order_view: OrderViewSelection | None = None,
         group_page: int = 1,
         group_page_size: int = 50,
+        control: RunControl | None = None,
     ) -> tuple[ResultTable, dict[str, ResourceFetchResult]]:
         """Compare fully computed rows, totals and card outputs in one sandbox."""
         shadow_fetches = {
@@ -556,15 +586,23 @@ class KernelCapabilityRunner:
                     columns=self._table_columns_for(step, fetched.rows, recipe),
                 )
             )
-        realtime = self._build_table(
-            sandbox,
-            recipe,
-            shadow_fetches,
-            filters,
-            time_range,
-            order_view,
-            group_page,
-            group_page_size,
+
+        def build_shadow() -> ResultTable:
+            return self._build_table(
+                sandbox,
+                recipe,
+                shadow_fetches,
+                filters,
+                time_range,
+                order_view,
+                group_page,
+                group_page_size,
+            )
+
+        realtime = (
+            await run_sandbox_call(sandbox, build_shadow, control)
+            if control is not None
+            else build_shadow()
         )
         consistent = (
             cached.columns == realtime.columns
@@ -1308,6 +1346,7 @@ def vars_from_filters(filters: NarrowedFilters) -> dict[str, object]:
         "style_codes": filters.style_codes,
         "plan_codes": filters.plan_codes,
         "material_ids": filters.material_ids,
+        "bed_codes": filters.bed_codes,
     }
 
 

@@ -58,4 +58,4 @@ async def test_production_cache_version_refreshes_despite_old_same_day_completio
     assert await current_worker.run_once(now) == {}
     assert calls == ["GongziClQuery", "ScjdQuery", "GongziClQuery", "ScjdQuery"]
     assert old_keys <= set(store.values)
-    assert all(":mes-detail-v3:" in key for key in set(store.values) - old_keys)
+    assert all(":mes-detail-v4:" in key for key in set(store.values) - old_keys)

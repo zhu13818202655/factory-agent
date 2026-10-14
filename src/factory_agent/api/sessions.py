@@ -134,6 +134,7 @@ class DrillSpec(BaseModel):
     order_codes: list[BusinessCode] = Field(default_factory=list, max_length=20)
     style_codes: list[BusinessCode] = Field(default_factory=list, max_length=20)
     plan_codes: list[BusinessCode] = Field(default_factory=list, max_length=20)
+    bed_codes: list[BusinessCode] = Field(default_factory=list, max_length=20)
     material_ids: list[BusinessCode] = Field(default_factory=list, max_length=20)
     order_view: OrderViewSpec | None = None
     group_page: int = Field(default=1, ge=1, le=100000, strict=True)
@@ -168,6 +169,7 @@ class DrillSpec(BaseModel):
             order_codes=tuple(self.order_codes),
             style_codes=tuple(self.style_codes),
             plan_codes=tuple(self.plan_codes),
+            bed_codes=tuple(self.bed_codes),
             material_ids=tuple(self.material_ids),
             order_view=self.order_view.to_selection() if self.order_view else None,
             group_page=self.group_page,

@@ -5,6 +5,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from zoneinfo import ZoneInfo
 
+from sageql_core import RunLimits
+
 from factory_agent.application.authorization import AuthorizationService
 from factory_agent.application.business_filters import BusinessFilterResolver
 from factory_agent.application.chitchat import ChatResponder
@@ -48,9 +50,11 @@ from factory_agent.ports import (
     InteractionStore,
     UsageEvent,
 )
+from factory_agent.ports.analysis import AnalysisRunner
 from factory_agent.ports.artifacts import ArtifactExporter
 from factory_agent.ports.contracts import CredentialBinder
 from factory_agent.ports.scope_violation import ScopeViolationStore
+from factory_agent.ports.tenant_registry import TenantRegistryReader
 
 
 def _llm_duration_ms(event: UsageEvent) -> int:
@@ -91,11 +95,17 @@ class SessionCore:
         summarizer: ResultSummarizer | None = None,
         scope_guard: ScopeGuard | None = None,
         validation_mode: str = "strict",
+        analysis_runner: AnalysisRunner | None = None,
+        tenant_registry: TenantRegistryReader | None = None,
+        execution_limits: RunLimits | None = None,
     ) -> None:
         self._store = store
         self._authorization = authorization
         self._parser = parser
         self._runner = runner
+        self._analysis_runner = analysis_runner
+        self._tenant_registry = tenant_registry
+        self._execution_limits = execution_limits or RunLimits(max_processed_rows=250000)
         self._clock = clock
         self._new_id = new_id
         self._narrower = narrower or FilterNarrower()

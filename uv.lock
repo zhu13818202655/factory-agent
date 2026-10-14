@@ -613,6 +613,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "redis" },
+    { name = "sageql-core" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "xlsxwriter" },
@@ -646,6 +647,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11.0,<3.0.0" },
     { name = "pydantic-settings", specifier = ">=2.10.0,<3.0.0" },
     { name = "redis", specifier = ">=5.0.0,<7.0.0" },
+    { name = "sageql-core", path = "vendor/wheels/sageql_core-0.1.0-py3-none-any.whl" },
     { name = "sqlalchemy", specifier = ">=2.0.0,<3.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0,<1.0.0" },
     { name = "xlsxwriter", specifier = ">=3.2,<4.0" },
@@ -2321,6 +2323,20 @@ sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/39/24/1390172471d569
 wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/e4/81/48c41b554a54d75d4407740abb60e3a102ae416284df04d1dbdcbe3dbf24/s3transfer-0.11.3-py3-none-any.whl", hash = "sha256:ca855bdeb885174b5ffa95b9913622459d4ad8e331fc98eb01e6d5eb6a30655d", size = 84246, upload-time = "2025-02-26T20:44:55.509Z" },
 ]
+
+[[package]]
+name = "sageql-core"
+version = "0.1.0"
+source = { path = "vendor/wheels/sageql_core-0.1.0-py3-none-any.whl" }
+dependencies = [
+    { name = "pydantic" },
+]
+wheels = [
+    { filename = "sageql_core-0.1.0-py3-none-any.whl", hash = "sha256:845880220c310d1cafafa7152a289c28af3a0ed4232bd605d5540387da2f4e67" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.10,<3" }]
 
 [[package]]
 name = "six"

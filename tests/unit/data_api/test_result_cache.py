@@ -573,7 +573,7 @@ def test_progress_cache_slicing_uses_rq_even_when_sheet_prefix_disagrees():
     )
     assert sliced == ({"dh": "NON-DATE-SHEET", "rq": "2026-07-01", "fhsl": "10"},)
     payload = json.loads(next(iter(store.data.values())))
-    assert payload["v"] == 3
+    assert payload["v"] == RESULT_SET_VERSION
     assert payload["derived"] == []
     assert "dh_date" not in payload["columns"]
 
@@ -1879,6 +1879,53 @@ def test_snapshot_logical_fetch_count_does_not_count_http_pages():
     executor = ResultCacheExecutor(InnerFake({}), make_result_cache(), snapshot_provider=snapshot)
     result = asyncio.run(executor.execute_full_step(owner_filters(), payroll_request()))
     assert result.source_call_count == 1
+
+
+def test_analysis_miss_keeps_caller_window_and_does_not_start_owner_snapshot():
+    live = ResourceFetchResult(rows=PAYROLL_ROWS, total=2, pages_fetched=1, complete=True)
+    snapshot = SnapshotFake(live)
+    inner = InnerFake({"GongziClQuery": live})
+    store = MemoryStore()
+    cache = make_result_cache(mode=ResultCacheMode.READ, store=store)
+    executor = ResultCacheExecutor(inner, cache, snapshot_provider=snapshot)
+    request = replace(payroll_request(), allow_owner_snapshot=False)
+
+    result = asyncio.run(executor.execute_full_step(owner_filters(), request))
+
+    assert result.complete
+    assert result.rows == live.rows
+    assert store.lookups
+    assert snapshot.calls == []
+    assert len(inner.calls) == 1
+    assert inner.calls[0][1:] == tuple(bound.strftime("%Y-%m-%d") for bound in request.time_range)
+
+
+def test_analysis_reuses_covering_snapshot_without_starting_owner_fetch():
+    store = MemoryStore()
+    cache = make_result_cache(mode=ResultCacheMode.READ, store=store)
+    assert asyncio.run(
+        cache.write(
+            TenantId("t"),
+            "GongziClQuery",
+            PAYROLL_ROWS,
+            None,
+            {},
+            PREFETCH_WINDOW,
+            source="precompute",
+        )
+    )
+    snapshot = SnapshotFake(ResourceFetchResult(rows=(), total=0, pages_fetched=1, complete=True))
+    inner = InnerFake({})
+    result = asyncio.run(
+        ResultCacheExecutor(inner, cache, snapshot_provider=snapshot).execute_full_step(
+            owner_filters(), replace(payroll_request(), allow_owner_snapshot=False)
+        )
+    )
+    assert result.complete
+    assert result.cache_source == "precompute"
+    assert result.source_call_count == 0
+    assert snapshot.calls == []
+    assert inner.calls == []
 
 
 def test_encoding_that_crosses_deadline_cannot_publish_a_snapshot(monkeypatch: pytest.MonkeyPatch):

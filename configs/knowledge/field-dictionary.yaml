@@ -1,293 +1,240 @@
-# 客户 MES 字段字典与产量分语境口径表。
-# 来源口径：docs/product/AI问答对外接口-整理.md 与 docs/product/需求及方案整理.md（客户确认结论）。
-# 本 YAML 为唯一载体（评审 Markdown 已不再维护双份）。
-#
-# 口径状态约定：
-#   confirmed_metrics  —— 已确认口径，可直接参与计算与展示（附确认来源与日期）。
-#   unconfirmed_metrics —— 无数据源/未确认口径；被能力引用时必须产生显式
-#                          unavailable 列状态，禁止渲染为数字。
-# 2026-09-02 客户答复后完成口径关闭：角色枚举、在册人数、Flag 默认、
-# GongziMxQuery Uid 规则、基础数据接口不过滤、交期预警规则均已确认并登记。
-# 2026-09-15 进度与产量重梳（拍板）：产量主源 = YskQuery；进度主列 = ScjdQuery.wcl（包完工率）；
-# 生产计划接口（PlanGridPageList）整族弃用 ⇒ 计划数量 / 客户名称 / 交期 / 交期预警退出能力。
-# 交期预警随之从 confirmed_metrics 移入 unconfirmed_metrics。详见
-# docs/design/进度与产量功能重梳方案.md（本文是该口径的唯一现行依据）。
-version: 3
+# 现行 V2 事实与 V1 安全字典的受审语义。
+# 来源：docs/product/需求及方案整理.md、现行两份 V2 接口契约及 ADR-0010。
+# confirmed_metrics 可用于受审计算；unconfirmed_metrics 必须返回 unavailable。
+# 本文件是可信元数据，不是租户当前配置、授权证明或原始响应样例。
+version: 4
 
 common_fields:
-  uid: 员工工号
-  uname: 姓名
-  dept: 部门（车间）编号
-  deptname: 部门（车间）名称（仅部分接口返回；`YskQuery` 只有 `dept`，名称需关联 `DeptQuery`）
-  huohao: "货号编号 —— 同形不同义，见 field_contexts（Ysk/Wsk/HuohaoWtCL/ScjdGx 里是款号）"
-  bbreed: "款号（制单与缝制生产进度里的款号字段）"
+  uid: 员工工号；身份字段仅在可信执行层使用
+  uname: 员工姓名；身份字段不进入模型观察
+  dept: 部门编号；来自授权范围的收窄条件
+  deptname: 部门名称；不作为身份范围的授权依据
+  huohao: 内部货号编码；V1 表单与货号工序以该编码关联
+  bbreed: 业务款号；与内部货号分别保留，不按名称猜关系
   description: 品名
-  spname: 品名（计划）
-  name_pk: 简拼
-  sctype: 生产类型编码
+  sctype: 生产类型稳定编码
   sctypename: 生产类型名称
-  worktype: "工序编号 —— 同形不同义，见 field_contexts（Ysk/HuohaoWtCL 里是工序名称）"
+  worktype: 工序稳定编码；现行 V2 事实中的工序维度
   wtname: 工序名称
-  name: 工序名称（缝制工序进度）
-  color: 颜色
-  chima: 尺码
-  chuanghao: 床号
+  color: 原始颜色标识
+  chima: 原始尺码标识；不自动合并 XXL 与 2XL
+  chuanghao: 床号；字符串精确匹配，保留前导零
   baohao: 包号
-  ganghao: 缸号
   dw: 单位
-  rq: 业务日期
-  inputtime: 刷卡时间
-  check_time: 审核时间
-  ischeck: 是否审核（工资明细）
-  price: 工价/单价
-  je: 金额（je = sl × price）
-  cp: 次品数（仅手工账接口提供，无统一数据源）
-  dh: 单号（制单/缝制流程卡；制单语境下同号因「床号×包号」展开而多行）
-  jhdh: 计划单号（计划）
-  dddh: 计划单号（制单/吊挂/手工账）
-  ddh: 计划单号（手工账）
-  khddh: 客户订单号
-  khhh: 客户货号
-  khid: 客户编号
-  khname: 客户
-  ddsl: 订单数量（计划）
-  zsl: "同形不同义：计划语境 = 总数量；缝制生产进度语境 = 该单裁剪数量，见 field_contexts"
-  paol: 抛量（计划）
-  finish_date: 交货日期（交期）—— 生产计划接口弃用后无数据源
-  zhdate: 下单/制单日期（订单开始日期，交期预警总工期起点）
-  state: 单据状态（1=审核）
-  cid: 条码 ID
-  sffb: 是否分包
-  fbid: 分包 ID
-  zpsl: 正品数量（缝制工序进度）
-  fhsl: "同形不同义（预发数量 / 发卡数量），见 quantity_contexts"
-  sl: "同形不同义（产量 / 预发数量），见 quantity_contexts"
-  sssl: "同形不同义（产量），见 quantity_contexts"
-  zbs: 包数（缝制生产进度）
-  wcl: 包完工率（缝制生产进度/详情，0~100 整数）
-  wcs: 总数与完成数的组合字符串（缝制生产进度详情；件·工序口径）
-  wts: 工序道数（缝制生产进度/详情，0 表示未开工）
-  sfwg: 是否完工（缝制生产进度，1=已完工）
-  wsort: 工序排序号（缝制工序进度）
-  userid: 物料编号（缝制工序进度入参，即 `Sclzd.id`）
-  id: 物料编号（制单/已扫描/缝制详情；产量挂订单的唯一可靠键）
-  drdg_status: 导入吊挂（制单）
-  sfjz: 是否结账（吊挂）
-  gxtype: 流转类型（0工序/1仓库/2验布工资专用）
-  section: 工段
-  default_price: 默认工价（工序）
-  xz_price: 限制工价（工序）
-  gongzi_js_type: 工资结算方式（0预发/1实收/2多次实收）
-  default_working_hours: 默认理论工时（工序）
-  theoretical_work_hours: 理论工时（货号工序）
-  vehicle_type: 车种
-  sfzb: 是否整版
-  zhgx: 最后工序
-  sfxs: 是否线上
-  using_state: 使用中
-  move_admin_role: 移动管理岗位角色（00 员工/01 组长/02 管理/99 老板）
-  employeeRule: 分配角色 JSON 数组字符串（展示用途）
-  move_Login: 移动登录权限
-  movepassword: 移动登录密码（敏感字段）
-  loginUserName: 登录用户绑定
-  lpinpai: 品牌（货号）
-  remark: 备注（货号）
-  pid: 部门上级（车间与部门平级，车间下挂小组）
-  sysdept: 系统部门（本厂）
-  company: 公司编码
-  js: 件数（手工账）
+  rq: 制单业务日历日期；进度窗口时间锚，不从制单编号推断
+  inputdate: 报工日期；工资产量 Flag=0 的窗口时间锚
+  inputtime: 报工时间
+  check_time: 审核时间；工资产量 Flag=1 的窗口时间锚
+  ischeck: 审核状态
+  je: 工资产量金额贡献；个人工资明细属于敏感数据
+  dh: 制单编号；用于实体定位，不等同于计划号
+  jhdh: 计划号；订单展示维度，空值归入一个未关联计划号组
+  sl: 工资产量报工数量贡献；跨工序合计单位为件·工序
+  bs: 客户包数贡献；按受审口径累加，不按行数重建
+  fhsl: 生产进度发卡数量贡献
+  sssl: 生产进度截至取数时的累计实收数量贡献
+  zpsl: 生产进度正品数量贡献
+  wgs: 客户已完工工序统计贡献；不能代替完整配置工序集合
+  wts: 客户总工序统计贡献；不能直接作为全床配置工序种类数
+  wcl: 实收合计除以发卡合计的百分比；两位小数
+  wsort: 工序排序
+  userid: 进度物料编号；只从获准实体视图解析
+  id: 客户行或配置记录稳定编号；语境决定实体类型
+  section: 工段名称；工序目录中的名称关系不是生产类型稳定编码
+  gxtype: 工序流转类型
+  vehicle_type: 车种；与工序名称分别保留，空值表示未提供
+  zhgx: 是否最后工序
+  using_state: 款号工序使用状态；0 停用，1 使用中
 
-# 角色与权限口径（客户确认，2026-09-02）。
 roles:
   enumeration:
     "00": 员工
     "01": 组长
     "02": 管理
     "99": 老板
-  source: /api/system/token 返回 roles 字段（AI问答对外接口 §2.1）；四角色范围见需求及方案整理「客户确认结论」
+  source: 可信认证返回的角色与绑定部门
   data_range:
     "00": 本人
     "01": 所属绑定组
-    "02": 绑定的部门/车间（可跨车间多绑定，登录后由 token 接口返回）
-    "99": 全部
-  note: 业务接口按角色返回已过滤数据；基础数据接口中「部门字典」/「货号字典」等清单类不按权限过滤（返回全量），但「员工清单」按角色范围过滤（实测 2026-09-13：00 员工 1 人 / 02 管理 2303 人 / 99 老板 2600 人）。
+    "02": 绑定部门或车间
+    "99": 全厂
+  note: 字典配置读取适用于四角色，但仅限当前租户的安全投影；生产事实仍逐动作复用 FR 授权和 DataScope。
 
-# 同一字段在不同接口语境下的含义；能力实现按此取数，禁止跨语境混用。
-# 三个最容易出错的字段（实测口径见 docs/design/进度与产量功能重梳方案.md §1.3）：
 field_contexts:
   huohao:
-    ScjdQuery: 货号
-    SclzdGridPageList: 货号
-    BarcodeClQuery: 货号
-    YskQuery: 款号
-    WskQuery: 款号
-    HuohaoWtCLQuery: 款号
-    ScjdGxQuery: 款号
+    GongziClQuery: 内部货号编码
+    ScjdQuery: 内部货号编码
+    HuohaoFormQuery: 内部货号编码
+    HuohaoWorktypeQuery: 内部货号编码
+    SclzdWorktypeQuery: 内部货号编码
   worktype:
-    BarcodeClQuery: 工序编号
-    YskQuery: 工序名称
-    HuohaoWtCLQuery: 工序名称
-    ScjdGxQuery: 工序编号（名称在 name）
-  zsl:
-    PlanGridPageList: 总数量（表头恒定，同 jhdh 内不随行变化）
-    ScjdQuery: 该单裁剪数量（实测 = Σ制单 fhsl）
+    GongziClQuery: 工序编码
+    ScjdQuery: 工序编码
+  rq:
+    ScjdQuery: 制单业务日历日期；查询窗口选择该日期的制单，进度数值仍为累计值
+  inputdate:
+    GongziClQuery: Flag=0 报工日期
+  check_time:
+    GongziClQuery: Flag=1 审核时间
 
 quantity_contexts:
-  SclzdGridPageList:
-    fhsl: 预发数量
-    sssl: 产量
-  BarcodeClQuery:
-    fhsl: 预发数量
-    sssl: 产量（扫码；实测是 YskQuery 的真子集，只作对账/回退，不并入主源）
-    sl: 预发数量
-  YskQuery:
-    fhsl: 发卡数量
-    sl: 产量（**产量类主源口径**；件·工序累计，je=sl×price）
-  WskQuery:
-    sl: 预发数量（待扫数量）
-  WorktypeProgressQuery:
-    fhsl: 预发数量
-  ScjdGxQuery:
-    fhsl: 预发数量（该道工序）
-    zpsl: 正品数量（该道工序）
+  GongziClQuery:
+    sl: 报工数量贡献；件·工序口径
+    je: 金额贡献
+    bs: 客户包数贡献
   ScjdQuery:
-    zsl: 裁剪数量
-    zbs: 包数
-    wcl: 包完工率
-    wts: 工序道数
-  ScjdDetailQuery:
-    fhsl: 裁剪数量（该包）
-    wcs: "总数/完成数（件·工序口径，不是件数）"
-    wcl: 完成率
-  PinFengGridPageList:
-    sl: 数量
-    js: 件数
-  PlanGridPageList:
-    sl: 预发数量
-  DgClQuery:
-    sl: 预发数量
+    bs: 包数贡献
+    fhsl: 发卡数量贡献
+    sssl: 累计实收数量贡献
+    zpsl: 正品数量贡献
+    wgs: 已完工工序统计贡献
+    wts: 总工序统计贡献
+    wcl: 合计实收除以合计发卡乘以 100，零分母返回 0
 
-# 已确认口径（可直接参与计算与展示）。
 confirmed_metrics:
   payroll.amount:
-    formula: sl × price
-    source: 需求及方案整理·实体对应关系（工资=数量×单价）
+    formula: 数量乘以单价；只在授权可信计算层处理
+    source: 需求及方案整理的工资口径
   payroll.gross_total:
-    formula: footer.je_total
-    source: AI问答对外接口 §8（工资接口 footer 合计）
+    formula: sum(GongziClQuery.je)；适用 footer.je_total 作独立对账
+    source: 工资产量 V2 契约与 ADR-0010
   payroll.piece_count:
-    formula: sum(sl)（工资明细窗口内）
-    source: 需求及方案整理·员工功能表（计件件数）
+    formula: sum(GongziClQuery.sl)
+    source: 需求及方案整理的计件件数口径
   output.personal:
-    formula: sum(sl)（实收/合格数，次品不计）
-    source: 需求及方案整理「客户确认结论」（个人产量即最终实收数）
+    formula: 本人获准窗口内 sum(GongziClQuery.sl)
+    source: 需求及方案整理的个人产量口径
   output.reported_qty:
-    formula: sum(YskQuery.sl)
-    source: AI问答对外接口 §9.1（生产查询-已扫描 = 产量类主源）；件·工序口径，不得当作完工件数
+    formula: sum(GongziClQuery.sl)
+    source: 工资产量 V2；件·工序口径，不代表独立成衣完工件数
   output.reported_amount:
-    formula: sum(YskQuery.je)
-    source: AI问答对外接口 §9.1
+    formula: sum(GongziClQuery.je)
+    source: 工资产量 V2
   output.worktype_share:
-    formula: 该工序报工产量 ÷ 该单裁剪数量
-    source: 我方计算（用于识别瓶颈工序）；分母取 ScjdQuery.zsl
+    formula: 工序报工量除以同一获准计划号的 sum(ScjdQuery.fhsl)
+    source: 现行受审订单产量配方
   progress.package_ratio:
-    formula: ScjdQuery.wcl（包完工率 = 完工包数 ÷ zbs，直接取接口值）
-    source: AI问答对外接口 §12.1；2026-09-15 拍板为进度主列唯一口径
-  progress.finished_packages:
-    formula: round(wcl / 100 × zbs)（列表层）或 COUNT(wcl == 100)（包级层）
-    source: 我方计算；两条路逐单相等（实测 527/527）
-  progress.cut_qty:
-    formula: ScjdQuery.zsl（= 该单裁剪数量，实测 = Σ制单 fhsl）
-    source: AI问答对外接口 §12.1
+    formula: sum(ScjdQuery.sssl) / sum(ScjdQuery.fhsl) * 100；零分母为 0，ROUND_HALF_UP 两位小数
+    source: 生产进度 V2 与 ADR-0010
+  progress.package_count:
+    formula: sum(ScjdQuery.bs)
+    source: 生产进度 V2 客户贡献
   progress.order_count:
-    formula: 按 jhdh 归组，每组计 1；空值统一计一个统计组
-    source: 需求及方案整理（计划号维度口径）；空值组不表示已关联计划订单
+    formula: 按计划号分组计数；空计划号统一一个统计组
+    source: 需求及方案整理的计划号口径
   progress.sheet_count:
     formula: COUNT(DISTINCT 非空 dh)
-    source: 我方计算（计划号统计组内的制单数，同制单跨部门不重复计数）
+    source: 现行受审进度配方
   progress.worktype_count:
-    formula: ScjdQuery.wts / ScjdDetailQuery.wts
-    source: AI问答对外接口 §12.1/§12.2
+    formula: sum(ScjdQuery.wts)
+    source: ADR-0010 的客户贡献口径；不表示完整配置工序种类数
   progress.done_worktype_count:
-    formula: ScjdGxQuery 中 DISTINCT worktype 计数（uid 非空即视为已完成）
-    source: 我方计算
+    formula: sum(ScjdQuery.wgs)
+    source: ADR-0010 的客户贡献口径
   progress.worktype_order:
-    formula: ScjdGxQuery.wsort
-    source: AI问答对外接口 §12.3
+    formula: ScjdQuery.wsort
+    source: 生产进度 V2 的工序排序字段
   progress.issued_qty:
-    formula: ScjdGxQuery.fhsl
-    source: AI问答对外接口 §12.3
+    formula: sum(ScjdQuery.fhsl)
+    source: 生产进度 V2 与 ADR-0010
+  progress.received_qty:
+    formula: sum(ScjdQuery.sssl)
+    source: 生产进度 V2；是所选制单截至取数时累计实收，不是窗口新增报工
   progress.good_qty:
-    formula: ScjdGxQuery.zpsl
-    source: AI问答对外接口 §12.3
-  progress.unit_total:
-    formula: ScjdDetailQuery.wcs 前段（= fhsl × wts）
-    source: AI问答对外接口 §12.2；件·工序口径，展示必须带口径注记
-  progress.unit_done:
-    formula: ScjdDetailQuery.wcs 后段
-    source: AI问答对外接口 §12.2；件·工序口径
+    formula: sum(ScjdQuery.zpsl)
+    source: 生产进度 V2 与 ADR-0010
   output.participant_count:
-    formula: 窗口内有产出的去重 uid 数
-    source: 我方定义（口径登记）
+    formula: COUNT(DISTINCT 非空 uid)
+    source: 完整获准工资产量窗口中的参与人数
   workshop.effective_headcount:
-    formula: 各车间有产出去重 uid 数
-    source: 我方定义（报工人数口径）
+    formula: 各获准部门 COUNT(DISTINCT 非空 uid)
+    source: 受审报工人数口径
   workshop.output_per_capita:
-    formula: 车间报工产量合计 ÷ 参与人数；0 人输出 unavailable，不伪造 0
-    source: 我方定义（分母为我方口径）
+    formula: 部门报工合计除以去重参与人数；无有效分母则 unavailable
+    source: 需求及方案整理的管理功能表
   workshop.rank:
-    formula: 按车间报工产量倒序编号（1 起）；可见部门数 = 1 时输出 unavailable（无横向可比对象）
-    source: 我方定义（需求及方案整理·管理功能表）
+    formula: 可见部门不少于两个时按产量降序排名；并列保持受审规则，部门编码确定行序
+    source: 现行受审车间对比配方
   payroll.rank_position:
-    formula: 按 GongziJeOrderQuery 返回顺序编号位次（接口已按金额倒序）
-    source: AI问答对外接口 §8.2；客户确认结论·接口与字段口径 3
+    formula: 授权人群内按员工汇总一次后按金额降序、员工编码升序确定本地位次
+    source: 现行受审收入排名配方；员工角色无该能力
   payroll.group_rank:
-    formula: 本人 uid 定位后，按本人所在小组（dept）过滤得到的组内位次
-    source: 需求及方案整理·管理功能表（收入排名）；客户确认结论·接口与字段口径 3
+    formula: 确认本人当前小组，完整获准组员汇总排序后再定位本人
+    source: 需求及方案整理与 ADR-0010
   payroll.group_size:
-    formula: 按本人所在小组（dept）过滤后的可见列表计数（组内总人数）
-    source: 需求及方案整理·管理功能表（收入排名）；客户确认结论·接口与字段口径 3
+    formula: 完整获准小组内按员工编号汇总后的人数
+    source: ADR-0010
   payroll.package_count:
-    formula: GongziJeOrderQuery 返回的 bs（包数，计件件数口径）
-    source: AI问答对外接口 §8.2
+    formula: sum(GongziClQuery.bs)
+    source: 工资产量 V2 客户包数贡献
   payroll.gross_by_dept:
-    formula: 按 dept 分组的 je 合计
-    source: 需求及方案整理·老板全厂工资取数（应发合计）
+    formula: 获准部门内 sum(GongziClQuery.je)
+    source: 需求及方案整理的应发合计口径
   org.headcount:
-    formula: EmployeeQuery 不传 uid 全量返回，按 dept 汇总计数（在册人数）
-    source: 需求及方案整理·老板全厂工资取数；客户确认结论 4（基础数据接口不按权限过滤，返回全部数据）
-    note: 在职/离职判断字段待真实环境联调复核；当前以全量员工为在册口径。
+    formula: 受审安全在册名册按员工编号计数
+    source: 需求及方案整理与 ADR-0010
+    note: 名册用于受审人数分母，身份不进入模型观察；不猜在职状态。
   payroll.avg_by_dept:
-    formula: 应发合计 ÷ 在册人数（gross_by_dept ÷ org.headcount）
-    source: 需求及方案整理·老板全厂工资取数（人均工资）
+    formula: 应发合计除以安全在册人数；缺分母则 unavailable
+    source: 需求及方案整理的人均工资口径
   time.flag_default:
-    formula: GongziMxQuery Flag 默认 0（按扫描日期），1 为按审核日期
-    source: 需求及方案整理·公共参数约定（工资接口 Flag 口径）
+    formula: GongziClQuery Flag=0 按报工日期；Flag=1 按审核日期且已审核
+    source: 工资产量 V2 契约
+  config.process_types:
+    formula: 完整配置集合中 COUNT(DISTINCT 非空工序编码)
+    source: 款号或获准制单配置；与配置记录数及事实已报工种类数分别展示
+  config.size_types:
+    formula: 完整尺码配置集合中 COUNT(DISTINCT 非空原始尺码标识)
+    source: 货号表单配置；保留版型，不合并不同名称
 
-# 已确认的业务规则（非数值口径）。
 confirmed_rules:
-  gongzi_mx.uid:
-    rule: GongziMxQuery 的 Uid 为选填（客户确认 2026-09-06）：传员工工号则按该员工查询；不传则由 MES 按当前调用角色返回——00 员工仅本人，01 组长/02 管理/99 老板返回其管辖范围人员明细
-    source: 需求及方案整理「追加确认 2026-09-06」；AI问答对外接口 §8.1（Uid 取值说明）
-    enforcement: 范围由 MES 行级过滤；产品端仅在单员工场景（个人本人/点名查某员工）注入 Uid，不再执行「仅限老板传空」门禁
-  base_data.no_filter:
-    rule: 基础数据接口（员工/部门/货号等）不按权限过滤，返回全部数据；业务数据接口按角色返回已过滤数据
-    source: 需求及方案整理「客户确认结论」（组织与角色权限 4）
+  facts.current_sources:
+    rule: 工资和产量仅用工资产量 V2，进度仅用生产进度 V2；不复活被替代的 V1 事实链
+    source: 需求及方案整理与 ADR-0010
+  dictionaries.safe_projection:
+    rule: 当前租户四角色均可读取批准的基础字典配置安全投影；工价、身份、凭据和备注不进入字典观察或缓存
+    source: 需求方确认的字典配置权限与现行安全基线
+  dictionaries.entity_scope:
+    rule: 货号表单和制单工序是完整实体子集；制单由获准进度视图解析，实体子集不冒充租户全集
+    source: 缓存优先的 SageQL 包集成与 L2 自主分析方案
+  dictionaries.completeness:
+    rule: 每个命名集合分别按真实 total 验证完整；同一表单颜色与尺码均完整才缓存
+    source: 现行客户基础字典契约
+  dictionaries.relationships:
+    rule: 内部货号、工序、生产类型按稳定编码关联；工段名称关系需唯一性证据，缺失或冲突不可用
+    source: 现行客户基础字典契约
+  dictionaries.hanging_lines:
+    rule: 吊挂线别和组别仅作当前租户安全字典；分页完整后缓存，不建立未经确认的线组到部门关系
+    source: 客户吊挂组别契约及基础字典权限
   time_range.max:
-    rule: 时间范围上限近一年，超范围友好提示并终止，不进 MES 调用
-    source: 需求及方案整理「客户确认结论」（API 压力 1）
+    rule: 事实回溯边界为 365 天；无时间维度的配置问题不强制补事实窗口
+    source: ADR-0010 与 L2 方案
+  cache.retention:
+    rule: 历史事实快照 24 小时，含今天完整窗口 90 秒，安全基础字典 24 小时；不拼接跨窗快照
+    source: ADR-0010 及基础目录保留策略
 
-# 未确认口径：被能力引用时必须产生显式 unavailable 列状态，禁止渲染为数字。
 unconfirmed_metrics:
   plan.target_output:
-    gap: 目标产量/达成率无法取数（客户明确现有接口不提供）；能力不输出达成率列
-    source: 需求及方案整理「追加确认 2026-09-15」3
+    gap: 计划接口已弃用，目标产量与达成率无已确认数据源
+    source: 需求及方案整理
   delivery.warning:
-    gap: 生产计划接口（Plan）弃用后交期/交期预警无任何数据源（缝制族与制单均无交期字段）；fr009 不再输出 delivery_warning / days_remaining，也不再有 alert_marker
-    source: 2026-09-15 拍板 3（生产计划接口整族删除）；等客户给出制单侧或其它来源的交期字段后再议
-  workshop.plan_qty:
-    gap: 车间维度拿不到计划/裁剪数量——ScjdQuery / ScjdFzHzQuery 都没有 dept 字段；车间视图只给报工产量 / 参与人数 / 人均产量
-    source: 2026-09-15 拍板（§5.1）；裁剪数量与进度只在款号级 / 全厂视图给出
+    gap: 无已确认交期数据源
+    source: 需求及方案整理
+  progress.cut_qty:
+    gap: 不提供旧裁剪数量派生；当前发卡分母为 fhsl
+    source: 现行生产进度 V2 契约
+  progress.finished_packages:
+    gap: 未确认纯制单 bgs/bts 的完整明细派生规则；不能从 wcl 推导完工包数
+    source: ADR-0010
+  progress.unit_total:
+    gap: 当前 V2 没有旧 wcs 字符串字段；不恢复 V1 来源或推导代值
+    source: 现行生产进度 V2 契约
+  progress.unit_done:
+    gap: 当前 V2 没有旧 wcs 字符串字段；不恢复 V1 来源或推导代值
+    source: 现行生产进度 V2 契约
+  output.finished_garments:
+    gap: 多工序报工贡献不代表独立成衣完工件数，无已确认去重或计算规则
+    source: ADR-0010
   order.in_progress_qty:
-    gap: 「在制数量」列未实现——WskQuery（未扫描）已不在任何取数链里，待客户确认口径后再启用
-    source: docs/design/进度与产量功能重梳方案.md §9
+    gap: 未确认独立在制数量口径，不恢复未扫描 V1 事实链
+    source: 需求及方案整理

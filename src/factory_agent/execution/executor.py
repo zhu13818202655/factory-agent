@@ -19,10 +19,10 @@ from factory_agent.domain import (
     DataScope,
     NarrowedFilters,
     PlatformScope,
-    Role,
 )
 from factory_agent.domain.errors import ForbiddenError
 from factory_agent.ports.contracts import ResourceFetchResult
+from factory_agent.ports.resource_execution import ExecutionRequest
 
 
 class ResourceFetcher(Protocol):
@@ -85,20 +85,6 @@ class StrictScopeVerifier:
             raise ForbiddenError("employee filters exceed the authorized scope")
         if filters.dept_ids is not None and not filters.dept_ids <= scope.dept_ids:
             raise ForbiddenError("department filters exceed the authorized scope")
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionRequest:
-    """One bounded execution step requested by a capability recipe.
-
-    ``role`` is the authoritative token role of the caller and never broadens
-    any scope.
-    """
-
-    operation_id: str
-    time_range: tuple[datetime, datetime]
-    pagination_size: int = 50
-    role: Role | None = None
 
 
 @dataclass(frozen=True, slots=True)

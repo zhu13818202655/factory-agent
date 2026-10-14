@@ -133,7 +133,13 @@ class SessionService(SessionPipelineMixin, SessionHistoryMixin, SessionLifecycle
             raise ValueError("drill employee_uid is not acceptable")
         if drill.time_expression is not None and len(drill.time_expression) > 64:
             raise ValueError("drill time_expression is not acceptable")
-        for values in (drill.order_codes, drill.style_codes, drill.plan_codes, drill.material_ids):
+        for values in (
+            drill.order_codes,
+            drill.style_codes,
+            drill.plan_codes,
+            drill.bed_codes,
+            drill.material_ids,
+        ):
             if len(values) > 20 or any(not value or len(value) > 128 for value in values):
                 raise ValueError("drill business filters are not acceptable")
         if drill.material_ids and recipes is not None:

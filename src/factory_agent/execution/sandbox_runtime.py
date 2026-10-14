@@ -8,13 +8,13 @@ extension loading, ``ATTACH``, ``COPY``, DDL, and DML are all blocked.
 
 import json
 import re
-from dataclasses import dataclass
 from typing import Any, Mapping, Self, Sequence
 
 import duckdb
 
 from factory_agent.domain.errors import ForbiddenError, InvalidRequestError
 from factory_agent.execution.sandbox import InteractionSandboxPolicy
+from factory_agent.ports.sandbox import SandboxTable
 
 # Statements that must never execute inside the sandbox.
 _FORBIDDEN_PREFIXES: tuple[str, ...] = (
@@ -56,15 +56,6 @@ _FORBIDDEN_TOKENS: tuple[str, ...] = (
     "ICEBERG_",
     "HTTPFS",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class SandboxTable:
-    """One authorized table registered for this interaction only."""
-
-    name: str
-    rows: tuple[dict[str, Any], ...]
-    columns: tuple[tuple[str, str], ...]
 
 
 #: Column types the bulk insert can carry through a JSON STRUCT cast. The
@@ -109,6 +100,10 @@ class InteractionSandbox:
                 "allow_unsigned_extensions": False,
                 "enable_external_access": False,
                 "lock_configuration": True,
+                "memory_limit": "256MB",
+                "threads": 2,
+                "max_temp_directory_size": "0B",
+                "temp_directory": "",
             }
             self._connection = duckdb.connect(database=":memory:", config=config)
         return self._connection
@@ -271,6 +266,11 @@ class InteractionSandbox:
             self._connection = None
         self._registered.clear()
         self._closed = True
+
+    def interrupt(self) -> None:
+        """Interrupt the active bounded computation before joining its worker."""
+        if self._connection is not None:
+            self._connection.interrupt()
 
     def __enter__(self) -> Self:
         return self

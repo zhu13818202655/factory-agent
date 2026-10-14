@@ -50,7 +50,6 @@ operations:
     path: /api/NetYf/Baseinfo/UserInfoQuery
     kind: resource
     resource: user_info
-    required_params: [USERNAME]
     parameter_sources:
       app_key: credential
       timestamp: credential
@@ -81,6 +80,8 @@ operations:
     path: /api/NetYf/Baseinfo/HuohaoQuery
     kind: resource
     resource: huohao
+    list_key: huohaoList
+    total_key: hh_total
     parameter_sources:
       app_key: credential
       timestamp: credential
@@ -95,6 +96,8 @@ operations:
     path: /api/NetYf/Baseinfo/HuohaoFormQuery
     kind: resource
     resource: huohao_form
+    list_key: huohaoList
+    total_key: hh_total
     required_params: [huohao]
     parameter_sources:
       app_key: credential
@@ -111,6 +114,7 @@ operations:
     path: /api/NetYf/Baseinfo/ScTypeQuery
     kind: resource
     resource: sc_type
+    list_key: sctypeList
     parameter_sources:
       app_key: credential
       timestamp: credential
@@ -125,6 +129,7 @@ operations:
     path: /api/NetYf/Baseinfo/RfidWorktypeQuery
     kind: resource
     resource: rfid_worktype
+    list_key: worktypeList
     parameter_sources:
       app_key: credential
       timestamp: credential
@@ -139,7 +144,6 @@ operations:
     path: /api/NetYf/Baseinfo/HuohaoWorktypeQuery
     kind: resource
     resource: huohao_worktype
-    required_params: [huohao]
     parameter_sources:
       app_key: credential
       timestamp: credential
