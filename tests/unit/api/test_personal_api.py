@@ -31,7 +31,11 @@ CREDENTIAL_B = "enc-tenant-a-user-b"
 HEADERS = {CREDENTIAL_HEADER: CREDENTIAL}
 
 
-def make_client(role: Role = Role.EMPLOYEE) -> httpx.AsyncClient:
+def make_client(
+    role: Role = Role.EMPLOYEE,
+    *,
+    bound_depts: tuple[str, ...] = ("D-01",),
+) -> httpx.AsyncClient:
     personalization = PersonalizationService(
         InMemoryHistoryRepository(),
         InMemoryFavoriteRepository(),
@@ -41,9 +45,18 @@ def make_client(role: Role = Role.EMPLOYEE) -> httpx.AsyncClient:
     )
     exchange = FakeCredentialExchange(
         {
-            CREDENTIAL: principal(tenant_id="tenant-a", user_id="user-a", role=role),
+            CREDENTIAL: principal(
+                tenant_id="tenant-a",
+                user_id="user-a",
+                role=role,
+                bound_depts=bound_depts,
+            ),
             CREDENTIAL_B: principal(
-                tenant_id="tenant-a", user_id="user-b", display_name="模拟员工乙", role=role
+                tenant_id="tenant-a",
+                user_id="user-b",
+                display_name="模拟员工乙",
+                role=role,
+                bound_depts=bound_depts,
             ),
         }
     )
@@ -54,6 +67,71 @@ def make_client(role: Role = Role.EMPLOYEE) -> httpx.AsyncClient:
     )
     app = create_app(FactoryAgentSettings(environment="local"), overrides)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test.invalid")
+
+
+@pytest.mark.asyncio
+async def test_me_requires_identity() -> None:
+    async with make_client() as http:
+        response = await http.get("/v1/me")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_me_reports_token_role_and_own_scope() -> None:
+    """The credential alone yields the role the frontend renders against."""
+    async with make_client(Role.EMPLOYEE) as http:
+        response = await http.get("/v1/me", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["uid"] == "user-a"
+    assert body["uname"] == "模拟员工"
+    assert body["role"] == "employee"
+    assert body["role_code"] == "00"
+    assert body["dept_ids"] == ["D-01"]
+    assert body["data_scope"]["employee_ids"] == ["user-a"]
+    assert body["data_scope"]["dept_ids"] == ["D-01"]
+    assert body["data_scope"]["mes_filtered"] is False
+    assert body["data_scope"]["scope_version"]
+
+
+@pytest.mark.asyncio
+async def test_me_reports_manager_bound_departments() -> None:
+    async with make_client(Role.MANAGER, bound_depts=("005", "001")) as http:
+        response = await http.get("/v1/me", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["role"] == "manager"
+    assert body["role_code"] == "02"
+    # The bound set is returned sorted, so a client can diff it stably.
+    assert body["dept_ids"] == ["001", "005"]
+    assert body["data_scope"]["dept_ids"] == ["001", "005"]
+
+
+@pytest.mark.asyncio
+async def test_me_marks_owner_scope_as_mes_filtered() -> None:
+    async with make_client(Role.OWNER) as http:
+        response = await http.get("/v1/me", headers=HEADERS)
+
+    body = response.json()
+    assert body["role_code"] == "99"
+    # Whole-factory visibility is performed by the customer MES; the local
+    # scope only records that trust and never claims the wider range itself.
+    assert body["data_scope"]["mes_filtered"] is True
+
+
+@pytest.mark.asyncio
+async def test_me_name_comes_from_the_token_not_the_saved_mapping() -> None:
+    async with make_client() as http:
+        saved = await http.post(
+            "/v1/users/me/mapping", json={"uname": "李四", "company": None}, headers=HEADERS
+        )
+        response = await http.get("/v1/me", headers=HEADERS)
+
+    assert saved.status_code == 200
+    assert response.json()["uname"] == "模拟员工"
 
 
 @pytest.mark.asyncio
@@ -167,6 +245,7 @@ async def test_user_mapping_roundtrip() -> None:
 async def test_personal_router_is_registered() -> None:
     assert personal_router.prefix == "/v1"
     paths = {str(getattr(route, "path", "")) for route in personal_router.routes}
+    assert "/v1/me" in paths
     assert "/v1/quick-questions" in paths
     assert "/v1/history" in paths
     assert "/v1/favorites" in paths

@@ -1,9 +1,12 @@
-"""Quick questions, history, favorites, and minimal user-mapping endpoints.
+"""Current identity, quick questions, history, favorites, and user mapping.
 
 Identity never comes from the request body; it is resolved by the token
 exchange (see ``factory_agent.api.identity``). History and favorites are
 ownership-filtered by the trusted ``(tenant_id, user_id)`` pair. Quick
-questions are role-aware: the role is the authoritative token role.
+questions are role-aware: the role is the authoritative token role, and
+``GET /v1/me`` exposes that same role (plus its data scope) so the frontend
+can render role-aware UI from the credential alone without ever passing a
+role of its own.
 """
 
 from typing import cast
@@ -19,7 +22,7 @@ from factory_agent.application.personal import (
 )
 from factory_agent.bootstrap import ApplicationContainer
 from factory_agent.domain import CapabilityId
-from factory_agent.ports import InteractionOwner, TrustedCredential
+from factory_agent.ports import InteractionOwner, ResolvedPrincipal, TrustedCredential
 from factory_agent.ports.personal import Favorite
 
 personal_router = APIRouter(
@@ -80,6 +83,37 @@ class UserMappingView(BaseModel):
     company: str | None = None
 
 
+class DataScopeView(BaseModel):
+    """The caller's authorized range, in locally provable terms.
+
+    ``employee_ids`` is the caller's own work number; ``dept_ids`` is the
+    token-returned bound department/workshop set. ``mes_filtered`` records
+    that any wider row visibility (99 老板 = whole factory) is performed by
+    the customer MES, not claimed here (see ``factory_agent.domain.DataScope``).
+    """
+
+    employee_ids: list[str]
+    dept_ids: list[str]
+    mes_filtered: bool
+    scope_version: str
+
+
+class IdentityView(BaseModel):
+    """Who the caller is, derived only from the trusted credential."""
+
+    uid: str
+    uname: str
+    #: Domain role: ``employee`` / ``group_leader`` / ``manager`` / ``owner``.
+    role: str
+    #: Customer role code ``00`` / ``01`` / ``02`` / ``99``; the authoritative
+    #: token value the frontend already switches on.
+    role_code: str
+    #: Bound department/workshop set (one element for 00/01, the bound set for
+    #: 02; empty only when the token carries no binding).
+    dept_ids: list[str]
+    data_scope: DataScopeView
+
+
 def _container(request: Request) -> ApplicationContainer:
     return cast(ApplicationContainer, request.app.state.container)
 
@@ -97,6 +131,59 @@ def _personal(request: Request) -> PersonalizationService:
 def _not_found() -> HTTPException:
     """A missing record and one owned by another user look identical."""
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+
+
+async def _display_name(
+    request: Request,
+    credential: TrustedCredential,
+    principal: ResolvedPrincipal | None,
+) -> str:
+    """The token ``uname``, falling back to a saved display mapping.
+
+    The token is the only name source in production; the mapping fallback only
+    covers a deployment whose identity is wired without a token gateway.
+    """
+    if principal is not None:
+        return principal.display_name
+    service = _container(request).personalization
+    if service is None:
+        return ""
+    mapping = await service.get_mapping(credential.tenant_id, str(credential.user_id))
+    return mapping.uname if mapping is not None else ""
+
+
+@personal_router.get("/me", response_model=IdentityView)
+async def current_identity(request: Request) -> IdentityView:
+    """The caller's role, name, and authorized range.
+
+    The frontend presents only the encrypted ``app_key``; role, name, and
+    departments come from the token exchange and the range from authorization,
+    so a caller can never state its own role. This is the endpoint a
+    role-aware client calls once at startup — quick questions remain the
+    authoritative *capability* list, this is the authoritative *identity*.
+    """
+    container = _container(request)
+    credential, principal = await resolve_credential(request)
+    try:
+        authorization = await container.authorization.authorize(credential, container.clock.now())
+    except IdentityRejectionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.code.value) from exc
+    context = authorization.tenant_context
+    scope = authorization.data_scope
+    dept_ids = sorted(str(dept) for dept in scope.dept_ids)
+    return IdentityView(
+        uid=str(context.user_id),
+        uname=await _display_name(request, credential, principal),
+        role=context.role.value,
+        role_code=context.role.mes_code,
+        dept_ids=dept_ids,
+        data_scope=DataScopeView(
+            employee_ids=sorted(str(item) for item in scope.employee_ids),
+            dept_ids=dept_ids,
+            mes_filtered=scope.mes_filtered,
+            scope_version=str(scope.scope_version),
+        ),
+    )
 
 
 @personal_router.get("/quick-questions", response_model=list[QuickQuestionView])
